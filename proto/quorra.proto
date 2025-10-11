@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package quorra;
+
+option go_package = "github.com/goquorra/goquorra/internal/grpc";
+
+import "google/protobuf/timestamp.proto";
+
+// Job represents a job to be processed by a worker
+message Job {
+  string id = 1;
+  string type = 2;
+  bytes payload = 3;
+  int32 priority = 4;
+  int32 attempts = 5;
+  int32 max_retries = 6;
+  google.protobuf.Timestamp run_at = 7;
+  google.protobuf.Timestamp leased_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+  string queue = 10;
+  string lease_id = 11;
+}
+
+// LeaseRequest is sent by workers to lease jobs
+message LeaseRequest {
+  string worker_id = 1;
+  string queue = 2;
+  int32 max_jobs = 3;
+  int32 lease_ttl_seconds = 4;
+}
+
+// JobAck acknowledges job completion (success or failure)
+message JobAck {
+  string job_id = 1;
+  string worker_id = 2;
+  string lease_id = 3;
+  bool success = 4;
+  string error_message = 5;
+}
+
+// JobAckResponse is returned after ack/nack
+message JobAckResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// WorkerService defines the gRPC service for workers
+service WorkerService {
+  // LeaseJobs streams jobs to workers for processing
+  rpc LeaseJobs(LeaseRequest) returns (stream Job);
+
+  // AckJob acknowledges successful job completion
+  rpc AckJob(JobAck) returns (JobAckResponse);
+
+  // NackJob signals job failure for retry or DLQ
+  rpc NackJob(JobAck) returns (JobAckResponse);
+}

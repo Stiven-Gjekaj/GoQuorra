@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: quorra
+      POSTGRES_USER: quorra
+      POSTGRES_PASSWORD: quorra
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quorra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  quorra-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: /bin/quorra-server
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUORRA_HTTP_ADDR: ":8080"
+      QUORRA_GRPC_ADDR: ":50051"
+      QUORRA_LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://quorra:quorra@postgres:5432/quorra?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      QUORRA_API_KEY: "dev-api-key-change-in-production"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  quorra-worker-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: /bin/quorra-worker
+    environment:
+      QUORRA_WORKER_ID: "worker-1"
+      QUORRA_WORKER_QUEUES: "default,email,processing"
+      QUORRA_WORKER_MAX_JOBS: "5"
+      QUORRA_WORKER_LEASE_TTL: "30s"
+      QUORRA_GRPC_ADDR: "quorra-server:50051"
+    depends_on:
+      - quorra-server
+    restart: unless-stopped
+
+  quorra-worker-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: /bin/quorra-worker
+    environment:
+      QUORRA_WORKER_ID: "worker-2"
+      QUORRA_WORKER_QUEUES: "default,processing"
+      QUORRA_WORKER_MAX_JOBS: "3"
+      QUORRA_WORKER_LEASE_TTL: "30s"
+      QUORRA_GRPC_ADDR: "quorra-server:50051"
+    depends_on:
+      - quorra-server
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
