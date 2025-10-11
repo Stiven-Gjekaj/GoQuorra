@@ -30,5 +30,5 @@ Thumbs.db
 # Dependencies
 vendor/
 
-# Generated
-*.pb.go
+# Generated (uncomment for production with proper protoc setup)
+# *.pb.go
