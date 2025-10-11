@@ -23,7 +23,7 @@
 10. [📦 Project Structure](#-project-structure)
 11. [🧭 Roadmap](#-roadmap)
 12. [🤝 Contributing](#-contributing)
-13. [📜 License](#-license)
+13. [📜 License](LICENSE)
 
 ---
 
@@ -129,14 +129,14 @@ stateDiagram-v2
 
 ### States Explained
 
-| State | Description |
-|-------|-------------|
-| `pending` | Job is ready to be processed (or scheduled for future) |
-| `leased` | Job is assigned to a worker (has `lease_id` and `leased_at`) |
-| `processing` | Worker is actively processing the job |
-| `succeeded` | Job completed successfully |
-| `failed` | Job failed but will retry (transient state) |
-| `dead` | Job exceeded `max_retries`, moved to DLQ |
+| State        | Description                                                  |
+| ------------ | ------------------------------------------------------------ |
+| `pending`    | Job is ready to be processed (or scheduled for future)       |
+| `leased`     | Job is assigned to a worker (has `lease_id` and `leased_at`) |
+| `processing` | Worker is actively processing the job                        |
+| `succeeded`  | Job completed successfully                                   |
+| `failed`     | Job failed but will retry (transient state)                  |
+| `dead`       | Job exceeded `max_retries`, moved to DLQ                     |
 
 ### Sequence Diagram
 
@@ -182,6 +182,7 @@ Backoff = min(2^attempts seconds, 3600 seconds)
 ```
 
 **Example:**
+
 - Attempt 1 fails → retry in 2s
 - Attempt 2 fails → retry in 4s
 - Attempt 3 fails → retry in 8s
@@ -212,6 +213,7 @@ docker-compose -f deployments/docker-compose.yml up --build
 ```
 
 **What's running:**
+
 - PostgreSQL on `localhost:5432`
 - Redis on `localhost:6379`
 - GoQuorra Server on `localhost:8080` (HTTP) and `localhost:50051` (gRPC)
@@ -237,6 +239,7 @@ curl -X POST http://localhost:8080/v1/jobs \
 ```
 
 **Response:**
+
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -254,6 +257,7 @@ curl http://localhost:8080/v1/jobs/550e8400-e29b-41d4-a716-446655440000 \
 ```
 
 **Response:**
+
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -268,6 +272,7 @@ curl http://localhost:8080/v1/jobs/550e8400-e29b-41d4-a716-446655440000 \
 ### Step 4: View the Dashboard
 
 Open http://localhost:8080 in your browser. You'll see:
+
 - Queue statistics (pending, succeeded, failed counts)
 - Recent jobs table
 - Auto-refresh every 5 seconds
@@ -279,6 +284,7 @@ curl http://localhost:8080/metrics | grep quorra_jobs
 ```
 
 **Output:**
+
 ```
 quorra_jobs_created_total 1
 quorra_jobs_processed_total 1
@@ -316,6 +322,7 @@ All REST endpoints require authentication via the `X-API-Key` header.
 Create a new job.
 
 **Request:**
+
 ```json
 {
   "type": "string (required)",
@@ -328,6 +335,7 @@ Create a new job.
 ```
 
 **Response:**
+
 ```json
 {
   "id": "uuid",
@@ -337,6 +345,7 @@ Create a new job.
 ```
 
 **Example:**
+
 ```bash
 curl -X POST http://localhost:8080/v1/jobs \
   -H "Content-Type: application/json" \
@@ -355,6 +364,7 @@ curl -X POST http://localhost:8080/v1/jobs \
 Retrieve job details.
 
 **Response:**
+
 ```json
 {
   "id": "uuid",
@@ -376,12 +386,13 @@ Retrieve job details.
 List queue statistics.
 
 **Response:**
+
 ```json
 {
   "queues": [
-    {"queue": "default", "status": "pending", "count": 12},
-    {"queue": "default", "status": "succeeded", "count": 145},
-    {"queue": "email", "status": "pending", "count": 3}
+    { "queue": "default", "status": "pending", "count": 12 },
+    { "queue": "default", "status": "succeeded", "count": 145 },
+    { "queue": "email", "status": "pending", "count": 3 }
   ]
 }
 ```
@@ -399,6 +410,7 @@ Workers communicate via [Protocol Buffers](https://protobuf.dev/). See [`proto/q
 Stream jobs from the server.
 
 **Request:**
+
 ```protobuf
 message LeaseRequest {
   string worker_id = 1;
@@ -415,6 +427,7 @@ message LeaseRequest {
 Acknowledge successful job completion.
 
 **Request:**
+
 ```protobuf
 message JobAck {
   string job_id = 1;
@@ -429,6 +442,7 @@ message JobAck {
 Signal job failure (triggers retry or DLQ).
 
 **Request:**
+
 ```protobuf
 message JobAck {
   string job_id = 1;
@@ -513,13 +527,13 @@ func (w *Worker) sendEmail(payload map[string]interface{}) bool {
 
 ### Worker Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QUORRA_WORKER_ID` | `worker-1` | Unique worker identifier |
-| `QUORRA_WORKER_QUEUES` | `default` | Comma-separated queue names |
-| `QUORRA_WORKER_MAX_JOBS` | `5` | Max jobs to lease per request |
-| `QUORRA_WORKER_LEASE_TTL` | `30s` | Lease duration |
-| `QUORRA_GRPC_ADDR` | `localhost:50051` | Server gRPC address |
+| Variable                  | Default           | Description                   |
+| ------------------------- | ----------------- | ----------------------------- |
+| `QUORRA_WORKER_ID`        | `worker-1`        | Unique worker identifier      |
+| `QUORRA_WORKER_QUEUES`    | `default`         | Comma-separated queue names   |
+| `QUORRA_WORKER_MAX_JOBS`  | `5`               | Max jobs to lease per request |
+| `QUORRA_WORKER_LEASE_TTL` | `30s`             | Lease duration                |
+| `QUORRA_GRPC_ADDR`        | `localhost:50051` | Server gRPC address           |
 
 ---
 
@@ -529,34 +543,37 @@ GoQuorra exposes [Prometheus](https://prometheus.io)-compatible metrics on `/met
 
 ### Available Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `quorra_jobs_created_total` | Counter | Total jobs created |
-| `quorra_jobs_processed_total` | Counter | Total jobs successfully processed |
-| `quorra_jobs_failed_total` | Counter | Total jobs that failed (will retry) |
-| `quorra_jobs_dead_total` | Counter | Total jobs moved to DLQ |
-| `quorra_jobs_leased_total` | Counter | Total job lease operations |
-| `quorra_job_queue_length{queue,status}` | Gauge | Current queue length by status |
+| Metric                                  | Type    | Description                         |
+| --------------------------------------- | ------- | ----------------------------------- |
+| `quorra_jobs_created_total`             | Counter | Total jobs created                  |
+| `quorra_jobs_processed_total`           | Counter | Total jobs successfully processed   |
+| `quorra_jobs_failed_total`              | Counter | Total jobs that failed (will retry) |
+| `quorra_jobs_dead_total`                | Counter | Total jobs moved to DLQ             |
+| `quorra_jobs_leased_total`              | Counter | Total job lease operations          |
+| `quorra_job_queue_length{queue,status}` | Gauge   | Current queue length by status      |
 
 ### Scraping Metrics
 
 **Manual check:**
+
 ```bash
 curl http://localhost:8080/metrics
 ```
 
 **Prometheus configuration:**
+
 ```yaml
 scrape_configs:
-  - job_name: 'goquorra'
+  - job_name: "goquorra"
     static_configs:
-      - targets: ['localhost:8080']
-    metrics_path: '/metrics'
+      - targets: ["localhost:8080"]
+    metrics_path: "/metrics"
 ```
 
 ### Grafana Dashboard
 
 Create panels for:
+
 - **Job Throughput**: `rate(quorra_jobs_processed_total[5m])`
 - **Queue Depth**: `quorra_job_queue_length{status="pending"}`
 - **Failure Rate**: `rate(quorra_jobs_failed_total[5m]) / rate(quorra_jobs_created_total[5m])`
@@ -640,6 +657,7 @@ make build
 ```
 
 This creates:
+
 - `bin/quorra-server` - Main server
 - `bin/quorra-worker` - Worker executable
 - `bin/quorractl` - CLI tool
@@ -647,6 +665,7 @@ This creates:
 ### Run Locally
 
 **Terminal 1: Start server**
+
 ```bash
 export DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra?sslmode=disable"
 export REDIS_URL="redis://localhost:6379/0"
@@ -656,6 +675,7 @@ export QUORRA_API_KEY="dev-api-key"
 ```
 
 **Terminal 2: Start worker**
+
 ```bash
 export QUORRA_WORKER_ID="dev-worker"
 export QUORRA_WORKER_QUEUES="default,email"
@@ -694,15 +714,15 @@ golangci-lint run --timeout 5m
 
 ### Makefile Commands
 
-| Command | Description |
-|---------|-------------|
-| `make build` | Build all binaries |
-| `make test` | Run unit tests with coverage |
-| `make dev` | Start docker-compose stack |
-| `make dev-down` | Stop docker-compose |
-| `make docker-build` | Build Docker image |
-| `make lint` | Run linters |
-| `make clean` | Remove build artifacts |
+| Command             | Description                  |
+| ------------------- | ---------------------------- |
+| `make build`        | Build all binaries           |
+| `make test`         | Run unit tests with coverage |
+| `make dev`          | Start docker-compose stack   |
+| `make dev-down`     | Stop docker-compose          |
+| `make docker-build` | Build Docker image           |
+| `make lint`         | Run linters                  |
+| `make clean`        | Remove build artifacts       |
 
 ---
 
@@ -765,6 +785,7 @@ goquorra/
 ## 🧭 Roadmap
 
 ### v0.1.0 (Current)
+
 ✅ REST API for job management
 ✅ gRPC worker protocol
 ✅ PostgreSQL + Redis persistence
@@ -777,6 +798,7 @@ goquorra/
 ✅ Unit and integration tests
 
 ### v0.2.0 (Next Release)
+
 - [ ] JWT authentication (replace API key)
 - [ ] Lease expiration cleanup job
 - [ ] Job cancellation API
@@ -785,6 +807,7 @@ goquorra/
 - [ ] Helm chart for Kubernetes
 
 ### v0.3.0 (Future)
+
 - [ ] Job dependencies (DAG execution)
 - [ ] Parent-child job relationships
 - [ ] Webhook notifications for job events
@@ -793,6 +816,7 @@ goquorra/
 - [ ] Multi-tenancy support
 
 ### v0.4.0 (Future)
+
 - [ ] Message broker backend (NATS, Kafka)
 - [ ] Leader election for high availability
 - [ ] Job result persistence and retrieval
@@ -801,6 +825,7 @@ goquorra/
 - [ ] Rate limiting per queue
 
 ### v1.0.0 (Production Ready)
+
 - [ ] Multi-region support
 - [ ] Comprehensive security hardening
 - [ ] Performance benchmarks and tuning
@@ -837,6 +862,7 @@ Contributions are welcome! Whether it's bug reports, feature requests, or pull r
 ### Reporting Bugs
 
 Open an [issue](https://github.com/yourusername/goquorra/issues) with:
+
 - Go version
 - Database version (PostgreSQL/Redis)
 - Steps to reproduce
@@ -846,6 +872,7 @@ Open an [issue](https://github.com/yourusername/goquorra/issues) with:
 ### Feature Requests
 
 Have an idea? Open an [issue](https://github.com/yourusername/goquorra/issues) and describe:
+
 - Use case
 - Proposed API/behavior
 - Why it's important
