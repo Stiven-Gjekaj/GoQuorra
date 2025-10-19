@@ -35,7 +35,7 @@ Unlike heavyweight message brokers, GoQuorra focuses on **simplicity and correct
 
 Whether you're building async APIs, processing webhooks, sending emails, or running batch jobs, GoQuorra gives you the primitives to scale horizontally while maintaining exactly-once processing guarantees. It's designed to be deployed alongside your existing stack — no specialized infrastructure required.
 
-This is an MVP (v0.1.0) that demonstrates core distributed systems concepts: atomic job leasing with `SELECT FOR UPDATE SKIP LOCKED`, lease-based concurrency control, idempotent state transitions, and proper observability. Perfect for portfolio projects or production workloads that don't require Kafka-level complexity.
+This is an Alpha Version (v0.1.0) that demonstrates core distributed systems concepts: atomic job leasing with `SELECT FOR UPDATE SKIP LOCKED`, lease-based concurrency control, idempotent state transitions, and proper observability. Perfect for portfolio projects or production workloads that don't require Kafka-level complexity.
 
 ---
 
