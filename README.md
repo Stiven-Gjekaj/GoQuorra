@@ -21,9 +21,8 @@
 8. [📈 Metrics & Monitoring](#-metrics--monitoring)
 9. [🛠️ Development Setup](#️-development-setup)
 10. [📦 Project Structure](#-project-structure)
-11. [🧭 Roadmap](#-roadmap)
-12. [🤝 Contributing](#-contributing)
-13. [📜 License](LICENSE)
+11. [🤝 Contributing](#-contributing)
+12. [📜 License](LICENSE)
 
 ---
 
@@ -815,58 +814,6 @@ goquorra/
 - **`tests/`**: Test suites (unit and integration)
 - **`scripts/`**: Database migrations, code generation
 - **`deployments/`**: Deployment configurations (Docker, Kubernetes)
-
----
-
-## 🧭 Roadmap
-
-### v0.1.0 (Current)
-
-✅ REST API for job management
-✅ gRPC worker protocol
-✅ PostgreSQL + Redis persistence
-✅ Retry logic with exponential backoff
-✅ Dead-letter queue
-✅ Prometheus metrics
-✅ Web dashboard
-✅ CLI tool
-✅ Docker Compose deployment
-✅ Unit and integration tests
-
-### v0.2.0 (Next Release)
-
-- [ ] JWT authentication (replace API key)
-- [ ] Lease expiration cleanup job
-- [ ] Job cancellation API
-- [ ] Worker health checks and auto-scaling
-- [ ] Advanced dashboard with filtering and search
-- [ ] Helm chart for Kubernetes
-
-### v0.3.0 (Future)
-
-- [ ] Job dependencies (DAG execution)
-- [ ] Parent-child job relationships
-- [ ] Webhook notifications for job events
-- [ ] OpenTelemetry distributed tracing
-- [ ] Admin UI (React-based)
-- [ ] Multi-tenancy support
-
-### v0.4.0 (Future)
-
-- [ ] Message broker backend (NATS, Kafka)
-- [ ] Leader election for high availability
-- [ ] Job result persistence and retrieval
-- [ ] Scheduled/cron jobs
-- [ ] Job priority inheritance
-- [ ] Rate limiting per queue
-
-### v1.0.0 (Production Ready)
-
-- [ ] Multi-region support
-- [ ] Comprehensive security hardening
-- [ ] Performance benchmarks and tuning
-- [ ] Migration guides from Sidekiq, Celery, Bull
-- [ ] Enterprise features (audit logs, RBAC)
 
 ---
 
