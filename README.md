@@ -66,21 +66,58 @@ GoQuorra follows a **centralized queue, distributed workers** model. The server 
 
 ```mermaid
 graph LR
-    Client[REST Client] -->|POST /v1/jobs| API[GoQuorra Server<br/>:8080]
-    API -->|Store Job| DB[(PostgreSQL<br/>Jobs Table)]
-    API -.->|Notify| Redis[(Redis<br/>Optional)]
+    %% Nodes (quoted labels so newlines work nicely)
+    Client["REST Client"] -->|POST /v1/jobs| API["GoQuorra Server\n:8080"]
+    API -->|Store Job| DB[( "PostgreSQL\nJobs Table" )]
+    API -.->|Notify| Redis[( "Redis\nOptional" )]
 
-    DB -->|SELECT FOR UPDATE<br/>SKIP LOCKED| GRPC[gRPC Server<br/>:50051]
-    GRPC -->|Stream Jobs| W1[Worker 1]
-    GRPC -->|Stream Jobs| W2[Worker 2]
-    GRPC -->|Stream Jobs| WN[Worker N]
+    DB -->|SELECT FOR UPDATE\nSKIP LOCKED| GRPC["gRPC Server\n:50051"]
+    GRPC -->|Stream Jobs| W1["Worker 1"]
+    GRPC -->|Stream Jobs| W2["Worker 2"]
+    GRPC -->|Stream Jobs| WN["Worker N"]
 
     W1 -->|AckJob/NackJob| GRPC
     W2 -->|AckJob/NackJob| GRPC
     WN -->|AckJob/NackJob| GRPC
 
-    API -->|Expose| Metrics[/metrics<br/>Prometheus]
-    API -->|Serve| Dashboard[Web Dashboard<br/>localhost:8080]
+    API -->|Expose| Metrics["/metrics\nPrometheus"]
+    API -->|Serve| Dashboard["Web Dashboard\nlocalhost:8080"]
+
+    %% Class assignments
+    class Client client;
+    class API api;
+    class DB db;
+    class Redis redis;
+    class GRPC grpc;
+    class W1,W2,WN worker;
+    class Metrics metrics;
+    class Dashboard dash;
+
+    %% Visual styles for node classes
+    classDef client fill:#e8f5ff,stroke:#1f6feb,stroke-width:1px;
+    classDef api fill:#dbeafe,stroke:#0b5ed7,stroke-width:2px,stroke-dasharray:0;
+    classDef db fill:#fff7e6,stroke:#c48800,stroke-width:2px;
+    classDef redis fill:#fff0f6,stroke:#c2206a,stroke-width:1.5px;
+    classDef grpc fill:#f0f9ff,stroke:#0b7285,stroke-width:1.5px;
+    classDef worker fill:#f6ffed,stroke:#2f9e44,stroke-width:1px;
+    classDef metrics fill:#f1f8ff,stroke:#2563eb,stroke-width:1px;
+    classDef dash fill:#ffffff,stroke:#6b7280,stroke-width:1px;
+
+    %% Link styles (indexing is based on the order Mermaid registers links)
+    %% 0: Client->API, 1:API->DB, 2:API-.->Redis, 3:DB->GRPC, 4:GRPC->W1, 5:GRPC->W2, 6:GRPC->WN,
+    %% 7:W1->GRPC, 8:W2->GRPC, 9:WN->GRPC, 10:API->Metrics, 11:API->Dashboard
+    linkStyle 0 stroke:#0b5ed7,stroke-width:2px;
+    linkStyle 1 stroke:#c48800,stroke-width:2px;
+    linkStyle 2 stroke:#c2206a,stroke-width:2px,stroke-dasharray:5 5;
+    linkStyle 3 stroke:#0b7285,stroke-width:1.5px,stroke-dasharray:2 2;
+    linkStyle 4 stroke:#2f9e44,stroke-width:1.5px;
+    linkStyle 5 stroke:#2f9e44,stroke-width:1.5px;
+    linkStyle 6 stroke:#2f9e44,stroke-width:1.5px;
+    linkStyle 7 stroke:#2f9e44,stroke-width:1px,stroke-dasharray:2 2;
+    linkStyle 8 stroke:#2f9e44,stroke-width:1px,stroke-dasharray:2 2;
+    linkStyle 9 stroke:#2f9e44,stroke-width:1px,stroke-dasharray:2 2;
+    linkStyle 10 stroke:#2563eb,stroke-width:1.5px;
+    linkStyle 11 stroke:#6b7280,stroke-width:1.2px,stroke-dasharray:3 3;
 ```
 
 ### How It Works
