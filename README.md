@@ -66,10 +66,9 @@ GoQuorra follows a **centralized queue, distributed workers** model. The server 
 
 ```mermaid
 graph LR
-    %% Nodes (quoted labels so newlines work nicely)
     Client["REST Client"] -->|POST /v1/jobs| API["GoQuorra Server\n:8080"]
-    API -->|Store Job| DB[( "PostgreSQL\nJobs Table" )]
-    API -.->|Notify| Redis[( "Redis\nOptional" )]
+    API -->|Store Job| DB["PostgreSQL\nJobs Table"]
+    API -.->|Notify| Redis["Redis\nOptional"]
 
     DB -->|SELECT FOR UPDATE\nSKIP LOCKED| GRPC["gRPC Server\n:50051"]
     GRPC -->|Stream Jobs| W1["Worker 1"]
