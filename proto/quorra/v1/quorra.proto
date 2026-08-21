@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+// The protocol between a worker and the server.
+//
+// The package carries a version. A change that a running worker cannot
+// understand goes into quorra.v2 beside this, so that a server can answer
+// both while the workers are replaced. Without the version there is no way to
+// do that except by taking everything down at once.
+package quorra.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb;quorrapb";
+
+// QueueService is what a worker talks to.
+service QueueService {
+  // Lease asks for work and returns what is available now.
+  //
+  // This is one call and one answer, where the previous version declared a
+  // server stream. That stream sent whatever was ready and then closed, which
+  // is a single answer written in a way that costs the client a receive loop
+  // and an end of file to handle. Nothing was ever pushed down it.
+  //
+  // A stream that stays open and pushes a job the moment it arrives is a real
+  // design, and it is not this one. docs/milestones.md says what it would
+  // need.
+  rpc Lease(LeaseRequest) returns (LeaseResponse);
+
+  // Report says what happened to a job.
+  //
+  // One call, with the outcome as a field that the server reads. The previous
+  // version had AckJob and NackJob, and a success field on the message that
+  // no code ever read, so a worker that set it to false and called AckJob was
+  // recorded as having succeeded.
+  rpc Report(ReportRequest) returns (ReportResponse);
+}
+
+// Job is one piece of work.
+message Job {
+  string id = 1;
+  string type = 2;
+
+  // payload is the JSON the client submitted, as bytes. The server does not
+  // look inside it.
+  bytes payload = 3;
+
+  string queue = 4;
+  int32 priority = 5;
+
+  // attempts counts this run as well as the ones before it, so the first run
+  // of a job reports 1.
+  int32 attempts = 6;
+  int32 max_retries = 7;
+
+  // lease_id must be sent back in the report. A job whose lease has been
+  // taken back carries a different one, and the report is then refused.
+  string lease_id = 8;
+
+  // lease_expires_at is when the server takes the job back. A worker still
+  // running at that moment is going to have its work repeated by somebody
+  // else, so it is worth checking.
+  google.protobuf.Timestamp lease_expires_at = 9;
+
+  google.protobuf.Timestamp run_at = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+message LeaseRequest {
+  string worker_id = 1;
+  string queue = 2;
+  int32 max_jobs = 3;
+
+  // lease_ttl is how long the worker asks to hold the jobs. A Duration and
+  // not a count of seconds, so that a wrong unit cannot be sent silently.
+  google.protobuf.Duration lease_ttl = 4;
+}
+
+message LeaseResponse {
+  repeated Job jobs = 1;
+}
+
+// Outcome is what the worker reports.
+enum Outcome {
+  // The server refuses this value. A field left unset must not mean success,
+  // because that is what an older or broken client sends.
+  OUTCOME_UNSPECIFIED = 0;
+
+  OUTCOME_SUCCEEDED = 1;
+  OUTCOME_FAILED = 2;
+}
+
+message ReportRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  string lease_id = 3;
+  Outcome outcome = 4;
+
+  // error is kept on the job and shown in the dashboard. It is ignored when
+  // the outcome is a success.
+  string error = 5;
+}
+
+message ReportResponse {
+  // status is where the job ended up: pending when it will be retried,
+  // succeeded, or dead.
+  string status = 1;
+
+  int32 attempts = 2;
+
+  // run_at is when a retried job comes back. It holds the backoff the server
+  // applied, so a worker can log it.
+  google.protobuf.Timestamp run_at = 3;
+}

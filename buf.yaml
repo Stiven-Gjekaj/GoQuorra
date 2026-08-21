@@ -1,0 +1,15 @@
+# The buf module.
+#
+# buf is used instead of protoc because it is a single Go program that
+# `go install` fetches, so `make proto` works on any machine that can build
+# this project. protoc is a C++ binary that arrives from a package manager,
+# and the version it gives differs between machines.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE
