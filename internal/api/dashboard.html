@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoQuorra</title>
+<style nonce="{{.Nonce}}">
+:root {
+  --ink: #16191d; --dim: #5b6670; --line: #dfe3e8;
+  --ground: #f5f6f8; --panel: #ffffff;
+  --pending: #9a6700; --leased: #0b5ed7; --succeeded: #1a7f37; --dead: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6e9ec; --dim: #98a1ab; --line: #2c333b;
+    --ground: #14171a; --panel: #1c2126;
+    --pending: #d4a72c; --leased: #6cb6ff; --succeeded: #57ab5a; --dead: #ff7b72;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+header { border-bottom: 1px solid var(--line); background: var(--panel); }
+.bar { max-width: 1100px; margin: 0 auto; padding: 18px 20px; display: flex; gap: 16px; align-items: baseline; }
+h1 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
+.tag { color: var(--dim); font-size: 13px; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.card h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--dim); }
+.row { display: flex; justify-content: space-between; padding: 2px 0; font-variant-numeric: tabular-nums; }
+h3 { font-size: 14px; margin: 0 0 10px; color: var(--dim); font-weight: 600; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.pending { color: var(--pending); } .leased { color: var(--leased); }
+.succeeded { color: var(--succeeded); } .dead { color: var(--dead); }
+.note { color: var(--dim); padding: 16px; }
+form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input, button {
+  font: inherit; padding: 7px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button { cursor: pointer; }
+.err { color: var(--dead); }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>GoQuorra</h1>
+    <span class="tag" id="state">connecting</span>
+    <span style="flex:1"></span>
+    <form id="keyform">
+      <label for="key" class="tag">API key</label>
+      <input id="key" type="password" autocomplete="off" size="26" placeholder="X-API-Key">
+      <button type="submit">Use</button>
+    </form>
+  </div>
+</header>
+
+<main>
+  <h3>Queues</h3>
+  <div class="cards" id="queues"></div>
+
+  <h3>Recent jobs</h3>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Priority</th><th>Attempts</th><th>Created</th><th>Last error</th></tr>
+      </thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </div>
+</main>
+
+<script nonce="{{.Nonce}}">
+// The key is never written into this page.
+//
+// The old dashboard had the key printed into its source and sent it in the
+// query string of every request. A query string is written to the access log
+// of every proxy, kept in browser history, and sent on in the Referer header.
+// The reader supplies the key here, the browser keeps it for this tab only,
+// and it travels in a header.
+"use strict";
+
+const store = window.sessionStorage;
+const state = document.getElementById("state");
+const keyInput = document.getElementById("key");
+
+keyInput.value = store.getItem("quorra.key") || "";
+
+document.getElementById("keyform").addEventListener("submit", (event) => {
+  event.preventDefault();
+  store.setItem("quorra.key", keyInput.value);
+  load();
+});
+
+function say(text, bad) {
+  state.textContent = text;
+  state.className = bad ? "tag err" : "tag";
+}
+
+async function get(path) {
+  const response = await fetch(path, {
+    headers: { "X-API-Key": store.getItem("quorra.key") || "" },
+    cache: "no-store",
+  });
+  if (response.status === 401) throw new Error("the API key is missing or wrong");
+  if (!response.ok) throw new Error("the server answered " + response.status);
+  return response.json();
+}
+
+// Every value below is written with textContent or through createTextNode.
+//
+// The old dashboard built each row by joining strings and assigning the
+// result straight into the page as markup. Two of the values in a row, the
+// job type and the queue name, are chosen by whoever submits a job, so
+// anybody who could reach the submission endpoint could put a script into
+// this page and have it run with the reader's key in their browser.
+function cell(row, text, className) {
+  const td = document.createElement("td");
+  td.textContent = text === null || text === undefined ? "" : String(text);
+  if (className) td.className = className;
+  row.appendChild(td);
+  return td;
+}
+
+function renderQueues(rows) {
+  const byQueue = new Map();
+  for (const row of rows) {
+    if (!byQueue.has(row.queue)) byQueue.set(row.queue, []);
+    byQueue.get(row.queue).push(row);
+  }
+
+  const holder = document.getElementById("queues");
+  holder.replaceChildren();
+
+  if (byQueue.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "card note";
+    empty.textContent = "No jobs yet.";
+    holder.appendChild(empty);
+    return;
+  }
+
+  for (const [queue, counts] of [...byQueue].sort()) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const title = document.createElement("h2");
+    title.textContent = queue;
+    card.appendChild(title);
+
+    for (const entry of counts) {
+      const line = document.createElement("div");
+      line.className = "row";
+
+      const name = document.createElement("span");
+      name.textContent = entry.status;
+      name.className = entry.status;
+
+      const value = document.createElement("span");
+      value.textContent = entry.count;
+
+      line.append(name, value);
+      card.appendChild(line);
+    }
+    holder.appendChild(card);
+  }
+}
+
+function renderJobs(list) {
+  const body = document.getElementById("jobs");
+  body.replaceChildren();
+
+  if (!list || list.length === 0) {
+    const row = document.createElement("tr");
+    const td = cell(row, "No jobs yet.");
+    td.colSpan = 8;
+    td.className = "note";
+    body.appendChild(row);
+    return;
+  }
+
+  for (const job of list) {
+    const row = document.createElement("tr");
+
+    const first = cell(row, "");
+    const id = document.createElement("code");
+    id.textContent = String(job.id).slice(0, 8);
+    id.title = job.id;
+    first.appendChild(id);
+
+    cell(row, job.type);
+    cell(row, job.queue);
+    cell(row, job.status, job.status);
+    cell(row, job.priority);
+    cell(row, job.attempts + " of " + (job.max_retries + 1));
+    cell(row, new Date(job.created_at).toLocaleString());
+    cell(row, job.last_error || "");
+
+    body.appendChild(row);
+  }
+}
+
+async function load() {
+  if (!store.getItem("quorra.key")) {
+    say("enter the API key", true);
+    return;
+  }
+  try {
+    const [queues, jobs] = await Promise.all([get("/v1/queues"), get("/v1/jobs?limit=25")]);
+    renderQueues(queues.queues || []);
+    renderJobs(jobs.jobs || []);
+    say("updated " + new Date().toLocaleTimeString());
+  } catch (error) {
+    say(error.message, true);
+  }
+}
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
