@@ -1,0 +1,27 @@
+# Build output.
+/bin/
+/dist/
+
+# Test output.
+*.test
+coverage.out
+coverage.html
+
+# The local environment. .env.example is committed; .env is not, because it
+# holds the real API key on a developer machine.
+.env
+.env.local
+
+# Editors.
+.vscode/
+.idea/
+*.swp
+*~
+
+# Operating systems.
+.DS_Store
+Thumbs.db
+
+# A local PostgreSQL data directory, for anybody who runs one outside a
+# container the way the test instructions describe.
+/.pgdata/
