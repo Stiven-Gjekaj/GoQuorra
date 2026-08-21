@@ -182,9 +182,9 @@ type Options struct {
 	Jitter func() float64
 }
 
-// withDefaults fills in what the caller left out, so that a zero Options is
+// WithDefaults fills in what the caller left out, so that a zero Options is
 // usable and a partly filled one does not panic on a nil function.
-func (o Options) withDefaults() Options {
+func (o Options) WithDefaults() Options {
 	if o.Policy.Base == 0 && o.Policy.Max == 0 && o.Policy.MaxRetries == 0 {
 		o.Policy = jobs.DefaultPolicy()
 	}
@@ -197,10 +197,10 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
-// policyFor returns the retry rules for one job. The waits come from the
+// PolicyFor returns the retry rules for one job. The waits come from the
 // store and the retry count comes from the job, because the caller who
 // submitted it chose that number.
-func (o Options) policyFor(maxRetries int) jobs.Policy {
+func (o Options) PolicyFor(maxRetries int) jobs.Policy {
 	p := o.Policy
 	p.MaxRetries = maxRetries
 	return p

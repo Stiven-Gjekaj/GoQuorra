@@ -45,10 +45,10 @@ func TestValidateRefusesAJobThatCannotBeStored(t *testing.T) {
 // which changed a value that the caller still held and could still read.
 func TestPrepareFillsTheDefaultsAndLeavesTheRequestAlone(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	opts := Options{Policy: jobs.Policy{MaxRetries: 7, Base: time.Second, Max: time.Minute}}.withDefaults()
+	opts := Options{Policy: jobs.Policy{MaxRetries: 7, Base: time.Second, Max: time.Minute}}.WithDefaults()
 
 	n := NewJob{Type: "email"}
-	got := opts.prepare(n, "id-1", now)
+	got := opts.Prepare(n, "id-1", now)
 
 	if got.Queue != DefaultQueue {
 		t.Errorf("queue = %q, want %q", got.Queue, DefaultQueue)
@@ -74,12 +74,12 @@ func TestPrepareFillsTheDefaultsAndLeavesTheRequestAlone(t *testing.T) {
 
 func TestPrepareTakesTheRetryCountFromTheJobWhenItNamesOne(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	opts := Options{Policy: jobs.Policy{MaxRetries: 7, Base: time.Second, Max: time.Minute}}.withDefaults()
+	opts := Options{Policy: jobs.Policy{MaxRetries: 7, Base: time.Second, Max: time.Minute}}.WithDefaults()
 
 	// Including zero, which is a real answer meaning "do not retry" and not
 	// an absent one. The old code could not tell those apart, because it used
 	// the integer zero for both, so asking for no retries silently gave three.
-	got := opts.prepare(NewJob{Type: "email", MaxRetries: intPtr(0)}, "id-1", now)
+	got := opts.Prepare(NewJob{Type: "email", MaxRetries: intPtr(0)}, "id-1", now)
 	if got.MaxRetries != 0 {
 		t.Errorf("max retries = %d, want 0, which the caller asked for", got.MaxRetries)
 	}
@@ -87,9 +87,9 @@ func TestPrepareTakesTheRetryCountFromTheJobWhenItNamesOne(t *testing.T) {
 
 func TestPrepareHoldsADelayedJobBack(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	opts := Options{}.withDefaults()
+	opts := Options{}.WithDefaults()
 
-	got := opts.prepare(NewJob{Type: "email", Delay: 90 * time.Second}, "id-1", now)
+	got := opts.Prepare(NewJob{Type: "email", Delay: 90 * time.Second}, "id-1", now)
 	if want := now.Add(90 * time.Second); !got.RunAt.Equal(want) {
 		t.Errorf("run at = %s, want %s", got.RunAt, want)
 	}
@@ -97,7 +97,7 @@ func TestPrepareHoldsADelayedJobBack(t *testing.T) {
 
 func TestWithDefaultsLeavesAStatedPolicyAlone(t *testing.T) {
 	stated := jobs.Policy{MaxRetries: 0, Base: 5 * time.Second, Max: time.Hour}
-	got := Options{Policy: stated}.withDefaults()
+	got := Options{Policy: stated}.WithDefaults()
 	if got.Policy != stated {
 		t.Errorf("policy = %+v, want %+v", got.Policy, stated)
 	}
@@ -107,8 +107,8 @@ func TestWithDefaultsLeavesAStatedPolicyAlone(t *testing.T) {
 }
 
 func TestPolicyForTakesTheWaitsFromTheStoreAndTheCountFromTheJob(t *testing.T) {
-	opts := Options{Policy: jobs.Policy{MaxRetries: 3, Base: 5 * time.Second, Max: time.Hour}}.withDefaults()
-	got := opts.policyFor(9)
+	opts := Options{Policy: jobs.Policy{MaxRetries: 3, Base: 5 * time.Second, Max: time.Hour}}.WithDefaults()
+	got := opts.PolicyFor(9)
 
 	if got.MaxRetries != 9 {
 		t.Errorf("max retries = %d, want the job's 9", got.MaxRetries)

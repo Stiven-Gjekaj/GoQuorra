@@ -19,14 +19,14 @@ const DefaultQueue = "default"
 // happens, not who may read it.
 func defaultJitter() float64 { return rand.Float64() }
 
-// prepare turns a NewJob into the row that goes into storage.
+// Prepare turns a NewJob into the row that goes into storage.
 //
 // Both stores call this, so both fill in the same defaults. The version
 // before the rebuild applied its defaults twice, once in the HTTP handler and
 // once in the store, and the two disagreed about what an absent max_retries
 // meant. It also wrote those defaults back into the caller's own struct,
 // which changed a value the caller still held.
-func (o Options) prepare(n NewJob, id string, now time.Time) *Job {
+func (o Options) Prepare(n NewJob, id string, now time.Time) *Job {
 	queue := n.Queue
 	if queue == "" {
 		queue = DefaultQueue
