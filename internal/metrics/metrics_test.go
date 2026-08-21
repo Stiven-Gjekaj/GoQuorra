@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -8,7 +10,6 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/prometheus/common/expfmt"
 )
 
 var now = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -174,21 +175,20 @@ func TestTheMetricsPageNamesEveryCounter(t *testing.T) {
 	}
 }
 
+// gather reads the page the server actually serves.
+//
+// Through the handler rather than through the registry. The handler is what a
+// Prometheus server scrapes, so a fault in the way it is built shows up here
+// rather than in production, and this needs no second formatting library to
+// do it.
 func gather(t *testing.T, m *Metrics) string {
 	t.Helper()
 
-	var page strings.Builder
-	families, err := m.registry.Gather()
-	if err != nil {
-		t.Fatalf("Gather: %v", err)
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the metrics page answered %d", recorder.Code)
 	}
-	for _, family := range families {
-		if !strings.HasPrefix(family.GetName(), "quorra_") {
-			continue
-		}
-		if _, err := expfmt.MetricFamilyToText(&page, family); err != nil {
-			t.Fatalf("cannot write the page: %v", err)
-		}
-	}
-	return page.String()
+	return recorder.Body.String()
 }
