@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quorra-worker
+  labels:
+    app.kubernetes.io/name: goquorra
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goquorra
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goquorra
+        app.kubernetes.io/component: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+
+      # Longer than the lease, so that a worker being replaced finishes what
+      # it is running and reports it. Cut it shorter and every job in flight
+      # is abandoned with its lease held, and nobody can touch those jobs
+      # until the lease expires.
+      terminationGracePeriodSeconds: 45
+
+      containers:
+        - name: worker
+          image: goquorra:latest
+          command: ["/usr/local/bin/quorra-worker"]
+          env:
+            # The pod name, so that a lease in the database names the pod that
+            # holds it. A shared identifier still works, and then nobody can
+            # tell two workers apart during an incident.
+            - name: QUORRA_WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: QUORRA_GRPC_ADDR
+              value: "quorra-server:50051"
+            - name: QUORRA_WORKER_QUEUES
+              value: "default"
+            - name: QUORRA_WORKER_LEASE_TTL
+              value: "30s"
+            # Below the lease, and below the grace period above. The worker
+            # refuses to start if this is longer than the lease.
+            - name: QUORRA_SHUTDOWN_GRACE
+              value: "25s"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

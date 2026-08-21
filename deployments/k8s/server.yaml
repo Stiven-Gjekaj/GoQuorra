@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quorra-server
+  labels:
+    app.kubernetes.io/name: goquorra
+    app.kubernetes.io/component: server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goquorra
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goquorra
+        app.kubernetes.io/component: server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: server
+          image: goquorra:latest
+          command: ["/usr/local/bin/quorra-server"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 50051
+          env:
+            - name: QUORRA_HTTP_ADDR
+              value: ":8080"
+            - name: QUORRA_GRPC_ADDR
+              value: ":50051"
+            - name: QUORRA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: quorra
+                  key: api-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: quorra
+                  key: database-url
+          # healthz says the process is running. readyz reaches the database.
+          #
+          # The liveness probe must be the cheap one. Pointing it at readyz
+          # means that a database which goes away for a minute restarts every
+          # server replica, which is the one thing guaranteed to make the
+          # outage worse.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quorra-server
+  labels:
+    app.kubernetes.io/name: goquorra
+spec:
+  selector:
+    app.kubernetes.io/name: goquorra
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 50051
+      targetPort: grpc
