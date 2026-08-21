@@ -46,7 +46,21 @@ USER quorra
 
 EXPOSE 8080 50051
 
-# No default API key. The server refuses to start without QUORRA_API_KEY, and
-# that is the point: the image before this one carried a key that was printed
-# in the README.
-ENTRYPOINT ["/usr/local/bin/quorra-server"]
+# CMD and not ENTRYPOINT, and the difference is not cosmetic.
+#
+# This image holds three binaries, so the caller has to be able to choose one.
+# The two orchestrators spell that choice with the same word and mean
+# different things by it: `command:` in Kubernetes replaces the entrypoint,
+# and `command:` in Docker Compose replaces CMD. With an entrypoint set, a
+# compose service asking for the worker ran the server with the path of the
+# worker as an argument instead. The server takes no arguments, so it ignored
+# it and started, and the two worker containers restarted for ever with an
+# error about a missing API key that they have no reason to need.
+#
+# With CMD alone, both orchestrators select the binary the same way. The
+# binaries also refuse an argument they do not understand now, so the same
+# mistake stops the container instead of quietly starting the wrong program.
+#
+# There is no default API key. The image before this one carried a key that
+# was printed in the README, and the server refuses to start without one.
+CMD ["/usr/local/bin/quorra-server"]
