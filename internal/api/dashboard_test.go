@@ -213,3 +213,22 @@ func TestTheLogoGoesWithTheDashboard(t *testing.T) {
 		}
 	}
 }
+
+// The page must carry no inline style attribute.
+//
+// The policy names a nonce for style, and a nonce does not apply to an
+// attribute, so the browser refuses an inline style and the rule simply does
+// not happen. Nothing fails and nothing is logged on the server. The first
+// version of this page laid its header out with one, and the control it was
+// meant to push to the right edge sat in the middle of the row instead, which
+// looked like a choice.
+func TestTheDashboardStylesNothingInline(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+
+	if strings.Contains(string(source), "style=\"") {
+		t.Error("the dashboard uses a style attribute, which the policy on this page refuses")
+	}
+}
