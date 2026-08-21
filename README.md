@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Stiven-Gjekaj/GoQuorra/main/docs/logo.svg" alt="GoQuorra" width="112">
+<img src="https://raw.githubusercontent.com/Stiven-Gjekaj/GoQuorra/main/internal/api/logo.svg" alt="GoQuorra" width="112">
 
 ### A job queue for Go, with the parts that usually go missing
 
@@ -528,6 +528,9 @@ Released under the MIT License.
 See [LICENSE](LICENSE) for the full text, and [TERMS.md](TERMS.md) for the
 project terms.
 
-The mark in [docs/logo.svg](docs/logo.svg) was drawn for this project. Nothing
-in it comes from an icon set, so there is no third party licence to carry for
-it, and the file says in a comment what each part of it means.
+The mark in [internal/api/logo.svg](internal/api/logo.svg) was drawn for this
+project. Nothing in it comes from an icon set, so there is no third party
+licence to carry for it, and the file says in a comment what each part of it
+means. It sits beside the server code because the dashboard serves it from
+there, and go:embed cannot reach a parent directory: one file in an odd place
+beats two copies that drift.

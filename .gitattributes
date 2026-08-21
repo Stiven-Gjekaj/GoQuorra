@@ -19,6 +19,9 @@
 *.json text eol=lf
 *.sh text eol=lf
 *.html text eol=lf
+# The mark is compiled into the server binary and served from it, so a line
+# ending conversion changes the bytes that reach a browser.
+*.svg text eol=lf
 Makefile text eol=lf
 Dockerfile text eol=lf
 
