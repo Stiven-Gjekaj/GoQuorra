@@ -1,0 +1,7 @@
+# Code owners for GoQuorra.
+# GitHub asks an owner listed here to review a pull request that changes a
+# matching file.
+# See https://docs.github.com/articles/about-code-owners for the format.
+
+# Default owner for everything in the repository.
+* @Stiven-Gjekaj
