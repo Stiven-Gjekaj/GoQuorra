@@ -1,0 +1,37 @@
+# Line endings.
+#
+# The migration files are read by the test suite and sent to PostgreSQL as
+# one string. A Windows checkout converts a text file to CRLF by default, and
+# a stray carriage return inside a dollar quoted function body becomes part of
+# the body rather than ending the line. The failure that follows names a
+# syntax error in SQL that is correct on disk, which sends the reader looking
+# in the wrong file.
+#
+# Pin the text files to LF on every platform. This is not a preference about
+# editors. It is the condition under which the suite means anything on
+# Windows.
+*.go text eol=lf
+*.sql text eol=lf
+*.proto text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.html text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+
+# Generated code.
+#
+# Marking the generated protobuf files keeps them out of a diff by default and
+# out of the language statistics. They are still committed, and CI regenerates
+# them and fails on a difference, because the last version of this repository
+# carried hand written files that claimed to be generated.
+internal/quorrapb/*.pb.go linguist-generated=true
+
+# Binary, and never converted.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.gz binary
