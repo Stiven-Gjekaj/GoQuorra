@@ -31,6 +31,12 @@ func main() {
 }
 
 func run() error {
+	// Before anything else, because an argument here means somebody asked for
+	// a different binary and got this one.
+	if err := config.CheckNoArguments(os.Args); err != nil {
+		return err
+	}
+
 	cfg, err := config.LoadServer(os.Getenv)
 	if err != nil {
 		return err
