@@ -46,6 +46,34 @@ say "submitted $good"
 bad=$(submit '{"type":"fail","payload":{},"max_retries":0}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 say "submitted $bad, which always fails"
 
+counter() {
+	curl -fsS "$SERVER/metrics" | sed -n "s/^$1 \(.*\)$/\1/p"
+}
+
+# Check that a worker is there before waiting a minute for one.
+#
+# Without this, a stack whose workers never started reports "the job is still
+# pending" after sixty seconds, which names the symptom and not the cause. The
+# first run of this script in CI failed exactly that way: both worker
+# containers were running the server binary, so nothing ever leased anything,
+# and the message sent the reader to look at the queue rather than at the
+# containers.
+for _ in $(seq 1 20); do
+	leased=$(counter quorra_jobs_leased_total)
+	if [ -n "$leased" ] && [ "${leased%.*}" -gt 0 ]; then
+		say "a worker has leased $leased job(s)"
+		break
+	fi
+	sleep 1
+done
+
+leased=$(counter quorra_jobs_leased_total)
+if [ -z "$leased" ] || [ "${leased%.*}" -lt 1 ]; then
+	say "no worker asked for work in twenty seconds, so nothing will run these jobs"
+	say "check that the worker containers are running the worker binary"
+	exit 1
+fi
+
 wait_for() {
 	local id="$1" want="$2"
 	for _ in $(seq 1 60); do
@@ -67,9 +95,8 @@ wait_for "$bad" dead
 # The counters must have moved. A metric that reads zero for ever is the way
 # this project's measurements were wrong before, so the check is on the number
 # and not on the name being present.
-metrics=$(curl -fsS "$SERVER/metrics")
 for name in quorra_jobs_created_total quorra_jobs_succeeded_total quorra_jobs_dead_total; do
-	value=$(echo "$metrics" | sed -n "s/^$name \(.*\)$/\1/p")
+	value=$(counter "$name")
 	if [ -z "$value" ]; then
 		say "$name is not published"
 		exit 1
