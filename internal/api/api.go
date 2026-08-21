@@ -67,6 +67,11 @@ func (a *API) Handler() http.Handler {
 	if a.opts.DashboardEnabled {
 		mux.HandleFunc("GET /{$}", a.dashboard)
 		mux.HandleFunc("GET /dashboard", a.dashboard)
+
+		// Only with the dashboard, because the dashboard is the only thing
+		// that asks for it. A deployment that turns the page off serves
+		// nothing it does not use.
+		mux.HandleFunc("GET /logo.svg", a.logo)
 	}
 
 	// Guarded.

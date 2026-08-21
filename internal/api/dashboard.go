@@ -40,6 +40,11 @@ func (a *API) dashboard(w http.ResponseWriter, _ *http.Request) {
 		"default-src 'none'; "+
 			"script-src 'nonce-"+nonce+"'; "+
 			"style-src 'nonce-"+nonce+"'; "+
+			// The page carries its own mark, and default-src none blocks an
+			// image as readily as a script. Leaving this out gives a broken
+			// picture and a console message that nobody watching the queue
+			// would ever look for.
+			"img-src 'self'; "+
 			"connect-src 'self'; "+
 			"base-uri 'none'; "+
 			"form-action 'none'; "+

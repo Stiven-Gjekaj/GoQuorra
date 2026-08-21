@@ -1,10 +1,17 @@
 package api_test
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
 )
 
 // The dashboard carries no API key.
@@ -125,5 +132,84 @@ func TestAJobTypeHoldingMarkupComesBackEscaped(t *testing.T) {
 	}
 	if !strings.Contains(listed, `\u003cscript\u003e`) {
 		t.Errorf("the markup was not escaped the way this test expects: %s", listed)
+	}
+}
+
+// The mark is served, and it is the file in the repository.
+//
+// Comparing the bytes rather than checking for a 200 is what says the route
+// serves this project's mark and not an empty response with the right
+// content type.
+func TestTheLogoIsServed(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := call(t, handler, "GET", "/logo.svg", "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET /logo.svg = %d", got.Code)
+	}
+	if want := "image/svg+xml; charset=utf-8"; got.Header().Get("Content-Type") != want {
+		t.Errorf("content type = %q, want %q", got.Header().Get("Content-Type"), want)
+	}
+
+	onDisk, err := os.ReadFile("logo.svg")
+	if err != nil {
+		t.Fatalf("cannot read the logo: %v", err)
+	}
+	if len(onDisk) == 0 {
+		t.Fatal("logo.svg is empty")
+	}
+	if got.Body.String() != string(onDisk) {
+		t.Error("the served mark is not the file in the repository")
+	}
+}
+
+// The policy must allow the page to load its own mark.
+//
+// This is the test worth having. default-src 'none' blocks an image as
+// readily as a script, so a policy written without img-src leaves a broken
+// picture in the corner of the page and a console message that nobody
+// watching a queue would ever think to look for. Nothing fails, nothing is
+// logged on the server, and the only symptom is a gap.
+func TestThePolicyAllowsThePageToLoadItsOwnMark(t *testing.T) {
+	handler, _ := serve(t)
+
+	page := call(t, handler, "GET", "/", "", nil)
+	policy := page.Header().Get("Content-Security-Policy")
+
+	if !strings.Contains(policy, "img-src 'self'") {
+		t.Fatalf("the policy blocks the page's own mark: %s", policy)
+	}
+
+	// And the page really does ask for it, so the directive above is not
+	// permission for something nothing uses.
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	if !strings.Contains(string(source), `src="/logo.svg"`) {
+		t.Error("the dashboard does not show the mark")
+	}
+	if !strings.Contains(string(source), `href="/logo.svg"`) {
+		t.Error("the dashboard sets no icon for the browser tab")
+	}
+}
+
+// A server with the dashboard turned off serves nothing it does not use.
+func TestTheLogoGoesWithTheDashboard(t *testing.T) {
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	handler := api.New(api.Options{
+		Store:            backing,
+		Metrics:          metrics.New(),
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		APIKey:           key,
+		DashboardEnabled: false,
+	}).Handler()
+
+	for _, path := range []string{"/", "/dashboard", "/logo.svg"} {
+		if got := call(t, handler, "GET", path, "", nil); got.Code != http.StatusNotFound {
+			t.Errorf("GET %s with the dashboard off = %d, want 404", path, got.Code)
+		}
 	}
 }
