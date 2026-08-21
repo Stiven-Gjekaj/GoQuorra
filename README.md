@@ -1,13 +1,19 @@
 <div align="center">
 
-### GoQuorra
+<img src="https://raw.githubusercontent.com/Stiven-Gjekaj/GoQuorra/main/docs/logo.svg" alt="GoQuorra" width="112">
 
-**A job queue for Go, with the parts that usually go missing**
+### A job queue for Go, with the parts that usually go missing
+
+_A worker that dies does not take its job with it_
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.24-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.24"/>
+  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL 16"/>
+  <img src="https://img.shields.io/badge/Prometheus-metrics-E6522C?style=for-the-badge&logo=prometheus&logoColor=white" alt="Prometheus metrics"/>
+</p>
 
 <p align="center">
   <a href="https://github.com/Stiven-Gjekaj/GoQuorra/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Stiven-Gjekaj/GoQuorra/ci.yml?label=ci&style=flat-square" alt="CI"/></a>
-  <img src="https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.24"/>
-  <img src="https://img.shields.io/badge/postgresql-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 16"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"/>
 </p>
 
@@ -521,3 +527,7 @@ change to revisit each one.
 Released under the MIT License.
 See [LICENSE](LICENSE) for the full text, and [TERMS.md](TERMS.md) for the
 project terms.
+
+The mark in [docs/logo.svg](docs/logo.svg) was drawn for this project. Nothing
+in it comes from an icon set, so there is no third party licence to carry for
+it, and the file says in a comment what each part of it means.
