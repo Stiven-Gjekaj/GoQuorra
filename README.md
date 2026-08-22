@@ -72,6 +72,11 @@ design and it is not this one.
 A job runs once, at or after a time you name.
 There is no repeat rule and no calendar.
 
+**Nothing is removed unless you ask.**
+A queue that deletes its own history by default takes the only record that a
+piece of work happened.
+Retention is off until somebody sets it, so the table grows until then.
+
 **Nothing here encrypts a payload.**
 A payload sits in the database as JSON that anybody with a database connection
 can read.
@@ -163,11 +168,16 @@ stateDiagram-v2
     leased --> dead: the worker reports a failure, and none remain
     leased --> pending: the lease runs out, and attempts remain
     leased --> dead: the lease runs out, and none remain
+    pending --> cancelled: a person stops it
+    leased --> cancelled: a person stops it
+    dead --> pending: a person revives it
+    cancelled --> pending: a person revives it
     succeeded --> [*]
     dead --> [*]
+    cancelled --> [*]
 ```
 
-There are four states, and there used to be six.
+There are five states, and there used to be six different ones.
 `processing` is gone because the server cannot observe it: the worker holds
 the job between the lease and the report, and the server hears nothing in that
 window.
@@ -180,6 +190,7 @@ Both were documented, and no code ever wrote either.
 | `leased` | A worker holds it. The lease carries an expiry. |
 | `succeeded` | A worker reported that it is done. |
 | `dead` | Every attempt was used. The row stays, with the last error on it. |
+| `cancelled` | A person stopped it. Separate from `dead`, because the difference between them is the only thing that says whether the queue gave up or somebody decided. |
 
 ### Two workers never get the same job
 
@@ -231,6 +242,71 @@ Half of each wait is jitter.
 Without the jitter, a database that goes away for a minute sends every job
 that failed in that minute back at the same instant, and the retry storm takes
 the database down a second time.
+
+### A slow job keeps its lease
+
+A worker asks the server to push its lease out three times per lease while a
+handler is running.
+A third, so that two heartbeats can be lost to a slow network before the lease
+actually runs out.
+
+Without it, a handler slower than the lease it was given was doomed: the
+reclaimer took the job at the expiry and handed it to somebody else while the
+first worker was still running it.
+
+The refusal is the other half.
+When the answer says the job is no longer this worker's, because it was
+cancelled or because the lease ran out, the context given to the handler is
+cancelled with `worker.ErrLeaseLost` as its cause.
+Nothing reaches into a running handler, which is the only way this could work.
+
+### Acting on a job
+
+A dead letter queue nobody can act on is a list of regrets.
+
+| Action | What it does |
+| ------ | ------------ |
+| Cancel | Stops a job that has not finished. A job a worker is holding loses its lease, so that worker's next heartbeat fails and its handler stops. |
+| Revive | Puts a dead or cancelled job back in the queue with the attempt count set to zero. |
+
+The zero matters. Somebody clearing a dead letter queue has usually just fixed
+the thing that broke and wants the job to have the full set of tries again.
+Leaving the count where it was gives it one more, which looks like it worked
+until the queue fills up again an hour later.
+
+A job that succeeded cannot be revived.
+Running it again is a new piece of work and deserves a new identifier that the
+caller can follow.
+
+### Submitting the same job twice
+
+A client that sends a job and does not see the answer cannot tell whether the
+server stored it.
+Retrying is the only thing it can do.
+
+Send an `idempotency_key`, in the body or in the `Idempotency-Key` header, and
+the second submission gives back the first job and answers `200` instead of
+`201`.
+
+The check is the database's, not the code's.
+Reading for an existing key and inserting afterwards lets two submissions
+carrying one key both find nothing and both insert, which is the exact case
+the key exists to prevent.
+
+### Keeping the table from growing for ever
+
+Nothing is ever removed unless you ask.
+`QUORRA_RETAIN_SUCCEEDED`, `QUORRA_RETAIN_DEAD` and `QUORRA_RETAIN_CANCELLED`
+each default to keeping the job for ever.
+
+That default is deliberate.
+A queue holds the only record that a piece of work happened, and a default
+that quietly removed it would take that record from every deployment that
+upgraded without reading the notes.
+
+They are separate because the jobs are not alike.
+A succeeded job is noise after a week.
+A dead one is evidence.
 
 ---
 
@@ -294,9 +370,57 @@ Four things the package does for you:
 - **An unknown job type is a failure that names the type.** The usual cause is
   a deployment where the producer knows a job type and the workers do not yet.
 
+### Keeping what a job produced
+
+`HandleResult` registers a handler that returns a value as well as an error.
+What it returns is stored on the job and served back by the API.
+
+```go
+w.HandleResult("count_rows", func(ctx context.Context, job worker.Job) (any, error) {
+	n, err := count(ctx)
+	return map[string]int{"rows": n}, err
+})
+```
+
+Keep it small.
+The server refuses a result past its limit rather than trimming one, because
+half a JSON document is not a smaller result: put a large value where it
+belongs and return a reference to it.
+
 `cmd/quorra-worker` is a demonstration with three handlers: `echo`, `sleep`,
 and `fail`. `fail` exists so that the retry schedule and the dead letter queue
 can be watched happening.
+
+---
+
+## Submitting work
+
+A producer imports [`client`](client), the other half of the worker package.
+
+```go
+c, err := client.New(client.Config{
+	Server: "http://localhost:8080",
+	APIKey: os.Getenv("QUORRA_API_KEY"),
+})
+if err != nil {
+	return err
+}
+
+job, err := c.Submit(ctx, client.NewJob{
+	Type:    "email_send",
+	Payload: mail,
+	Key:     "welcome-" + user.ID,
+})
+```
+
+Nothing in that package holds a type from inside this repository, so a caller
+depends on it without depending on how the server stores anything.
+
+A refusal arrives as an error the caller can test: `client.ErrNotFound`,
+`client.ErrWrongState` and `client.ErrUnauthorized`, each wrapping the sentence
+the server wrote.
+`ErrWrongState` is the one worth having, because a caller that waits and asks
+again may succeed.
 
 ---
 
@@ -326,19 +450,34 @@ A field the server does not know is refused rather than ignored, so
 `maxRetries` gets an error instead of quietly doing nothing.
 
 Answers `201` with `{"id", "status", "queue", "run_at"}` and a `Location`
-header.
+header, or `200` with the same shape when an `idempotency_key` has been used
+before.
 
 ### The rest
 
 | Route | Gives |
 | ----- | ----- |
 | `GET /v1/jobs/{id}` | One job. `404` when there is none, and `500` when the database is unreachable. |
-| `GET /v1/jobs?limit=50` | The newest jobs first. |
+| `GET /v1/jobs` | Jobs, newest first. Narrowed by `queue`, `status`, `type` and `limit`, and paged with `before`. |
+| `POST /v1/jobs/{id}/cancel` | Stops a job that has not finished. `409` when it already has. |
+| `POST /v1/jobs/{id}/revive` | Puts a dead or cancelled job back with a fresh set of attempts. `409` for any other state. |
 | `GET /v1/queues` | A count for each queue and status. |
 | `GET /healthz` | `200` while the process is running. Public. |
 | `GET /readyz` | `200` while the store can be reached. Public. |
 | `GET /metrics` | Prometheus. Public. |
 | `GET /` | The dashboard. |
+
+Paging is a cursor and not an offset.
+An offset re-reads and skips every row before the page, so a job submitted
+while somebody is reading shifts every later page by one, which shows them a
+row twice and hides another entirely.
+Take `next_cursor` from a page and pass it back as `before`.
+A short page carries no cursor, because a short page is the end.
+
+A job in the wrong state answers `409` and not `400`.
+The request is well formed and would be correct against the same job a moment
+later, so a client that retries once the job moves is behaving sensibly, and
+`400` tells it never to try again.
 
 `healthz` and `readyz` are different on purpose.
 Point a liveness probe at `healthz` and a readiness probe at `readyz`.
@@ -358,6 +497,9 @@ outage worse.
 | `quorra_jobs_retried_total` | counter | Failures that sent a job back |
 | `quorra_jobs_dead_total` | counter | Jobs that used every attempt |
 | `quorra_leases_reclaimed_total` | counter | Leases taken back after they ran out |
+| `quorra_jobs_cancelled_total` | counter | Jobs stopped by a person |
+| `quorra_jobs_revived_total` | counter | Jobs put back in the queue by a person |
+| `quorra_jobs_removed_total{status}` | counter | Jobs taken out by the retention sweep |
 | `quorra_queue_length{queue,status}` | gauge | Jobs in each queue, refreshed on a timer |
 | `quorra_job_lifetime_seconds{queue,status}` | histogram | Acceptance to final state, so the waiting and the retries are in it |
 | `quorra_http_request_duration_seconds` | histogram | Labelled by route pattern, not by path |
@@ -366,6 +508,11 @@ A retry and a burial are separate counters.
 The previous version raised one counter for both, so the failure rate counted
 a buried job twice, and `quorra_jobs_dead_total` was declared and never raised
 by anything.
+
+Cancelling and reviving are counted apart from everything else, because both
+are a person acting.
+A rise in either says something about the operators rather than about the
+work, and folding them into the job counters would hide that.
 
 ---
 
@@ -380,7 +527,7 @@ reads no clock.
 A table test drives every state a job reaches with nothing installed.
 
 **Two stores answer to one suite.**
-[`internal/store/storetest`](internal/store/storetest) holds twenty four
+[`internal/store/storetest`](internal/store/storetest) holds fifty eight
 rules.
 The in-memory store passes them with nothing installed and the PostgreSQL
 store passes them against a real database.
@@ -389,23 +536,25 @@ in for a database it does not behave like.
 
 | Area | Lines | Holds |
 | ---- | ----- | ----- |
-| `internal/jobs` | 234 | The states, the retry decision, the backoff. Standard library only. |
-| `internal/store` | 265 | The interface, the errors, the defaults |
-| `internal/store/memory` | 330 | Jobs in a map |
-| `internal/store/postgres` | 532 | Jobs in PostgreSQL |
-| `internal/api` | 488 | The REST routes and the dashboard |
-| `internal/rpc` | 192 | The worker protocol |
-| `internal/server` | 281 | Assembly, the reclaim loop, shutdown |
-| `internal/config` | 294 | Reading the environment |
-| `internal/metrics` | 176 | What the server publishes |
-| `worker` | 456 | The package other projects import |
-| `cmd` | 472 | Three binaries |
-| **Total** | **3738** | 42 Go files, not counting 3187 lines of tests or 788 of generated code |
+| `internal/jobs` | 242 | The states, the retry decision, the backoff. Standard library only. |
+| `internal/store` | 400 | The interface, the errors, the defaults |
+| `internal/store/memory` | 523 | Jobs in a map |
+| `internal/store/postgres` | 838 | Jobs in PostgreSQL |
+| `internal/api` | 658 | The REST routes and the dashboard |
+| `internal/rpc` | 257 | The worker protocol |
+| `internal/server` | 352 | Assembly, the background loops, shutdown |
+| `internal/config` | 375 | Reading the environment |
+| `internal/metrics` | 215 | What the server publishes |
+| `worker` | 592 | The package a consumer imports |
+| `client` | 397 | The package a producer imports |
+| `cmd` | 622 | Three binaries |
+| **Total** | **5534** | 50 Go files, not counting 5686 lines of tests or 985 of generated code |
 
 ```
 proto/quorra/v1/       the worker protocol
 internal/quorrapb/     generated from it, and checked by CI
-migrations/            the schema, embedded so the tests apply the same bytes
+migrations/            four files, applied in name order and embedded so the
+                       tests apply the same bytes an operator reads
 deployments/           the compose stack and the Kubernetes manifests
 scripts/               generation, the link check, the smoke test
 ```
@@ -423,6 +572,9 @@ Five, directly.
 | `google.golang.org/protobuf` | The messages on it |
 | `github.com/prometheus/client_golang` | The metrics page |
 | `github.com/google/uuid` | Identifiers |
+
+Five, after adding a job lifecycle, filtering, heartbeats, idempotency,
+retention, results and a client package. None of those needed a new one.
 
 Seventy three modules in the whole graph, most of them beneath those five.
 
@@ -447,9 +599,9 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**128 cases pass. 103 of them need nothing installed.**
+**261 cases pass. 202 of them need nothing installed.**
 
-The 25 that do are the store contract suite against PostgreSQL:
+The 59 that do are the store contract suite against PostgreSQL:
 
 ```
 export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra_test?sslmode=disable"
