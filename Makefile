@@ -84,9 +84,12 @@ links: ## Check every relative link in the documentation
 	bash scripts/check-links.sh
 
 .PHONY: db-init
-db-init: ## Apply the schema to the database in DATABASE_URL
+db-init: ## Apply every migration to the database in DATABASE_URL
 	@test -n "$$DATABASE_URL" || { echo "Set DATABASE_URL first."; exit 1; }
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_init.sql
+	@for file in migrations/*.sql; do \
+		echo "applying $$file"; \
+		psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$$file" || exit 1; \
+	done
 
 .PHONY: dev
 dev: ## Start the whole stack in containers

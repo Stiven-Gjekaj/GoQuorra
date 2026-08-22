@@ -61,7 +61,7 @@ func connect(t *testing.T) *pgxpool.Pool {
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatalf("cannot reach the database named in QUORRA_TEST_DATABASE_URL: %v", err)
 	}
-	if _, err := pool.Exec(ctx, migrations.Schema); err != nil {
+	if _, err := pool.Exec(ctx, migrations.Schema()); err != nil {
 		t.Fatalf("cannot apply the schema: %v", err)
 	}
 
