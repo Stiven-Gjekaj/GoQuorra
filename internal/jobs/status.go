@@ -33,6 +33,14 @@ const (
 	// Dead means the job used every attempt it had. It stays in the table so
 	// that somebody can read the last error and decide what to do.
 	Dead Status = "dead"
+
+	// Cancelled means a person stopped the job.
+	//
+	// It is separate from Dead on purpose. Both are endings that are not a
+	// success, and the difference between them is the only thing that says
+	// whether the queue gave up or somebody decided. An operator counting
+	// failures wants one number and not the other.
+	Cancelled Status = "cancelled"
 )
 
 // All lists every status, in the order a job meets them.
@@ -40,7 +48,7 @@ const (
 // The dashboard and the queue statistics both walk this, so a status added
 // here appears in both without a second edit.
 func All() []Status {
-	return []Status{Pending, Leased, Succeeded, Dead}
+	return []Status{Pending, Leased, Succeeded, Dead, Cancelled}
 }
 
 // Valid reports whether s is a status this package knows.
@@ -51,7 +59,7 @@ func All() []Status {
 // nothing.
 func (s Status) Valid() bool {
 	switch s {
-	case Pending, Leased, Succeeded, Dead:
+	case Pending, Leased, Succeeded, Dead, Cancelled:
 		return true
 	default:
 		return false
@@ -60,7 +68,7 @@ func (s Status) Valid() bool {
 
 // Terminal reports whether a job in this state ever moves again.
 func (s Status) Terminal() bool {
-	return s == Succeeded || s == Dead
+	return s == Succeeded || s == Dead || s == Cancelled
 }
 
 // ParseStatus turns text into a Status, and refuses anything else.

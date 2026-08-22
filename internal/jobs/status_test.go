@@ -19,7 +19,7 @@ func TestAllHoldsEveryValidStatus(t *testing.T) {
 	// The other direction, over every status this package could name. The
 	// list is short and closed, so writing it out is honest. Deriving it from
 	// All would make the test agree with itself.
-	for _, s := range []Status{Pending, Leased, Succeeded, Dead} {
+	for _, s := range []Status{Pending, Leased, Succeeded, Dead, Cancelled} {
 		found := false
 		for _, listed := range All() {
 			if listed == s {
@@ -55,6 +55,7 @@ func TestTerminal(t *testing.T) {
 		Leased:    false,
 		Succeeded: true,
 		Dead:      true,
+		Cancelled: true,
 	}
 	for status, want := range cases {
 		if got := status.Terminal(); got != want {
@@ -76,5 +77,24 @@ func TestParseStatusRoundTrip(t *testing.T) {
 
 	if _, err := ParseStatus(""); err == nil {
 		t.Error("ParseStatus accepted the empty string")
+	}
+}
+
+// A cancelled job is not a dead one.
+//
+// Both are endings that are not a success, and an operator counting failures
+// wants one number and not the other. Letting cancel write "dead" would be
+// simpler and would make the dead letter queue a mix of jobs the queue gave up
+// on and jobs somebody stopped on purpose, which is a number nobody can act
+// on.
+func TestCancelledIsItsOwnEnding(t *testing.T) {
+	if Cancelled == Dead {
+		t.Fatal("a cancelled job is recorded as a dead one")
+	}
+	if !Cancelled.Terminal() {
+		t.Error("a cancelled job is not terminal, so something could still pick it up")
+	}
+	if !Cancelled.Valid() {
+		t.Error("cancelled is not a valid status")
 	}
 }
