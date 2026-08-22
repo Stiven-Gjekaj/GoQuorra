@@ -43,6 +43,15 @@ type Config struct {
 	// queue is drained at full speed and an idle one is asked once a second.
 	PollEvery time.Duration
 
+	// HeartbeatEvery is how often a running job asks for its lease to be
+	// pushed out. Zero means a third of LeaseTTL.
+	//
+	// A third, so that two heartbeats can be lost to a slow network or a
+	// restarting server before the lease actually runs out. A half leaves no
+	// room for the first one to be late, and a tenth asks ten times as often
+	// for the same protection.
+	HeartbeatEvery time.Duration
+
 	// ShutdownGrace is how long to wait for running jobs when stopping.
 	ShutdownGrace time.Duration
 
@@ -71,6 +80,12 @@ func (c *Config) fill() {
 	}
 	if c.PollEvery <= 0 {
 		c.PollEvery = time.Second
+	}
+	if c.HeartbeatEvery <= 0 {
+		c.HeartbeatEvery = c.LeaseTTL / 3
+	}
+	if c.HeartbeatEvery <= 0 {
+		c.HeartbeatEvery = time.Second
 	}
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 30 * time.Second
@@ -129,6 +144,10 @@ func (w *Worker) Register(jobType string, handler Handler) {
 
 // Handle attaches a function to a job type.
 func (w *Worker) Handle(jobType string, fn HandlerFunc) { w.Register(jobType, fn) }
+
+// HeartbeatEvery is how often a running job asks for its lease to be pushed
+// out, after the defaults have been filled in.
+func (w *Worker) HeartbeatEvery() time.Duration { return w.cfg.HeartbeatEvery }
 
 // Close releases the connection.
 func (w *Worker) Close() error { return w.conn.Close() }
@@ -250,23 +269,54 @@ func (w *Worker) leaseAndRun(ctx context.Context, queue string) (int, error) {
 	return len(response.GetJobs()), nil
 }
 
+// ErrLeaseLost is the reason a handler's context carries when the job stopped
+// being this worker's.
+//
+// A handler that wants to know why it is being stopped reads it:
+//
+//	if errors.Is(context.Cause(ctx), worker.ErrLeaseLost) {
+//		// The job was cancelled, or taken back. Stop, and do not write
+//		// anything: somebody else is running this now.
+//	}
+var ErrLeaseLost = errors.New("worker: the job is no longer ours")
+
 // run does one job and reports what happened.
 func (w *Worker) run(ctx context.Context, job Job) {
 	log := w.log.With("job", job.ID, "type", job.Type, "attempt", job.Attempts)
 
-	// The handler's time runs out when the lease does. Past that moment the
-	// server has given the job to somebody else, so anything this handler
-	// goes on to do is work that is being done twice.
-	handlerCtx := ctx
-	if !job.LeaseExpiresAt.IsZero() {
-		var cancel context.CancelFunc
-		handlerCtx, cancel = context.WithDeadline(context.WithoutCancel(ctx), job.LeaseExpiresAt)
-		defer cancel()
-	}
+	// The handler runs under a context this worker controls rather than
+	// under the one that polls, because the report at the end has to be sent
+	// even when the worker is stopping.
+	handlerCtx, stop := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer stop(nil)
+
+	// While the handler runs, the lease is pushed out. Without this a job
+	// slower than its lease is taken back and given to somebody else while
+	// this handler is still working on it.
+	keeping := make(chan struct{})
+	go func() {
+		defer close(keeping)
+		w.keepLease(handlerCtx, job, stop, log)
+	}()
 
 	started := time.Now()
 	err := w.call(handlerCtx, job)
 	took := time.Since(started)
+
+	// Stop asking for the lease before reporting on it, and wait for the
+	// asking to finish. A heartbeat racing the report is a call that can only
+	// lose, and it fills the log with a refusal for a job that is already
+	// done.
+	stop(nil)
+	<-keeping
+
+	if lost := context.Cause(handlerCtx); errors.Is(lost, ErrLeaseLost) {
+		// Reporting would be refused anyway, and the refusal reads as a
+		// fault. The job belongs to somebody else now.
+		log.Warn("the job stopped being ours while it ran, so the result is discarded",
+			"took", took, "handler_error", err)
+		return
+	}
 
 	if err != nil {
 		log.Warn("job failed", "error", err, "took", took)
@@ -276,6 +326,57 @@ func (w *Worker) run(ctx context.Context, job Job) {
 
 	log.Info("job done", "took", took)
 	w.report(ctx, job, quorrapb.Outcome_OUTCOME_SUCCEEDED, "")
+}
+
+// keepLease asks the server to push the lease out until the job finishes.
+//
+// It stops the handler when the answer says the job is no longer this
+// worker's, which is how a cancellation reaches a handler that is already
+// running. Nothing reaches into it directly: the next heartbeat simply fails.
+func (w *Worker) keepLease(ctx context.Context, job Job, stop context.CancelCauseFunc, log *slog.Logger) {
+	ticker := time.NewTicker(w.cfg.HeartbeatEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		// A short timeout of its own. A heartbeat that hangs for longer than
+		// the lease is worse than one that fails, because the handler goes on
+		// working while the job is given to somebody else.
+		beat, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.HeartbeatEvery)
+		_, err := w.client.Heartbeat(beat, &quorrapb.HeartbeatRequest{
+			JobId:    job.ID,
+			WorkerId: w.cfg.ID,
+			LeaseId:  job.leaseID,
+			ExtendBy: durationpb.New(w.cfg.LeaseTTL),
+		})
+		cancel()
+
+		switch {
+		case err == nil:
+			continue
+
+		case status.Code(err) == codes.FailedPrecondition, status.Code(err) == codes.NotFound:
+			// The job was cancelled, or its lease ran out and somebody else
+			// has it. Either way this handler must stop.
+			log.Warn("the job is no longer ours, so the handler is being stopped", "reason", err)
+			stop(ErrLeaseLost)
+			return
+
+		case ctx.Err() != nil:
+			// The handler finished while the call was out.
+			return
+
+		default:
+			// A network fault, or a server restarting. Say so and try again
+			// on the next tick: there are two more before the lease runs out.
+			log.Warn("cannot extend the lease", "error", err)
+		}
+	}
 }
 
 // call runs the handler and turns a panic into a failure.

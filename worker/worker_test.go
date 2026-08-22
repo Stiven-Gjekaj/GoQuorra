@@ -344,3 +344,175 @@ func run(t *testing.T, w *worker.Worker) func() {
 		}
 	}
 }
+
+// A handler slower than its lease finishes.
+//
+// This is the case the heartbeat exists for. Before it, the reclaimer took
+// the job at the expiry and gave it to somebody else while the first worker
+// was still running it, so the work happened twice and nothing said so.
+func TestASlowHandlerKeepsItsJob(t *testing.T) {
+	backing, dial := serve(t)
+
+	w, err := worker.New(worker.Config{
+		ID:         "patient",
+		ServerAddr: "passthrough:///bufnet",
+		Queues:     []string{"default"},
+		MaxJobs:    1,
+		// The server refuses a lease under a second, so asking for less than
+		// that gets a second anyway. The first version of this test asked for
+		// 300ms against a 900ms handler and passed with the heartbeat turned
+		// off, because the lease it actually held was longer than the work.
+		// The handler below runs for two and a half times the real lease.
+		LeaseTTL:       time.Second,
+		HeartbeatEvery: 200 * time.Millisecond,
+		PollEvery:      5 * time.Millisecond,
+		ShutdownGrace:  5 * time.Second,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialOptions:    dial,
+	})
+	if err != nil {
+		t.Fatalf("worker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	var runs atomic.Int64
+	w.Handle("slow", func(ctx context.Context, job worker.Job) error {
+		runs.Add(1)
+		select {
+		case <-time.After(2500 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	made, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A reclaimer, because without one there is nothing for the heartbeat to
+	// save the job from. The first version of this test had no sweeper and
+	// passed with the heartbeat disabled, which made it a test of nothing.
+	reclaiming, stopReclaiming := context.WithCancel(t.Context())
+	defer stopReclaiming()
+	go func() {
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-reclaiming.Done():
+				return
+			case <-tick.C:
+				_, _ = backing.ReclaimExpired(reclaiming, 10)
+			}
+		}
+	}()
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the slow job to finish", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Succeeded
+	})
+
+	// Once. A job taken back mid-flight is handed out again, so a second run
+	// is exactly what a lease that was not held looks like.
+	if got := runs.Load(); got != 1 {
+		t.Errorf("the handler ran %d times, want once. The lease was not held.", got)
+	}
+}
+
+// Cancelling a job stops the handler that is running it.
+//
+// Nothing reaches into the handler. Its next heartbeat is refused, the worker
+// cancels the context it gave the handler, and a handler that respects its
+// context stops there.
+func TestCancellingAJobStopsTheHandler(t *testing.T) {
+	backing, dial := serve(t)
+
+	w, err := worker.New(worker.Config{
+		ID:             "stoppable",
+		ServerAddr:     "passthrough:///bufnet",
+		Queues:         []string{"default"},
+		MaxJobs:        1,
+		LeaseTTL:       2 * time.Second,
+		HeartbeatEvery: 20 * time.Millisecond,
+		PollEvery:      5 * time.Millisecond,
+		ShutdownGrace:  5 * time.Second,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialOptions:    dial,
+	})
+	if err != nil {
+		t.Fatalf("worker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	started := make(chan struct{})
+	stopped := make(chan error, 1)
+	var once sync.Once
+
+	w.Handle("long", func(ctx context.Context, job worker.Job) error {
+		once.Do(func() { close(started) })
+		select {
+		case <-time.After(30 * time.Second):
+			stopped <- nil
+		case <-ctx.Done():
+			// The reason is on the context, so a handler can tell being
+			// cancelled from the worker shutting down.
+			stopped <- context.Cause(ctx)
+		}
+		return nil
+	})
+
+	made, err := backing.Create(t.Context(), store.NewJob{Type: "long"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	<-started
+	if _, err := backing.Cancel(t.Context(), made.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	select {
+	case cause := <-stopped:
+		if !errors.Is(cause, worker.ErrLeaseLost) {
+			t.Errorf("the handler stopped because of %v, want ErrLeaseLost", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler was never stopped")
+	}
+
+	// And the job stays cancelled, rather than the worker reporting over it.
+	time.Sleep(100 * time.Millisecond)
+	job, _ := backing.Get(t.Context(), made.ID)
+	if job.Status != jobs.Cancelled {
+		t.Errorf("status = %q, want the job to stay cancelled", job.Status)
+	}
+}
+
+func TestTheHeartbeatIntervalDefaultsToAThirdOfTheLease(t *testing.T) {
+	_, dial := serve(t)
+
+	w, err := worker.New(worker.Config{
+		ServerAddr:  "passthrough:///bufnet",
+		LeaseTTL:    30 * time.Second,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialOptions: dial,
+	})
+	if err != nil {
+		t.Fatalf("worker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// A third, so that two heartbeats can be lost to a slow network before
+	// the lease actually runs out.
+	if got := w.HeartbeatEvery(); got != 10*time.Second {
+		t.Errorf("the interval is %s, want a third of the lease", got)
+	}
+}
