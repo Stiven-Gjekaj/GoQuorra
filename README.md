@@ -599,7 +599,7 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**261 cases pass. 202 of them need nothing installed.**
+**262 cases pass. 203 of them need nothing installed.**
 
 The other 59 need a database. Fifty eight of them are the store contract
 suite, and the fifty ninth is the test that holds the suite, which skips
