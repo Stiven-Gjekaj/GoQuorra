@@ -516,3 +516,86 @@ func TestTheHeartbeatIntervalDefaultsToAThirdOfTheLease(t *testing.T) {
 		t.Errorf("the interval is %s, want a third of the lease", got)
 	}
 }
+
+func TestAHandlerCanKeepWhatItProduced(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	w.HandleResult("count", func(_ context.Context, job worker.Job) (any, error) {
+		return map[string]int{"rows": 41}, nil
+	})
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "count"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the job to finish", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Succeeded
+	})
+
+	job, _ := backing.Get(t.Context(), made.ID)
+	if string(job.Result) != `{"rows":41}` {
+		t.Errorf("the result is %s", job.Result)
+	}
+}
+
+// A handler that returns something unserialisable has a defect. Reporting
+// success with no result would hide it, so the job fails instead.
+func TestAResultThatCannotBeEncodedFailsTheJob(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	w.HandleResult("bad", func(_ context.Context, job worker.Job) (any, error) {
+		// A channel cannot be marshalled.
+		return make(chan int), nil
+	})
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "bad"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the job to be buried", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Dead
+	})
+
+	job, _ := backing.Get(t.Context(), made.ID)
+	if !strings.Contains(job.LastError, "not JSON") {
+		t.Errorf("the reason does not say what went wrong: %q", job.LastError)
+	}
+}
+
+// A handler registered with Handle keeps nothing, and that path still works.
+func TestAHandlerWithNoResultStoresNone(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	w.Handle("plain", func(context.Context, worker.Job) error { return nil })
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "plain"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the job to finish", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Succeeded
+	})
+
+	job, _ := backing.Get(t.Context(), made.ID)
+	if len(job.Result) != 0 {
+		t.Errorf("a plain handler stored the result %s", job.Result)
+	}
+}

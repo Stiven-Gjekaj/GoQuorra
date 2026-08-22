@@ -93,3 +93,14 @@ type HandlerFunc func(ctx context.Context, job Job) error
 
 // Handle calls the function.
 func (f HandlerFunc) Handle(ctx context.Context, job Job) error { return f(ctx, job) }
+
+// ResultFunc is a handler that produces something worth keeping.
+//
+// Whatever it returns is marshalled to JSON and stored on the job, where the
+// API serves it back. Returning nil keeps nothing.
+//
+// Keep it small. A queue row is read by every listing that touches it, and
+// the server refuses a result past its limit rather than trimming one: half a
+// JSON document is not a smaller result, it is a broken one. Put a large
+// value where it belongs and return a reference to it.
+type ResultFunc func(ctx context.Context, job Job) (any, error)

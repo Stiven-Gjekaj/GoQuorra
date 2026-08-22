@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -103,7 +104,7 @@ type Worker struct {
 	client quorrapb.QueueServiceClient
 
 	mu       sync.RWMutex
-	handlers map[string]Handler
+	handlers map[string]ResultFunc
 
 	// running counts the jobs in flight, so that a stopping worker can wait
 	// for them. The old worker passed context.Background() to every job and
@@ -131,19 +132,29 @@ func New(cfg Config) (*Worker, error) {
 		log:      cfg.Logger.With("worker", cfg.ID),
 		conn:     conn,
 		client:   quorrapb.NewQueueServiceClient(conn),
-		handlers: make(map[string]Handler),
+		handlers: make(map[string]ResultFunc),
 	}, nil
 }
 
 // Register attaches a handler to a job type.
 func (w *Worker) Register(jobType string, handler Handler) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.handlers[jobType] = handler
+	w.HandleResult(jobType, func(ctx context.Context, job Job) (any, error) {
+		return nil, handler.Handle(ctx, job)
+	})
 }
 
 // Handle attaches a function to a job type.
 func (w *Worker) Handle(jobType string, fn HandlerFunc) { w.Register(jobType, fn) }
+
+// HandleResult attaches a function that produces something worth keeping.
+//
+// What it returns is stored on the job and served back by the API. Everything
+// else about it is the same as Handle.
+func (w *Worker) HandleResult(jobType string, fn ResultFunc) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.handlers[jobType] = fn
+}
 
 // HeartbeatEvery is how often a running job asks for its lease to be pushed
 // out, after the defaults have been filled in.
@@ -300,7 +311,7 @@ func (w *Worker) run(ctx context.Context, job Job) {
 	}()
 
 	started := time.Now()
-	err := w.call(handlerCtx, job)
+	result, err := w.call(handlerCtx, job)
 	took := time.Since(started)
 
 	// Stop asking for the lease before reporting on it, and wait for the
@@ -320,12 +331,12 @@ func (w *Worker) run(ctx context.Context, job Job) {
 
 	if err != nil {
 		log.Warn("job failed", "error", err, "took", took)
-		w.report(ctx, job, quorrapb.Outcome_OUTCOME_FAILED, err.Error())
+		w.report(ctx, job, quorrapb.Outcome_OUTCOME_FAILED, err.Error(), nil)
 		return
 	}
 
 	log.Info("job done", "took", took)
-	w.report(ctx, job, quorrapb.Outcome_OUTCOME_SUCCEEDED, "")
+	w.report(ctx, job, quorrapb.Outcome_OUTCOME_SUCCEEDED, "", result)
 }
 
 // keepLease asks the server to push the lease out until the job finishes.
@@ -385,7 +396,7 @@ func (w *Worker) keepLease(ctx context.Context, job Job, stop context.CancelCaus
 // worker down, which loses every other job in flight as well, and each of
 // those then has to wait out its lease before anybody else can run it. One
 // bad payload should cost one job.
-func (w *Worker) call(ctx context.Context, job Job) (err error) {
+func (w *Worker) call(ctx context.Context, job Job) (result []byte, err error) {
 	w.mu.RLock()
 	handler, known := w.handlers[job.Type]
 	w.mu.RUnlock()
@@ -393,7 +404,7 @@ func (w *Worker) call(ctx context.Context, job Job) (err error) {
 	if !known {
 		// Named plainly, because the usual cause is a deployment where the
 		// producer knows a job type and the workers do not yet.
-		return fmt.Errorf("no handler is registered for the job type %q", job.Type)
+		return nil, fmt.Errorf("no handler is registered for the job type %q", job.Type)
 	}
 
 	defer func() {
@@ -402,7 +413,19 @@ func (w *Worker) call(ctx context.Context, job Job) (err error) {
 		}
 	}()
 
-	return handler.Handle(ctx, job)
+	value, err := handler(ctx, job)
+	if err != nil || value == nil {
+		return nil, err
+	}
+
+	// A value that cannot be marshalled fails the job rather than being
+	// dropped. A handler that returns something unserialisable has a defect,
+	// and reporting success with no result would hide it.
+	encoded, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("the handler returned a result that is not JSON: %w", marshalErr)
+	}
+	return encoded, nil
 }
 
 // report tells the server what happened.
@@ -411,7 +434,7 @@ func (w *Worker) call(ctx context.Context, job Job) (err error) {
 // ended, which is exactly the moment a report matters most: a worker stopping
 // cleanly should hand its results back rather than leave every job it was
 // running to be repeated by somebody else after the lease expires.
-func (w *Worker) report(ctx context.Context, job Job, outcome quorrapb.Outcome, message string) {
+func (w *Worker) report(ctx context.Context, job Job, outcome quorrapb.Outcome, message string, result []byte) {
 	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
@@ -421,6 +444,7 @@ func (w *Worker) report(ctx context.Context, job Job, outcome quorrapb.Outcome, 
 		LeaseId:  job.leaseID,
 		Outcome:  outcome,
 		Error:    message,
+		Result:   result,
 	})
 	if err == nil {
 		return
