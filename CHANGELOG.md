@@ -13,6 +13,76 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Acting on the queue
+
+The rebuild made the queue correct. This makes it usable: a dead letter queue
+you can act on, a way to find one job among a month of them, a lease a slow
+job can hold, a submission that is safe to repeat, a table that does not grow
+for ever, somewhere to put what a job produced, and a package for the half of
+the system that submits work.
+
+**Added**
+
+- **Cancel and revive.** A job that has not finished can be stopped, and a
+  dead or cancelled one can be put back with the attempt count set to zero.
+  The zero is the point: somebody clearing a dead letter queue has usually
+  just fixed the thing that broke, and leaving the count where it was gives
+  the job one more try and sends it straight back.
+- **A cancelled status**, separate from dead. Both are endings that are not a
+  success, and the difference between them is the only thing that says whether
+  the queue gave up or somebody decided.
+- **Filtering and paging.** `GET /v1/jobs` narrows by queue, status and type,
+  and pages with a cursor rather than an offset. An offset re-reads and skips
+  the rows before the page, so a job submitted while somebody is reading
+  shifts every later page by one, showing a row twice and hiding another.
+- **A heartbeat.** A running job asks for its lease to be pushed out three
+  times per lease, so a handler slower than its lease is no longer taken away
+  mid-flight. When the answer says the job is no longer this worker's, the
+  handler's context is cancelled with `worker.ErrLeaseLost` as its cause,
+  which is how a cancellation reaches a handler that is already running.
+- **An idempotency key**, in the body or the `Idempotency-Key` header. A
+  repeated submission gives back the first job and answers 200 rather than
+  201. The check is `ON CONFLICT` and not a read followed by a write, because
+  two submissions carrying one key arriving together is the case it exists
+  for.
+- **Retention.** Finished jobs can be removed once they are old enough, per
+  status, in bounded batches. Every setting defaults to keeping the job for
+  ever, because a queue holds the only record that a piece of work happened.
+- **A result.** A handler registered with `HandleResult` returns a value as
+  well as an error, and the value is stored on the job and served back. The
+  server bounds it and refuses one that is too large rather than trimming it.
+- **A client package.** The other half of the worker package. A refusal
+  arrives as `ErrNotFound`, `ErrWrongState` or `ErrUnauthorized`, and `Each`
+  walks every page for a caller who wants all of something.
+- **A migration runner.** Every file in `migrations/` is applied in name
+  order. Two rules are tested rather than trusted: a four digit prefix, so
+  that 10 does not sort before 9, and IF NOT EXISTS on every CREATE, so that
+  a second apply is not an outage.
+- **Dashboard filters and actions.** A row of status buttons, and a cancel or
+  revive button on each job. Only the actions the server would accept are
+  offered, because a button that always answers 409 teaches the reader to
+  ignore the row.
+- **`quorractl cancel`, `quorractl revive`**, filters on `list`, and `-all` to
+  follow the pages. The tool has tests for the first time.
+
+**Fixed**
+
+- **The command line tool refused an option that came after an argument.** The
+  flag package stops parsing at the first token that is not an option, so
+  `quorractl get 6f1c0c64 -server http://elsewhere` read the address as a
+  second job identifier. Every other tool on the machine takes them in either
+  order.
+- **The dashboard pushed its action buttons off the side of the table**, under
+  a created column holding the full date and seconds of every row and an error
+  column with nothing capping it.
+
+**Changed**
+
+- **`Recent` became `List` with a filter.** One method instead of two, and the
+  narrow one was the special case.
+- **`Create` reports whether it stored anything**, so the HTTP layer can
+  answer 200 or 201.
+
 ### The rebuild
 
 The project was rebuilt from an empty tree.
