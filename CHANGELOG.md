@@ -75,6 +75,11 @@ the system that submits work.
 - **The dashboard pushed its action buttons off the side of the table**, under
   a created column holding the full date and seconds of every row and an error
   column with nothing capping it.
+- **The dashboard listed a result under a heading that says a fault.** The
+  result of a succeeded job and the error of a failed one share a cell,
+  because a job has one or the other and never both. The heading said Last
+  error, so a job that finished correctly carried the word "result"
+  underneath it. The heading is now Outcome.
 
 **Changed**
 
