@@ -36,6 +36,16 @@ var (
 	// job is holding. The usual cause is a worker that stalled long enough
 	// for the reclaimer to take the job back and give it to somebody else.
 	ErrLeaseNotValid = errors.New("store: lease is not valid")
+
+	// ErrWrongState means the job exists and the operation does not apply to
+	// a job in the state it is in. Cancelling a job that has already finished
+	// is the common one.
+	//
+	// It is separate from ErrNotFound because the answer to a caller is
+	// different: a missing job will never be there, and a job in the wrong
+	// state may be in the right one later. The HTTP layer answers 404 to the
+	// first and 409 to the second.
+	ErrWrongState = errors.New("store: the job is in the wrong state")
 )
 
 // Job is one job, as it is stored.
@@ -153,6 +163,17 @@ type Store interface {
 	// It returns ErrLeaseNotValid when the lease named is not the lease the
 	// job holds, and changes nothing in that case.
 	Report(ctx context.Context, rep Report) (*Job, error)
+
+	// Cancel stops a job that has not finished, and returns it as stored.
+	//
+	// A job a worker is holding can be cancelled. Its lease is cleared, so
+	// the report that worker sends later is refused in exactly the way a
+	// reclaimed job's is. Nothing here reaches into the worker: a handler
+	// already running goes on running, and the queue simply stops caring what
+	// it says.
+	//
+	// It returns ErrWrongState for a job that has already finished.
+	Cancel(ctx context.Context, id string) (*Job, error)
 
 	// ReclaimExpired returns jobs whose lease has run out, and reports how
 	// many it moved. A job that has no attempts left is buried instead.

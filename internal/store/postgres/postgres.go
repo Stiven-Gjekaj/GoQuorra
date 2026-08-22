@@ -93,13 +93,17 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, error) 
 	return stored, nil
 }
 
+// parseID checks that an identifier could name a row.
+//
+// The column is a UUID, so text that is not one is not a job that exists.
+// Passing it on gives an error naming a type conversion, which sends the
+// reader to the database when the answer is that the caller asked for
+// something that cannot be there.
+func parseID(id string) (uuid.UUID, error) { return uuid.Parse(id) }
+
 // Get returns one job.
 func (s *Store) Get(ctx context.Context, id string) (*store.Job, error) {
-	// The column is a UUID, so text that is not one is not a job that exists.
-	// Passing it on gives an error naming a type conversion, which sends the
-	// reader to the database when the answer is that the caller asked for
-	// something that cannot be there.
-	if _, err := uuid.Parse(id); err != nil {
+	if _, err := parseID(id); err != nil {
 		return nil, store.ErrNotFound
 	}
 

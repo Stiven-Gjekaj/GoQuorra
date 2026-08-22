@@ -477,6 +477,97 @@ var cases = []testCase{
 		}
 	}},
 
+	{"a waiting job can be cancelled", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		clock.Advance(time.Second)
+		got, err := s.Cancel(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		if got.Status != jobs.Cancelled {
+			t.Errorf("status = %q, want %q", got.Status, jobs.Cancelled)
+		}
+		requireTime(t, "updated at", got.UpdatedAt, Start.Add(time.Second))
+
+		// And it is really gone from the queue, rather than merely marked.
+		if handed := lease(t, s, store.LeaseRequest{}); len(handed) != 0 {
+			t.Errorf("a cancelled job was handed to a worker: %v", ids(handed))
+		}
+	}},
+
+	// Cancelling a job a worker holds is the case that matters.
+	//
+	// Nothing here reaches into the worker, and nothing can: a handler
+	// already running goes on running. What the queue can do is stop caring
+	// what that handler says, and it does it by clearing the lease, so the
+	// report arrives against a lease the job no longer holds and is refused
+	// on exactly the path a reclaimed job uses.
+	{"cancelling a job a worker holds refuses that worker's report", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{WorkerID: "busy"})[0]
+
+		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		_, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeDone,
+		})
+		if !errors.Is(err, store.ErrLeaseNotValid) {
+			t.Fatalf("the report from the cancelled worker gave %v, want ErrLeaseNotValid", err)
+		}
+
+		stored, _ := s.Get(ctx(), made.ID)
+		if stored.Status != jobs.Cancelled {
+			t.Errorf("status = %q, want the job to stay cancelled", stored.Status)
+		}
+	}},
+
+	{"a job that has finished cannot be cancelled", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+		if _, err := s.Report(ctx(), store.Report{JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		_, err := s.Cancel(ctx(), made.ID)
+		if !errors.Is(err, store.ErrWrongState) {
+			t.Fatalf("Cancel of a finished job gave %v, want ErrWrongState", err)
+		}
+
+		// And it is still succeeded, not quietly overwritten.
+		stored, _ := s.Get(ctx(), made.ID)
+		if stored.Status != jobs.Succeeded {
+			t.Errorf("status = %q, want %q", stored.Status, jobs.Succeeded)
+		}
+	}},
+
+	{"cancelling twice is refused the second time", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			t.Fatalf("the first Cancel: %v", err)
+		}
+		if _, err := s.Cancel(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+			t.Fatalf("the second Cancel gave %v, want ErrWrongState", err)
+		}
+	}},
+
+	{"cancelling an unknown job is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
+		_, err := s.Cancel(ctx(), "8de1a3d0-0000-0000-0000-000000000000")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Cancel of an unknown job gave %v, want ErrNotFound", err)
+		}
+
+		// Text that is not an identifier at all is also a missing job.
+		if _, err := s.Cancel(ctx(), "not-a-uuid"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Cancel of a malformed identifier gave %v, want ErrNotFound", err)
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

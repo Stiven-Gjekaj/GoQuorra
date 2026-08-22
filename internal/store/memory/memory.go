@@ -13,6 +13,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -176,6 +177,36 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 	}
 
 	s.apply(rec, rep.Outcome, rep.Error, now)
+	return clone(&rec.job), nil
+}
+
+// Cancel stops a job that has not finished.
+func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	now := s.opts.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[id]
+	if !found {
+		return nil, store.ErrNotFound
+	}
+	if rec.job.Status.Terminal() {
+		return nil, fmt.Errorf("%w: the job is %s and has already finished", store.ErrWrongState, rec.job.Status)
+	}
+
+	// The lease goes with it. A worker still running this job reports later
+	// and is refused, which is the same path a reclaimed job takes.
+	rec.job.Status = jobs.Cancelled
+	rec.job.LeaseID = ""
+	rec.job.LeasedBy = ""
+	rec.job.LeaseExpiresAt = nil
+	rec.job.UpdatedAt = now
+
 	return clone(&rec.job), nil
 }
 
