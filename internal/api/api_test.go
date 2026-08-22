@@ -387,3 +387,138 @@ func TestTheVerbsRefuseAGet(t *testing.T) {
 		t.Errorf("a GET changed the job to %q", got)
 	}
 }
+
+func listed(t *testing.T, handler http.Handler, query string) (ids []string, next string) {
+	t.Helper()
+
+	got := withKey(t, handler, "GET", "/v1/jobs"+query, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET /v1/jobs%s = %d, body %s", query, got.Code, got.Body)
+	}
+
+	var answer struct {
+		Jobs []struct {
+			ID string `json:"id"`
+		} `json:"jobs"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	for _, job := range answer.Jobs {
+		ids = append(ids, job.ID)
+	}
+	return ids, answer.NextCursor
+}
+
+func TestTheListNarrowsByQueueStatusAndType(t *testing.T) {
+	handler, _ := serve(t)
+
+	wanted := submit(t, handler, `{"type":"email","queue":"mail"}`)
+	submit(t, handler, `{"type":"email","queue":"other"}`)
+	submit(t, handler, `{"type":"report","queue":"mail"}`)
+
+	if got, _ := listed(t, handler, "?queue=mail"); len(got) != 2 {
+		t.Errorf("queue=mail gave %d jobs, want 2", len(got))
+	}
+	if got, _ := listed(t, handler, "?type=email"); len(got) != 2 {
+		t.Errorf("type=email gave %d jobs, want 2", len(got))
+	}
+
+	both, _ := listed(t, handler, "?queue=mail&type=email")
+	if len(both) != 1 || both[0] != wanted {
+		t.Errorf("the two filters together gave %v", both)
+	}
+
+	if got, _ := listed(t, handler, "?status=pending"); len(got) != 3 {
+		t.Errorf("status=pending gave %d jobs, want 3", len(got))
+	}
+	if got, _ := listed(t, handler, "?status=dead"); len(got) != 0 {
+		t.Errorf("status=dead gave %d jobs, want none", len(got))
+	}
+}
+
+// A status the server does not know is refused, and the answer lists the ones
+// it does. A caller who guessed wrong once guesses wrong again without them.
+func TestABadStatusFilterNamesTheValidOnes(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "GET", "/v1/jobs?status=processing", "")
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("status=processing = %d, want 400", got.Code)
+	}
+	for _, want := range []string{"pending", "leased", "succeeded", "dead", "cancelled"} {
+		if !strings.Contains(got.Body.String(), want) {
+			t.Errorf("the answer does not list %q: %s", want, got.Body)
+		}
+	}
+}
+
+func TestTheListPagesWithACursor(t *testing.T) {
+	handler, _ := serve(t)
+
+	const total = 7
+	var made []string
+	for i := 0; i < total; i++ {
+		made = append(made, submit(t, handler, `{"type":"work"}`))
+	}
+
+	seen := map[string]int{}
+	query := "?limit=3"
+	for page := 0; page < total; page++ {
+		got, next := listed(t, handler, query)
+		if len(got) == 0 {
+			break
+		}
+		for _, id := range got {
+			seen[id]++
+		}
+		if next == "" {
+			break
+		}
+		query = "?limit=3&before=" + next
+	}
+
+	for _, id := range made {
+		if seen[id] != 1 {
+			t.Errorf("%s was seen %d times, want once", id, seen[id])
+		}
+	}
+}
+
+// A short page is the end, so it carries no cursor. Handing one back there
+// makes every caller ask once more to find that out.
+func TestAShortPageCarriesNoCursor(t *testing.T) {
+	handler, _ := serve(t)
+
+	submit(t, handler, `{"type":"work"}`)
+	submit(t, handler, `{"type":"work"}`)
+
+	full, next := listed(t, handler, "?limit=2")
+	if len(full) != 2 || next == "" {
+		t.Errorf("a full page gave %d jobs and cursor %q, want a cursor", len(full), next)
+	}
+
+	short, next := listed(t, handler, "?limit=10")
+	if len(short) != 2 {
+		t.Fatalf("got %d jobs", len(short))
+	}
+	if next != "" {
+		t.Errorf("a short page carried the cursor %q", next)
+	}
+}
+
+// A stale cursor is 400 and not 404. The route exists, and answering 404 to a
+// listing suggests it does not.
+func TestAStaleCursorIsABadRequest(t *testing.T) {
+	handler, _ := serve(t)
+	submit(t, handler, `{"type":"work"}`)
+
+	got := withKey(t, handler, "GET", "/v1/jobs?before=6f1c0c64-0000-0000-0000-000000000000", "")
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("a stale cursor = %d, want 400, body %s", got.Code, got.Body)
+	}
+	if !strings.Contains(got.Body.String(), "without it") {
+		t.Errorf("the answer does not say what to do: %s", got.Body)
+	}
+}

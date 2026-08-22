@@ -4,11 +4,14 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
 
@@ -142,16 +145,50 @@ func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
 	a.send(w, http.StatusOK, job)
 }
 
-func (a *API) recentJobs(w http.ResponseWriter, r *http.Request) {
+// listJobs handles GET /v1/jobs.
+//
+// Filters are query parameters and paging is a cursor. The answer carries the
+// cursor for the next page rather than making the caller know that it is the
+// identifier of the last row, which keeps the shape of the cursor a detail
+// that can change.
+func (a *API) listJobs(w http.ResponseWriter, r *http.Request) {
 	limit, err := readLimit(r, 50, 1000)
 	if err != nil {
 		a.fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	found, err := a.opts.Store.List(r.Context(), store.Filter{Limit: limit})
+	query := r.URL.Query()
+	filter := store.Filter{
+		Queue:  query.Get("queue"),
+		Type:   query.Get("type"),
+		Limit:  limit,
+		Before: query.Get("before"),
+	}
+
+	if wanted := query.Get("status"); wanted != "" {
+		status, err := jobs.ParseStatus(wanted)
+		if err != nil {
+			// The valid ones are listed, because a caller who guessed wrong
+			// once will guess wrong again without them.
+			a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+				"%q is not a status. It must be one of %s", wanted, strings.Join(statusNames(), ", ")))
+			return
+		}
+		filter.Status = status
+	}
+
+	found, err := a.opts.Store.List(r.Context(), filter)
 	if err != nil {
-		a.failWith(w, err, "cannot read the recent jobs")
+		// A cursor naming no job is the caller's to fix, and 400 rather than
+		// 404: the route exists, and answering 404 to a listing suggests it
+		// does not.
+		if errors.Is(err, store.ErrNotFound) {
+			a.fail(w, http.StatusBadRequest,
+				"the before cursor names no job, so the page cannot be placed. Ask again without it.")
+			return
+		}
+		a.failWith(w, err, "cannot list the jobs")
 		return
 	}
 
@@ -160,7 +197,27 @@ func (a *API) recentJobs(w http.ResponseWriter, r *http.Request) {
 	if found == nil {
 		found = []*store.Job{}
 	}
-	a.send(w, http.StatusOK, map[string]any{"jobs": found})
+
+	answer := map[string]any{"jobs": found}
+
+	// A cursor only when the page was full. A short page is the end, and
+	// handing back a cursor there makes every caller ask one more time to
+	// find that out.
+	if len(found) == limit {
+		answer["next_cursor"] = found[len(found)-1].ID
+	}
+
+	a.send(w, http.StatusOK, answer)
+}
+
+// statusNames lists the statuses for an error message.
+func statusNames() []string {
+	all := jobs.All()
+	names := make([]string, len(all))
+	for i, status := range all {
+		names[i] = status.String()
+	}
+	return names
 }
 
 func (a *API) queueStats(w http.ResponseWriter, r *http.Request) {

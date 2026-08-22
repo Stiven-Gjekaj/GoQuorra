@@ -76,7 +76,7 @@ func (a *API) Handler() http.Handler {
 
 	// Guarded.
 	mux.Handle("POST /v1/jobs", a.guard(http.HandlerFunc(a.createJob)))
-	mux.Handle("GET /v1/jobs", a.guard(http.HandlerFunc(a.recentJobs)))
+	mux.Handle("GET /v1/jobs", a.guard(http.HandlerFunc(a.listJobs)))
 	mux.Handle("GET /v1/jobs/{id}", a.guard(http.HandlerFunc(a.getJob)))
 	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(http.HandlerFunc(a.cancelJob)))
 	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(http.HandlerFunc(a.reviveJob)))
