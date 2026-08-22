@@ -58,6 +58,18 @@ type Server struct {
 	// StatsEvery is how often the queue length gauge is refreshed.
 	StatsEvery time.Duration
 
+	// Retention says how long to keep a job in each finished state. A state
+	// missing from the map, or set to zero, is kept for ever.
+	//
+	// Keeping for ever is the default for all three, and that is deliberate.
+	// A queue holds the only record that a piece of work happened, and a
+	// default that quietly removed it would take that record from every
+	// deployment that upgraded without reading the notes.
+	Retention map[jobs.Status]time.Duration
+
+	RetentionEvery time.Duration
+	RetentionBatch int
+
 	ShutdownGrace time.Duration
 	MaxBodyBytes  int64
 }
@@ -102,6 +114,14 @@ func LoadServer(getenv Getenv) (*Server, error) {
 		ReclaimBatch: l.number("QUORRA_RECLAIM_BATCH", 100),
 		StatsEvery:   l.duration("QUORRA_STATS_EVERY", 15*time.Second),
 
+		Retention: map[jobs.Status]time.Duration{
+			jobs.Succeeded: l.duration("QUORRA_RETAIN_SUCCEEDED", 0),
+			jobs.Dead:      l.duration("QUORRA_RETAIN_DEAD", 0),
+			jobs.Cancelled: l.duration("QUORRA_RETAIN_CANCELLED", 0),
+		},
+		RetentionEvery: l.duration("QUORRA_RETENTION_EVERY", time.Hour),
+		RetentionBatch: l.number("QUORRA_RETENTION_BATCH", 1000),
+
 		ShutdownGrace: l.duration("QUORRA_SHUTDOWN_GRACE", 15*time.Second),
 		MaxBodyBytes:  int64(l.number("QUORRA_MAX_BODY_BYTES", 1<<20)),
 	}
@@ -130,6 +150,18 @@ func (c *Server) validate() error {
 	if c.StatsEvery <= 0 {
 		problems = append(problems, fmt.Errorf("config: QUORRA_STATS_EVERY is %s, and a ticker cannot run on it", c.StatsEvery))
 	}
+	for status, keep := range c.Retention {
+		if keep < 0 {
+			problems = append(problems, fmt.Errorf(
+				"config: the retention for %s jobs is %s, and a negative one would remove every job of that status at once", status, keep))
+		}
+	}
+	if c.RetentionEvery <= 0 {
+		problems = append(problems, fmt.Errorf("config: QUORRA_RETENTION_EVERY is %s, and a ticker cannot run on it", c.RetentionEvery))
+	}
+	if c.RetentionBatch <= 0 {
+		problems = append(problems, fmt.Errorf("config: QUORRA_RETENTION_BATCH is %d, so the sweep would remove nothing", c.RetentionBatch))
+	}
 	if c.ReclaimBatch <= 0 {
 		problems = append(problems, fmt.Errorf("config: QUORRA_RECLAIM_BATCH is %d, so the reclaimer would take nothing back", c.ReclaimBatch))
 	}
@@ -138,6 +170,18 @@ func (c *Server) validate() error {
 	}
 
 	return errors.Join(problems...)
+}
+
+// RemovesAnything reports whether any retention is switched on. The server
+// says so at startup, because a sweep that removes jobs is worth one line in
+// a log that somebody reads after an upgrade.
+func (c *Server) RemovesAnything() bool {
+	for _, keep := range c.Retention {
+		if keep > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // UsesMemory reports whether the server keeps its jobs in memory. The server

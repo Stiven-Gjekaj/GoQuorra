@@ -2,6 +2,8 @@ package config
 
 import (
 	"log/slog"
+
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"strings"
 	"testing"
 	"time"
@@ -218,5 +220,62 @@ func TestLoadWorkerRefusesSettingsThatDoNothing(t *testing.T) {
 		if _, err := LoadWorker(FromMap(env)); err == nil {
 			t.Errorf("%v was accepted", env)
 		}
+	}
+}
+
+// Every job is kept for ever unless somebody says otherwise.
+//
+// A queue holds the only record that a piece of work happened. A default that
+// quietly removed it would take that record from every deployment that
+// upgraded without reading the notes.
+func TestNothingIsRemovedByDefault(t *testing.T) {
+	got, err := LoadServer(FromMap(minimalServer()))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	if got.RemovesAnything() {
+		t.Error("the default configuration removes jobs")
+	}
+	for status, keep := range got.Retention {
+		if keep != 0 {
+			t.Errorf("%s jobs are kept for %s by default", status, keep)
+		}
+	}
+}
+
+func TestRetentionIsReadPerStatus(t *testing.T) {
+	env := minimalServer()
+	env["QUORRA_RETAIN_SUCCEEDED"] = "168h"
+	env["QUORRA_RETAIN_CANCELLED"] = "24h"
+
+	got, err := LoadServer(FromMap(env))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	if got.Retention[jobs.Succeeded] != 168*time.Hour {
+		t.Errorf("succeeded = %s", got.Retention[jobs.Succeeded])
+	}
+	if got.Retention[jobs.Cancelled] != 24*time.Hour {
+		t.Errorf("cancelled = %s", got.Retention[jobs.Cancelled])
+	}
+	// Dead jobs are evidence, and this deployment did not ask for them to go.
+	if got.Retention[jobs.Dead] != 0 {
+		t.Errorf("dead = %s, want kept for ever", got.Retention[jobs.Dead])
+	}
+	if !got.RemovesAnything() {
+		t.Error("RemovesAnything is false with two retentions set")
+	}
+}
+
+// A negative retention would put the cutoff in the future and remove every
+// job of that status on the first sweep.
+func TestANegativeRetentionIsRefused(t *testing.T) {
+	env := minimalServer()
+	env["QUORRA_RETAIN_SUCCEEDED"] = "-1h"
+
+	if _, err := LoadServer(FromMap(env)); err == nil {
+		t.Fatal("a negative retention was accepted")
 	}
 }
