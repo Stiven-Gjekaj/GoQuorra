@@ -108,6 +108,14 @@ message ReportRequest {
   // error is kept on the job and shown in the dashboard. It is ignored when
   // the outcome is a success.
   string error = 5;
+
+  // result is what the job produced, as JSON. It is kept only when the
+  // outcome is a success, because the output of an attempt that failed is not
+  // an output.
+  //
+  // The server bounds it. A queue is not a place to put a large value: put
+  // that where it belongs and report a reference to it here.
+  bytes result = 6;
 }
 
 message HeartbeatRequest {

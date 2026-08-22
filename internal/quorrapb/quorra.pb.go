@@ -338,7 +338,14 @@ type ReportRequest struct {
 	Outcome  Outcome                `protobuf:"varint,4,opt,name=outcome,proto3,enum=quorra.v1.Outcome" json:"outcome,omitempty"`
 	// error is kept on the job and shown in the dashboard. It is ignored when
 	// the outcome is a success.
-	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	// result is what the job produced, as JSON. It is kept only when the
+	// outcome is a success, because the output of an attempt that failed is not
+	// an output.
+	//
+	// The server bounds it. A queue is not a place to put a large value: put
+	// that where it belongs and report a reference to it here.
+	Result        []byte `protobuf:"bytes,6,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -406,6 +413,13 @@ func (x *ReportRequest) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *ReportRequest) GetResult() []byte {
+	if x != nil {
+		return x.Result
+	}
+	return nil
 }
 
 type HeartbeatRequest struct {
@@ -614,13 +628,14 @@ const file_quorra_v1_quorra_proto_rawDesc = "" +
 	"\bmax_jobs\x18\x03 \x01(\x05R\amaxJobs\x126\n" +
 	"\tlease_ttl\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\bleaseTtl\"3\n" +
 	"\rLeaseResponse\x12\"\n" +
-	"\x04jobs\x18\x01 \x03(\v2\x0e.quorra.v1.JobR\x04jobs\"\xa2\x01\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x0e.quorra.v1.JobR\x04jobs\"\xba\x01\n" +
 	"\rReportRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x19\n" +
 	"\blease_id\x18\x03 \x01(\tR\aleaseId\x12,\n" +
 	"\aoutcome\x18\x04 \x01(\x0e2\x12.quorra.v1.OutcomeR\aoutcome\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"\x99\x01\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12\x16\n" +
+	"\x06result\x18\x06 \x01(\fR\x06result\"\x99\x01\n" +
 	"\x10HeartbeatRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x19\n" +
