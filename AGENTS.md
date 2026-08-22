@@ -143,6 +143,18 @@ It holds the full feature.
   sleep long enough to be reliable on a loaded machine makes every run slow,
   and a short one makes the suite flake.
 
+## The schema
+
+- A schema change is a new file in `migrations/`. Do not edit a file that has
+  been applied anywhere.
+- Name it with a four digit prefix. `10_x.sql` sorts before `9_x.sql`.
+- Write it so that applying it twice is safe. Every file is applied on every
+  start and nothing records what has run, so a statement that fails the second
+  time turns a container restart into an outage.
+- Both of those are tested. The test is in `migrations/`.
+- Reason: this works while every change is additive. The first one that is not
+  needs a real migration tool, and `docs/milestones.md` says so.
+
 ## Generated code
 
 - `internal/quorrapb` is generated from `proto/`. Do not edit it.
