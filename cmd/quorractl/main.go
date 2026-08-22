@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,7 +30,7 @@ Usage:
 Commands:
   create    Submit a job
   get       Show one job
-  list      Show the most recent jobs
+  list      Show jobs, newest first, with optional filters
   queues    Count the jobs in each queue
   cancel    Stop a job that has not finished
   revive    Put a dead or cancelled job back in the queue
@@ -281,31 +283,69 @@ func get(args []string, out io.Writer) error {
 func list(args []string, out io.Writer) error {
 	set := flag.NewFlagSet("list", flag.ContinueOnError)
 	c := common(set)
-	limit := set.Int("limit", 20, "how many jobs to show")
+	limit := set.Int("limit", 20, "how many jobs to show at once")
+	queue := set.String("queue", "", "only this queue")
+	status := set.String("status", "", "only this status: pending, leased, succeeded, dead or cancelled")
+	jobType := set.String("type", "", "only this job type")
+	all := set.Bool("all", false, "follow the pages to the end")
+
 	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 
-	answer, err := c.send(context.Background(), http.MethodGet,
-		fmt.Sprintf("/v1/jobs?limit=%d", *limit), nil)
-	if err != nil {
-		return err
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(*limit))
+	for name, value := range map[string]string{"queue": *queue, "status": *status, "type": *jobType} {
+		if value != "" {
+			query.Set(name, value)
+		}
 	}
 
-	rows, _ := answer["jobs"].([]any)
-	if len(rows) == 0 {
-		fmt.Fprintln(out, "No jobs.")
-		return nil
-	}
+	shown := 0
+	cursor := ""
 
-	fmt.Fprintf(out, "%-38s %-20s %-12s %-10s %s\n", "ID", "TYPE", "QUEUE", "STATUS", "ATTEMPTS")
-	for _, row := range rows {
-		job, _ := row.(map[string]any)
-		fmt.Fprintf(out, "%-38v %-20v %-12v %-10v %v of %v\n",
-			job["id"], job["type"], job["queue"], job["status"],
-			number(job["attempts"]), number(job["max_retries"])+1)
+	for {
+		if cursor != "" {
+			query.Set("before", cursor)
+		}
+
+		answer, err := c.send(context.Background(), http.MethodGet, "/v1/jobs?"+query.Encode(), nil)
+		if err != nil {
+			return err
+		}
+
+		rows, _ := answer["jobs"].([]any)
+		if len(rows) == 0 && shown == 0 {
+			fmt.Fprintln(out, "No jobs.")
+			return nil
+		}
+
+		// The heading once, and only when there is something under it.
+		if shown == 0 {
+			fmt.Fprintf(out, "%-38s %-20s %-12s %-10s %s\n", "ID", "TYPE", "QUEUE", "STATUS", "ATTEMPTS")
+		}
+		for _, row := range rows {
+			job, _ := row.(map[string]any)
+			fmt.Fprintf(out, "%-38v %-20v %-12v %-10v %v of %v\n",
+				job["id"], job["type"], job["queue"], job["status"],
+				number(job["attempts"]), number(job["max_retries"])+1)
+			shown++
+		}
+
+		next, _ := answer["next_cursor"].(string)
+
+		// Without -all the tool stops after one page and says how to see the
+		// rest, rather than deciding for somebody that they wanted every job
+		// in a table holding a month of them.
+		if next == "" {
+			return nil
+		}
+		if !*all {
+			fmt.Fprintf(out, "\n%d shown. There are more: add -all, or -before %s\n", shown, next)
+			return nil
+		}
+		cursor = next
 	}
-	return nil
 }
 
 func queues(args []string, out io.Writer) error {

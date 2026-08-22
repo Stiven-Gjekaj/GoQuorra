@@ -270,3 +270,85 @@ func TestADoubleDashEndsTheOptions(t *testing.T) {
 		t.Errorf("the token after -- was read as an option: %v", err)
 	}
 }
+
+func TestListFilters(t *testing.T) {
+	flags := serve(t)
+
+	cli(t, flags, "create", "-type", "alpha", "-queue", "one")
+	cli(t, flags, "create", "-type", "beta", "-queue", "two")
+
+	byQueue, err := cli(t, flags, "list", "-queue", "one")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(byQueue, "alpha") || strings.Contains(byQueue, "beta") {
+		t.Errorf("the queue filter did not narrow the list:\n%s", byQueue)
+	}
+
+	byType, err := cli(t, flags, "list", "-type", "beta")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(byType, "beta") || strings.Contains(byType, "alpha") {
+		t.Errorf("the type filter did not narrow the list:\n%s", byType)
+	}
+
+	empty, err := cli(t, flags, "list", "-status", "dead")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(empty, "No jobs") {
+		t.Errorf("an empty result printed %q", empty)
+	}
+}
+
+// A page that is not the last says so, and says how to see the rest.
+//
+// Printing every job in a table holding a month of them is a decision to make
+// for somebody rather than on their behalf.
+func TestListSaysWhenThereIsMore(t *testing.T) {
+	flags := serve(t)
+
+	for i := 0; i < 5; i++ {
+		cli(t, flags, "create", "-type", "work")
+	}
+
+	page, err := cli(t, flags, "list", "-limit", "2")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(page, "There are more") || !strings.Contains(page, "-all") {
+		t.Errorf("the page does not say how to see the rest:\n%s", page)
+	}
+	if strings.Count(page, " of 4") != 2 {
+		t.Errorf("a limit of 2 printed a different number of rows:\n%s", page)
+	}
+
+	every, err := cli(t, flags, "list", "-limit", "2", "-all")
+	if err != nil {
+		t.Fatalf("list -all: %v", err)
+	}
+	if strings.Count(every, " of 4") != 5 {
+		t.Errorf("-all did not follow the pages:\n%s", every)
+	}
+	if strings.Contains(every, "There are more") {
+		t.Errorf("-all still offered more:\n%s", every)
+	}
+
+	// The heading is printed once, and not on every page.
+	if strings.Count(every, "ATTEMPTS") != 1 {
+		t.Errorf("the heading was printed %d times:\n%s", strings.Count(every, "ATTEMPTS"), every)
+	}
+}
+
+func TestListRefusesAStatusThatDoesNotExist(t *testing.T) {
+	flags := serve(t)
+
+	_, err := cli(t, flags, "list", "-status", "processing")
+	if err == nil {
+		t.Fatal("a status that does not exist was accepted")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("the error does not list the valid statuses: %v", err)
+	}
+}
