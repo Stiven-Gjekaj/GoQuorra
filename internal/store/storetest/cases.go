@@ -376,6 +376,114 @@ var cases = []testCase{
 		}
 	}},
 
+	// The rule this feature exists for.
+	//
+	// A handler slower than the lease it was given used to be doomed: the
+	// reclaimer took the job at the expiry and gave it to somebody else while
+	// the first worker was still running it. Extending the lease is what
+	// lets a slow job finish, and the way to see that it works is to push the
+	// expiry out and then sweep past the moment the job would have been
+	// taken.
+	{"an extended lease survives the moment it would have expired", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "slow"})
+		held := lease(t, s, store.LeaseRequest{WorkerID: "patient", TTL: time.Minute})[0]
+
+		clock.Advance(50 * time.Second)
+		got, err := s.ExtendLease(ctx(), made.ID, held.LeaseID, time.Minute)
+		if err != nil {
+			t.Fatalf("ExtendLease: %v", err)
+		}
+
+		// From the moment it was asked, and not from the old expiry. A worker
+		// that heartbeats late gets its full extension, and adding to an
+		// expiry already in the past would hand back a lease that has already
+		// run out.
+		requireTime(t, "lease expiry", *got.LeaseExpiresAt, Start.Add(110*time.Second))
+
+		// Past the original expiry, and the reclaimer leaves it alone.
+		clock.Advance(20 * time.Second)
+		moved, err := s.ReclaimExpired(ctx(), 10)
+		if err != nil {
+			t.Fatalf("ReclaimExpired: %v", err)
+		}
+		if moved != 0 {
+			t.Fatalf("the reclaimer took %d jobs past an expiry that had been pushed out", moved)
+		}
+
+		// And the worker can still report, which is the whole point.
+		done, err := s.Report(ctx(), store.Report{JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone})
+		if err != nil {
+			t.Fatalf("Report after extending: %v", err)
+		}
+		if done.Status != jobs.Succeeded {
+			t.Errorf("status = %q", done.Status)
+		}
+	}},
+
+	{"a lease that is not held cannot be extended", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		// Waiting, so nobody holds it. An empty lease must not match.
+		if _, err := s.ExtendLease(ctx(), made.ID, "", time.Minute); !errors.Is(err, store.ErrLeaseNotValid) {
+			t.Errorf("an empty lease on a waiting job gave %v, want ErrLeaseNotValid", err)
+		}
+
+		held := lease(t, s, store.LeaseRequest{})[0]
+		if _, err := s.ExtendLease(ctx(), made.ID, "6f1c0c64-0000-0000-0000-000000000000", time.Minute); !errors.Is(err, store.ErrLeaseNotValid) {
+			t.Errorf("somebody else's lease gave %v, want ErrLeaseNotValid", err)
+		}
+		_ = held
+	}},
+
+	// A worker learns that its job was cancelled by being refused the
+	// extension. Nothing has to reach into the handler: the next heartbeat
+	// simply fails, and the worker package stops the job on that.
+	{"a cancelled job refuses to extend its lease", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{TTL: time.Minute})[0]
+
+		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		if _, err := s.ExtendLease(ctx(), made.ID, held.LeaseID, time.Minute); !errors.Is(err, store.ErrLeaseNotValid) {
+			t.Fatalf("extending a cancelled job gave %v, want ErrLeaseNotValid", err)
+		}
+	}},
+
+	{"a reclaimed job refuses to extend its lease", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{TTL: time.Minute})[0]
+
+		clock.Advance(2 * time.Minute)
+		if _, err := s.ReclaimExpired(ctx(), 10); err != nil {
+			t.Fatalf("ReclaimExpired: %v", err)
+		}
+
+		if _, err := s.ExtendLease(ctx(), made.ID, held.LeaseID, time.Minute); !errors.Is(err, store.ErrLeaseNotValid) {
+			t.Fatalf("extending a reclaimed job gave %v, want ErrLeaseNotValid", err)
+		}
+	}},
+
+	{"extending an unknown job is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
+		_, err := s.ExtendLease(ctx(), "8de1a3d0-0000-0000-0000-000000000000",
+			"6f1c0c64-0000-0000-0000-000000000000", time.Minute)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("extending an unknown job gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	{"a lease cannot be extended by nothing", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		for _, by := range []time.Duration{0, -time.Minute} {
+			if _, err := s.ExtendLease(ctx(), made.ID, held.LeaseID, by); err == nil {
+				t.Errorf("extending by %s was accepted", by)
+			}
+		}
+	}},
+
 	{"a live lease is left alone", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "work"})
 		lease(t, s, store.LeaseRequest{TTL: time.Minute})

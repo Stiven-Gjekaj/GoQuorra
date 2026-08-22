@@ -200,6 +200,20 @@ type Store interface {
 	// job holds, and changes nothing in that case.
 	Report(ctx context.Context, rep Report) (*Job, error)
 
+	// ExtendLease pushes the expiry of a lease further out, and returns the
+	// job as stored.
+	//
+	// It is what lets a handler run for longer than the lease it was given
+	// without the queue deciding it has died. The alternative is asking every
+	// caller to guess the slowest their work will ever be and set the lease
+	// to that, which means every genuinely dead worker then holds its jobs
+	// for exactly as long as the slowest job in the system.
+	//
+	// It returns ErrLeaseNotValid when the lease named is not the one the job
+	// holds, which covers a job that was reclaimed and a job that was
+	// cancelled. A worker learns both from the refusal.
+	ExtendLease(ctx context.Context, jobID, leaseID string, by time.Duration) (*Job, error)
+
 	// Cancel stops a job that has not finished, and returns it as stored.
 	//
 	// A job a worker is holding can be cancelled. Its lease is cleared, so

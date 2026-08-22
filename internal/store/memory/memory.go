@@ -180,6 +180,42 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 	return clone(&rec.job), nil
 }
 
+// ExtendLease pushes the expiry of a lease further out.
+func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.Duration) (*store.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if by <= 0 {
+		return nil, fmt.Errorf("store: cannot extend a lease by %s", by)
+	}
+
+	now := s.opts.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[jobID]
+	if !found {
+		return nil, store.ErrNotFound
+	}
+
+	// An unleased job holds an empty identifier, so the comparison has to
+	// refuse that before it compares, or a request carrying none matches.
+	if rec.job.Status != jobs.Leased || rec.job.LeaseID == "" || rec.job.LeaseID != leaseID {
+		return nil, store.ErrLeaseNotValid
+	}
+
+	// From now, not from the old expiry. A worker that heartbeats late
+	// should get its full extension from the moment it asked, and adding to
+	// an expiry already in the past would hand back a lease that has already
+	// run out.
+	expires := now.Add(by)
+	rec.job.LeaseExpiresAt = &expires
+	rec.job.UpdatedAt = now
+
+	return clone(&rec.job), nil
+}
+
 // Cancel stops a job that has not finished.
 func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
 	if err := ctx.Err(); err != nil {

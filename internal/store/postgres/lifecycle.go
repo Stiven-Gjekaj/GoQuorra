@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
@@ -34,6 +35,51 @@ func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
 		}
 		return jobs.Pending, nil
 	}, resetAttempts)
+}
+
+// ExtendLease pushes the expiry of a lease further out.
+//
+// One statement, and the lease check is in its WHERE clause rather than in a
+// read before it. That makes the check and the write the same operation, so
+// the reclaimer cannot take the job between them.
+func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.Duration) (*store.Job, error) {
+	if by <= 0 {
+		return nil, fmt.Errorf("store: cannot extend a lease by %s", by)
+	}
+	if _, err := parseID(jobID); err != nil {
+		return nil, store.ErrNotFound
+	}
+	// An identifier that is not a UUID matches no lease. Sending it to the
+	// database gives a type conversion error instead of the refusal that a
+	// worker knows how to act on.
+	if _, err := parseID(leaseID); err != nil {
+		return nil, store.ErrLeaseNotValid
+	}
+
+	now := s.opts.Now()
+
+	row := s.pool.QueryRow(ctx, `
+		UPDATE jobs SET lease_expires_at = $1, updated_at = $1
+		WHERE id = $2 AND lease_id = $3 AND status = 'leased'
+		RETURNING `+columns,
+		now.Add(by), jobID, leaseID,
+	)
+
+	job, _, err := scanJob(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Nothing matched. Either the job is gone or it no longer holds that
+		// lease, and the two are told apart by a second read so that a
+		// worker gets the answer it can act on.
+		var exists bool
+		if err := s.pool.QueryRow(ctx, `SELECT TRUE FROM jobs WHERE id = $1`, jobID).Scan(&exists); err != nil {
+			return nil, store.ErrNotFound
+		}
+		return nil, store.ErrLeaseNotValid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot extend the lease: %w", err)
+	}
+	return job, nil
 }
 
 // attempts says what happens to the attempt count during a transition.
