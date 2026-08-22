@@ -82,6 +82,35 @@ func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.
 	return job, nil
 }
 
+// DeleteFinished removes finished jobs that stopped moving before a time.
+//
+// A bounded batch, chosen by seq so the oldest go first. One statement that
+// deleted a month of rows would hold locks and write a write-ahead log entry
+// for every one of them, and a queue that stalls at four in the morning
+// because its own housekeeping is running is worse than a large table.
+func (s *Store) DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error) {
+	if !status.Terminal() {
+		return 0, fmt.Errorf("store: %q is not a finished state, and removing a job in it would lose work", status)
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM jobs WHERE id IN (
+			SELECT id FROM jobs
+			WHERE status = $1 AND updated_at < $2
+			ORDER BY seq
+			LIMIT $3
+		)`,
+		string(status), before, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: cannot remove finished jobs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // attempts says what happens to the attempt count during a transition.
 type attempts int
 

@@ -885,6 +885,127 @@ var cases = []testCase{
 		}
 	}},
 
+	{"finished jobs older than a time are removed", func(t *testing.T, s store.Store, clock *Clock) {
+		old := create(t, s, store.NewJob{Type: "old"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+		if _, err := s.Report(ctx(), store.Report{JobID: old.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		clock.Advance(time.Hour)
+		cutoff := clock.Now()
+		clock.Advance(time.Minute)
+
+		recent := create(t, s, store.NewJob{Type: "recent"})
+		heldToo := lease(t, s, store.LeaseRequest{})[0]
+		if _, err := s.Report(ctx(), store.Report{JobID: recent.ID, LeaseID: heldToo.LeaseID, Outcome: jobs.OutcomeDone}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		removed, err := s.DeleteFinished(ctx(), jobs.Succeeded, cutoff, 100)
+		if err != nil {
+			t.Fatalf("DeleteFinished: %v", err)
+		}
+		if removed != 1 {
+			t.Fatalf("removed %d jobs, want 1", removed)
+		}
+
+		if _, err := s.Get(ctx(), old.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("the old job is still there")
+		}
+		if _, err := s.Get(ctx(), recent.ID); err != nil {
+			t.Errorf("the job on the near side of the cutoff was removed: %v", err)
+		}
+	}},
+
+	// A sweeper is exactly the place where a wrong status is not noticed for
+	// a month, so it refuses to touch a job that has not finished.
+	{"a job that has not finished is never removed", func(t *testing.T, s store.Store, clock *Clock) {
+		waiting := create(t, s, store.NewJob{Type: "waiting"})
+		clock.Advance(time.Hour)
+
+		for _, status := range []jobs.Status{jobs.Pending, jobs.Leased} {
+			if _, err := s.DeleteFinished(ctx(), status, clock.Now(), 100); err == nil {
+				t.Errorf("removing %q jobs was accepted", status)
+			}
+		}
+
+		if _, err := s.Get(ctx(), waiting.ID); err != nil {
+			t.Errorf("the waiting job is gone: %v", err)
+		}
+	}},
+
+	{"only the named status is removed", func(t *testing.T, s store.Store, clock *Clock) {
+		buried := create(t, s, store.NewJob{Type: "buried"})
+		failUntilBuried(t, s, clock, buried.ID)
+
+		stopped := create(t, s, store.NewJob{Type: "stopped"})
+		if _, err := s.Cancel(ctx(), stopped.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		clock.Advance(time.Hour)
+
+		removed, err := s.DeleteFinished(ctx(), jobs.Cancelled, clock.Now(), 100)
+		if err != nil {
+			t.Fatalf("DeleteFinished: %v", err)
+		}
+		if removed != 1 {
+			t.Errorf("removed %d jobs, want the one cancelled job", removed)
+		}
+		if _, err := s.Get(ctx(), buried.ID); err != nil {
+			t.Errorf("a dead job was removed by a sweep for cancelled ones: %v", err)
+		}
+	}},
+
+	{"a sweep removes no more than it is asked for", func(t *testing.T, s store.Store, clock *Clock) {
+		for i := 0; i < 5; i++ {
+			made := create(t, s, store.NewJob{Type: fmt.Sprintf("job-%d", i)})
+			if _, err := s.Cancel(ctx(), made.ID); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+		}
+		clock.Advance(time.Hour)
+
+		removed, err := s.DeleteFinished(ctx(), jobs.Cancelled, clock.Now(), 2)
+		if err != nil {
+			t.Fatalf("DeleteFinished: %v", err)
+		}
+		if removed != 2 {
+			t.Errorf("removed %d jobs, want the 2 asked for", removed)
+		}
+
+		left, _ := s.List(ctx(), store.Filter{Limit: 10})
+		if len(left) != 3 {
+			t.Errorf("%d jobs are left, want 3", len(left))
+		}
+	}},
+
+	// The key goes with the job. Leaving it behind would refuse a submission
+	// for ever on behalf of a job nobody can look at any more.
+	{"removing a job frees its idempotency key", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "charge", IdempotencyKey: "order-1"})
+		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		clock.Advance(time.Hour)
+		if _, err := s.DeleteFinished(ctx(), jobs.Cancelled, clock.Now(), 10); err != nil {
+			t.Fatalf("DeleteFinished: %v", err)
+		}
+
+		again, created, err := s.Create(ctx(), store.NewJob{Type: "charge", IdempotencyKey: "order-1"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if !created {
+			t.Error("the key of a removed job still refuses a submission")
+		}
+		if again.ID == made.ID {
+			t.Error("the removed job came back")
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

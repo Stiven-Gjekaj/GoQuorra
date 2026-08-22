@@ -264,6 +264,14 @@ type Store interface {
 	// many it moved. A job that has no attempts left is buried instead.
 	ReclaimExpired(ctx context.Context, limit int) (int, error)
 
+	// DeleteFinished removes jobs in one finished state that stopped moving
+	// before a time, and reports how many it removed.
+	//
+	// Only a terminal state is accepted. Deleting a job that is waiting or
+	// that a worker is holding would lose work, and a sweeper is exactly the
+	// place where a wrong status is not noticed for a month.
+	DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error)
+
 	// QueueStats counts the jobs by queue and by status.
 	QueueStats(ctx context.Context) ([]QueueStat, error)
 

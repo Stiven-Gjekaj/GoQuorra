@@ -351,6 +351,46 @@ func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now tim
 	}
 }
 
+// DeleteFinished removes finished jobs that stopped moving before a time.
+func (s *Store) DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if !status.Terminal() {
+		return 0, fmt.Errorf("store: %q is not a finished state, and removing a job in it would lose work", status)
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Oldest first, so a backlog is worked through from the far end rather
+	// than the same recent rows being looked at on every sweep.
+	var doomed []*record
+	for _, rec := range s.records {
+		if rec.job.Status == status && rec.job.UpdatedAt.Before(before) {
+			doomed = append(doomed, rec)
+		}
+	}
+	sort.Slice(doomed, func(i, j int) bool { return doomed[i].seq < doomed[j].seq })
+	if len(doomed) > limit {
+		doomed = doomed[:limit]
+	}
+
+	for _, rec := range doomed {
+		delete(s.records, rec.job.ID)
+		// The key goes with the job. Leaving it would refuse a submission
+		// for ever on behalf of a job nobody can look at any more.
+		if rec.job.IdempotencyKey != "" {
+			delete(s.byKey, rec.job.IdempotencyKey)
+		}
+	}
+
+	return len(doomed), nil
+}
+
 // QueueStats counts the jobs by queue and by status.
 func (s *Store) QueueStats(ctx context.Context) ([]store.QueueStat, error) {
 	if err := ctx.Err(); err != nil {
