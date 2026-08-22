@@ -210,6 +210,40 @@ func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
 	return clone(&rec.job), nil
 }
 
+// Revive puts a dead or cancelled job back in the queue.
+func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	now := s.opts.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[id]
+	if !found {
+		return nil, store.ErrNotFound
+	}
+	if rec.job.Status != jobs.Dead && rec.job.Status != jobs.Cancelled {
+		return nil, fmt.Errorf(
+			"%w: the job is %s, and only a dead or cancelled job can be revived", store.ErrWrongState, rec.job.Status)
+	}
+
+	// A fresh set of attempts, and ready now. The last error stays on the
+	// row, because the thing that went wrong before is what somebody looking
+	// at the job afterwards wants to see.
+	rec.job.Status = jobs.Pending
+	rec.job.Attempts = 0
+	rec.job.RunAt = now
+	rec.job.UpdatedAt = now
+	rec.job.LeaseID = ""
+	rec.job.LeasedBy = ""
+	rec.job.LeaseExpiresAt = nil
+
+	return clone(&rec.job), nil
+}
+
 // ReclaimExpired returns jobs whose lease has run out.
 func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 	if err := ctx.Err(); err != nil {

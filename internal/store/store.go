@@ -175,6 +175,21 @@ type Store interface {
 	// It returns ErrWrongState for a job that has already finished.
 	Cancel(ctx context.Context, id string) (*Job, error)
 
+	// Revive puts a dead or cancelled job back in the queue, and returns it
+	// as stored.
+	//
+	// The attempt count goes back to zero, so the job gets the full set of
+	// tries again. That is what somebody clearing a dead letter queue after
+	// fixing the thing that broke actually wants: leaving the count where it
+	// was would give the job one more try and send it straight back.
+	//
+	// A job that succeeded cannot be revived. Running it again is a new piece
+	// of work and deserves a new job, with its own identifier that the caller
+	// can follow.
+	//
+	// It returns ErrWrongState for any other state.
+	Revive(ctx context.Context, id string) (*Job, error)
+
 	// ReclaimExpired returns jobs whose lease has run out, and reports how
 	// many it moved. A job that has no attempts left is buried instead.
 	ReclaimExpired(ctx context.Context, limit int) (int, error)

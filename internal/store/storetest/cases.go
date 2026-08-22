@@ -568,6 +568,92 @@ var cases = []testCase{
 		}
 	}},
 
+	// The test this feature exists for.
+	//
+	// Somebody clears a dead letter queue after fixing the thing that broke.
+	// A revived job has to get the full set of tries again, and the way to
+	// see that is to run its whole life a second time and count the runs.
+	// Leaving the attempt count where it was would give the job one more try
+	// and send it straight back, which looks like it worked until the queue
+	// fills up again an hour later.
+	{"a revived job gets a full set of attempts", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		runs := failUntilBuried(t, s, clock, made.ID)
+		if want := Policy.MaxRetries + 1; runs != want {
+			t.Fatalf("the job ran %d times before it was buried, want %d", runs, want)
+		}
+
+		got, err := s.Revive(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if got.Status != jobs.Pending {
+			t.Errorf("status = %q, want %q", got.Status, jobs.Pending)
+		}
+		if got.Attempts != 0 {
+			t.Errorf("attempts = %d, want a fresh set", got.Attempts)
+		}
+
+		again := failUntilBuried(t, s, clock, made.ID)
+		if want := Policy.MaxRetries + 1; again != want {
+			t.Errorf("the revived job ran %d times, want %d", again, want)
+		}
+	}},
+
+	{"a cancelled job can be revived", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		got, err := s.Revive(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if got.Status != jobs.Pending {
+			t.Fatalf("status = %q, want %q", got.Status, jobs.Pending)
+		}
+
+		if handed := lease(t, s, store.LeaseRequest{}); len(handed) != 1 {
+			t.Errorf("the revived job was not handed to a worker")
+		}
+	}},
+
+	// Running a job that already worked is a new piece of work, and deserves
+	// a new identifier that the caller can follow. Reviving in place would
+	// hide the second run behind the record of the first.
+	{"a job that succeeded cannot be revived", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+		if _, err := s.Report(ctx(), store.Report{JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+			t.Fatalf("Revive of a finished job gave %v, want ErrWrongState", err)
+		}
+	}},
+
+	{"a job already in the queue cannot be revived", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+			t.Fatalf("Revive of a waiting job gave %v, want ErrWrongState", err)
+		}
+
+		lease(t, s, store.LeaseRequest{})
+		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+			t.Fatalf("Revive of a leased job gave %v, want ErrWrongState", err)
+		}
+	}},
+
+	{"reviving an unknown job is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
+		if _, err := s.Revive(ctx(), "8de1a3d0-0000-0000-0000-000000000000"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Revive of an unknown job gave %v, want ErrNotFound", err)
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

@@ -25,6 +25,17 @@ func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
 	}, keepAttempts)
 }
 
+// Revive puts a dead or cancelled job back in the queue.
+func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
+	return s.transition(ctx, id, func(current jobs.Status) (jobs.Status, error) {
+		if current != jobs.Dead && current != jobs.Cancelled {
+			return "", fmt.Errorf(
+				"%w: the job is %s, and only a dead or cancelled job can be revived", store.ErrWrongState, current)
+		}
+		return jobs.Pending, nil
+	}, resetAttempts)
+}
+
 // attempts says what happens to the attempt count during a transition.
 type attempts int
 

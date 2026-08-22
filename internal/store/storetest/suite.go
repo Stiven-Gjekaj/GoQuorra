@@ -137,3 +137,40 @@ func ids(list []*store.Job) []string {
 	}
 	return out
 }
+
+// failUntilBuried leases a job and fails it until the store buries it, and
+// reports how many times it ran.
+//
+// Two cases need this, and writing the loop twice is how they end up counting
+// different things.
+func failUntilBuried(t *testing.T, s store.Store, clock *Clock, id string) int {
+	t.Helper()
+
+	runs := 0
+	for runs < 20 {
+		handed, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "worker-1", Limit: 1, TTL: time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+		if len(handed) == 0 {
+			t.Fatalf("the job stopped being offered after %d runs, and it is not buried", runs)
+		}
+		runs++
+
+		got, err := s.Report(ctx(), store.Report{
+			JobID: id, LeaseID: handed[0].LeaseID, Outcome: jobs.OutcomeFailed, Error: "no",
+		})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		if got.Status == jobs.Dead {
+			return runs
+		}
+		clock.Advance(time.Hour)
+	}
+
+	t.Fatalf("the job never reached the dead letter queue")
+	return 0
+}
