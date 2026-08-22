@@ -329,36 +329,58 @@ func (s *Store) QueueStats(ctx context.Context) ([]store.QueueStat, error) {
 	return out, nil
 }
 
-// Recent returns the newest jobs first.
-func (s *Store) Recent(ctx context.Context, limit int) ([]*store.Job, error) {
+// List returns matching jobs, newest first.
+func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	if f.Limit <= 0 {
 		return nil, nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	all := make([]*record, 0, len(s.records))
-	for _, rec := range s.records {
-		all = append(all, rec)
-	}
-
-	sort.Slice(all, func(i, j int) bool {
-		if !all[i].job.CreatedAt.Equal(all[j].job.CreatedAt) {
-			return all[i].job.CreatedAt.After(all[j].job.CreatedAt)
+	// The cursor names a job, and what is wanted is its place in the order.
+	// A cursor naming a job that has been removed leaves the page start
+	// undefined, so it is refused rather than quietly treated as the start.
+	var before uint64
+	if f.Before != "" {
+		rec, found := s.records[f.Before]
+		if !found {
+			return nil, store.ErrNotFound
 		}
-		return all[i].seq > all[j].seq
-	})
-
-	if len(all) > limit {
-		all = all[:limit]
+		before = rec.seq
 	}
 
-	out := make([]*store.Job, len(all))
-	for i, rec := range all {
+	matching := make([]*record, 0, len(s.records))
+	for _, rec := range s.records {
+		if f.Queue != "" && rec.job.Queue != f.Queue {
+			continue
+		}
+		if f.Status != "" && rec.job.Status != f.Status {
+			continue
+		}
+		if f.Type != "" && rec.job.Type != f.Type {
+			continue
+		}
+		if f.Before != "" && rec.seq >= before {
+			continue
+		}
+		matching = append(matching, rec)
+	}
+
+	sort.Slice(matching, func(i, j int) bool { return matching[i].seq > matching[j].seq })
+
+	if len(matching) > f.Limit {
+		matching = matching[:f.Limit]
+	}
+
+	out := make([]*store.Job, len(matching))
+	for i, rec := range matching {
 		out[i] = clone(&rec.job)
 	}
 	return out, nil

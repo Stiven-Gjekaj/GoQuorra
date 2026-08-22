@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
+	"github.com/jackc/pgx/v5"
 )
 
 // QueueStats counts the jobs by queue and by status.
@@ -44,16 +46,64 @@ func (s *Store) QueueStats(ctx context.Context) ([]store.QueueStat, error) {
 	return out, rows.Err()
 }
 
-// Recent returns the newest jobs first.
-func (s *Store) Recent(ctx context.Context, limit int) ([]*store.Job, error) {
-	if limit <= 0 {
+// List returns matching jobs, newest first.
+//
+// The ordering is by seq and not by created_at. seq is unique and monotonic,
+// so it gives every row a distinct place, which is what a cursor needs: two
+// jobs written in the same microsecond share a created_at, and a page break
+// between them would show one of them on both pages or on neither.
+func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) {
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	if f.Limit <= 0 {
 		return nil, nil
 	}
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT `+columns+` FROM jobs ORDER BY created_at DESC, seq DESC LIMIT $1`, limit)
+	// Built with placeholders and never with the values. Three of the four
+	// fields here come straight from a query string.
+	where := []string{"TRUE"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+
+	if f.Queue != "" {
+		add("queue = $%d", f.Queue)
+	}
+	if f.Status != "" {
+		add("status = $%d", string(f.Status))
+	}
+	if f.Type != "" {
+		add("type = $%d", f.Type)
+	}
+
+	if f.Before != "" {
+		if _, err := parseID(f.Before); err != nil {
+			return nil, store.ErrNotFound
+		}
+		// A cursor naming a job that is gone leaves the page start
+		// undefined, so it is refused rather than quietly read as the start
+		// of the list, which would send the reader back to page one.
+		var seq int64
+		err := s.pool.QueryRow(ctx, `SELECT seq FROM jobs WHERE id = $1`, f.Before).Scan(&seq)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("postgres: cannot read the cursor: %w", err)
+		}
+		add("seq < $%d", seq)
+	}
+
+	args = append(args, f.Limit)
+	query := `SELECT ` + columns + ` FROM jobs WHERE ` + strings.Join(where, " AND ") +
+		fmt.Sprintf(` ORDER BY seq DESC LIMIT $%d`, len(args))
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: cannot read the recent jobs: %w", err)
+		return nil, fmt.Errorf("postgres: cannot list the jobs: %w", err)
 	}
 	defer rows.Close()
 

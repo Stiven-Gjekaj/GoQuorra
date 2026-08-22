@@ -688,24 +688,142 @@ var cases = []testCase{
 		}
 	}},
 
-	{"the recent list gives the newest first", func(t *testing.T, s store.Store, clock *Clock) {
+	{"the list gives the newest first", func(t *testing.T, s store.Store, clock *Clock) {
 		var made []string
 		for i := 0; i < 4; i++ {
 			made = append(made, create(t, s, store.NewJob{Type: fmt.Sprintf("job-%d", i)}).ID)
 			clock.Advance(time.Second)
 		}
 
-		got, err := s.Recent(ctx(), 3)
+		got, err := s.List(ctx(), store.Filter{Limit: 3})
 		if err != nil {
-			t.Fatalf("Recent: %v", err)
+			t.Fatalf("List: %v", err)
 		}
 		if len(got) != 3 {
-			t.Fatalf("Recent(3) gave %d jobs", len(got))
+			t.Fatalf("a limit of 3 gave %d jobs", len(got))
 		}
 
 		want := []string{made[3], made[2], made[1]}
 		if fmt.Sprint(ids(got)) != fmt.Sprint(want) {
 			t.Errorf("order = %v, want the newest first", ids(got))
+		}
+	}},
+
+	{"the list narrows by queue, status and type", func(t *testing.T, s store.Store, clock *Clock) {
+		wanted := create(t, s, store.NewJob{Type: "email", Queue: "mail"})
+		create(t, s, store.NewJob{Type: "email", Queue: "other"})
+		create(t, s, store.NewJob{Type: "report", Queue: "mail"})
+
+		byQueue, err := s.List(ctx(), store.Filter{Queue: "mail", Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(byQueue) != 2 {
+			t.Errorf("the mail queue gave %d jobs, want 2", len(byQueue))
+		}
+
+		byType, err := s.List(ctx(), store.Filter{Type: "email", Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(byType) != 2 {
+			t.Errorf("the email type gave %d jobs, want 2", len(byType))
+		}
+
+		// Together, and not one or the other.
+		both, err := s.List(ctx(), store.Filter{Queue: "mail", Type: "email", Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(both) != 1 || both[0].ID != wanted.ID {
+			t.Errorf("the two filters together gave %v, want just the one job in both", ids(both))
+		}
+
+		byStatus, err := s.List(ctx(), store.Filter{Status: jobs.Pending, Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(byStatus) != 3 {
+			t.Errorf("pending gave %d jobs, want 3", len(byStatus))
+		}
+		if dead, _ := s.List(ctx(), store.Filter{Status: jobs.Dead, Limit: 10}); len(dead) != 0 {
+			t.Errorf("dead gave %d jobs, want none", len(dead))
+		}
+	}},
+
+	// Paging has to show every job exactly once.
+	//
+	// An offset cannot promise that. It re-reads and skips the rows before
+	// the page, so a job submitted while somebody is reading shifts every
+	// later page by one, which shows a row twice and hides another entirely.
+	// The cursor names the last job seen, so a job arriving after it changes
+	// nothing about the pages behind it.
+	{"paging shows every job once", func(t *testing.T, s store.Store, clock *Clock) {
+		const total = 10
+		var made []string
+		for i := 0; i < total; i++ {
+			made = append(made, create(t, s, store.NewJob{Type: fmt.Sprintf("job-%d", i)}).ID)
+			clock.Advance(time.Second)
+		}
+
+		seen := map[string]int{}
+		var order []string
+		cursor := ""
+
+		for page := 0; page < total; page++ {
+			got, err := s.List(ctx(), store.Filter{Limit: 3, Before: cursor})
+			if err != nil {
+				t.Fatalf("page %d: %v", page, err)
+			}
+			if len(got) == 0 {
+				break
+			}
+			for _, job := range got {
+				seen[job.ID]++
+				order = append(order, job.ID)
+			}
+			cursor = got[len(got)-1].ID
+
+			// A job submitted while the reader is paging must not disturb
+			// the pages already behind them.
+			create(t, s, store.NewJob{Type: "arrived-later"})
+			clock.Advance(time.Second)
+		}
+
+		for _, id := range made {
+			if seen[id] != 1 {
+				t.Errorf("%s was seen %d times, want once", id, seen[id])
+			}
+		}
+
+		// And the order across the pages is still newest first.
+		for i := 0; i < total; i++ {
+			if order[i] != made[total-1-i] {
+				t.Errorf("position %d is %s, want %s", i, order[i], made[total-1-i])
+				break
+			}
+		}
+	}},
+
+	// A cursor naming a job that is gone leaves the page start undefined.
+	// Reading it as the start of the list would send the reader back to page
+	// one without saying so.
+	{"a cursor naming no job is refused", func(t *testing.T, s store.Store, clock *Clock) {
+		create(t, s, store.NewJob{Type: "work"})
+
+		_, err := s.List(ctx(), store.Filter{Limit: 5, Before: "8de1a3d0-0000-0000-0000-000000000000"})
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("an unknown cursor gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	{"a status the code does not know is refused", func(t *testing.T, s store.Store, clock *Clock) {
+		_, err := s.List(ctx(), store.Filter{Limit: 5, Status: jobs.Status("processing")})
+		if err == nil {
+			t.Fatal("a filter on a status that does not exist was accepted")
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			t.Errorf("a bad status was reported as a missing job: %v", err)
 		}
 	}},
 

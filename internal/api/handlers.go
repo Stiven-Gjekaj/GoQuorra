@@ -149,7 +149,7 @@ func (a *API) recentJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := a.opts.Store.Recent(r.Context(), limit)
+	found, err := a.opts.Store.List(r.Context(), store.Filter{Limit: limit})
 	if err != nil {
 		a.failWith(w, err, "cannot read the recent jobs")
 		return

@@ -137,6 +137,42 @@ type Report struct {
 	Error string
 }
 
+// Filter narrows a listing.
+//
+// A zero Filter means every job, newest first, which is what the dashboard
+// asks for.
+type Filter struct {
+	// Queue, Status and Type each narrow the list when they are set. An empty
+	// value means the field is not being filtered on, which is why Status is
+	// a string here rather than a jobs.Status: the empty status is not one.
+	Queue  string
+	Status jobs.Status
+	Type   string
+
+	// Limit is how many to return.
+	Limit int
+
+	// Before is the identifier of the last job on the page already seen. The
+	// next page holds the jobs older than it.
+	//
+	// A cursor and not an offset. An offset re-reads and skips every row
+	// before the page, so page five hundred costs five hundred pages of work
+	// and jobs submitted meanwhile shift every later page by one, which shows
+	// the reader a row twice and hides another entirely.
+	Before string
+}
+
+// Validate refuses a filter that cannot be answered.
+func (f Filter) Validate() error {
+	if f.Status != "" && !f.Status.Valid() {
+		return fmt.Errorf("store: %q is not a status", f.Status)
+	}
+	if f.Limit < 0 {
+		return fmt.Errorf("store: the limit is %d", f.Limit)
+	}
+	return nil
+}
+
 // QueueStat is one row of the queue statistics.
 type QueueStat struct {
 	Queue  string      `json:"queue"`
@@ -197,8 +233,11 @@ type Store interface {
 	// QueueStats counts the jobs by queue and by status.
 	QueueStats(ctx context.Context) ([]QueueStat, error)
 
-	// Recent returns the newest jobs first.
-	Recent(ctx context.Context, limit int) ([]*Job, error)
+	// List returns matching jobs, newest first.
+	//
+	// A caller pages by passing the identifier of the last job it received as
+	// the next Before. An empty result means the end.
+	List(ctx context.Context, f Filter) ([]*Job, error)
 
 	// Close releases whatever the store holds.
 	Close() error
