@@ -32,6 +32,7 @@ type Metrics struct {
 	cancelled prometheus.Counter
 	revived   prometheus.Counter
 
+	removed     *prometheus.CounterVec
 	queueLength *prometheus.GaugeVec
 	lifetime    *prometheus.HistogramVec
 	httpLatency *prometheus.HistogramVec
@@ -88,6 +89,11 @@ func New() *Metrics {
 			Help: "Jobs put back in the queue by a person.",
 		}),
 
+		removed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "quorra_jobs_removed_total",
+			Help: "Finished jobs removed by the retention sweep.",
+		}, []string{"status"}),
+
 		queueLength: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "quorra_queue_length",
 			Help: "Jobs in each queue, by status. Refreshed on a timer, so it lags by up to QUORRA_STATS_EVERY.",
@@ -112,7 +118,7 @@ func New() *Metrics {
 
 	registry.MustRegister(
 		m.created, m.leased, m.succeeded, m.retried, m.dead, m.reclaimed,
-		m.cancelled, m.revived,
+		m.cancelled, m.revived, m.removed,
 		m.queueLength, m.lifetime, m.httpLatency,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -178,6 +184,17 @@ func (m *Metrics) JobCancelled() { m.cancelled.Inc() }
 
 // JobRevived records a job put back in the queue by a person.
 func (m *Metrics) JobRevived() { m.revived.Inc() }
+
+// JobsRemoved records jobs taken out by the retention sweep.
+//
+// Labelled by status, because removing succeeded jobs is housekeeping and
+// removing dead ones is throwing away the record of a failure. One number for
+// both would hide the second inside the first.
+func (m *Metrics) JobsRemoved(status jobs.Status, n int) {
+	if n > 0 {
+		m.removed.WithLabelValues(status.String()).Add(float64(n))
+	}
+}
 
 // HTTPRequest records one answered request.
 func (m *Metrics) HTTPRequest(route, method, code string, took time.Duration) {

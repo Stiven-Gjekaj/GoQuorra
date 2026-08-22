@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -307,4 +308,71 @@ func TestTheQueueGaugeIsRefreshed(t *testing.T) {
 		}
 		return strings.Contains(string(page), `quorra_queue_length{queue="default",status="pending"} 1`)
 	})
+}
+
+// The sweep removes a finished job once it is old enough.
+func TestFinishedJobsAreRemovedOnceTheyAreOldEnough(t *testing.T) {
+	cfg := &config.Server{
+		HTTPAddr: "127.0.0.1:0", GRPCAddr: "127.0.0.1:0",
+		Backend: "memory", APIKey: key,
+		Policy:        jobs.Policy{MaxRetries: 1, Base: time.Millisecond, Max: time.Millisecond},
+		ReclaimEvery:  time.Hour,
+		ReclaimBatch:  100,
+		StatsEvery:    time.Hour,
+		ShutdownGrace: 5 * time.Second,
+		MaxBodyBytes:  1 << 16,
+
+		// Anything cancelled for longer than an instant.
+		Retention:      map[jobs.Status]time.Duration{jobs.Cancelled: time.Millisecond},
+		RetentionEvery: 20 * time.Millisecond,
+		RetentionBatch: 100,
+	}
+
+	backing := memory.New(store.Options{Policy: cfg.Policy})
+	s := server.New(cfg, backing, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = s.Run(ctx) }()
+	t.Cleanup(func() { cancel(); time.Sleep(50 * time.Millisecond) })
+
+	select {
+	case <-s.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server did not start")
+	}
+
+	id := submit(t, s, `{"type":"work"}`)
+	if _, err := backing.Cancel(context.Background(), id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	waitFor(t, "the cancelled job to be removed", func() bool {
+		_, err := backing.Get(context.Background(), id)
+		return errors.Is(err, store.ErrNotFound)
+	})
+
+	// A job that was not cancelled is untouched: only the status with a
+	// retention set is swept.
+	other := submit(t, s, `{"type":"work"}`)
+	time.Sleep(100 * time.Millisecond)
+	if _, err := backing.Get(context.Background(), other); err != nil {
+		t.Errorf("a waiting job was removed: %v", err)
+	}
+}
+
+// With no retention set, nothing is ever removed. This is the default, and
+// the sweep has to be a loop that does not run rather than one that runs and
+// finds nothing.
+func TestNothingIsRemovedWhenNoRetentionIsSet(t *testing.T) {
+	s, backing := start(t)
+
+	id := submit(t, s, `{"type":"work"}`)
+	if _, err := backing.Cancel(context.Background(), id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if _, err := backing.Get(context.Background(), id); err != nil {
+		t.Errorf("a job was removed with no retention set: %v", err)
+	}
 }

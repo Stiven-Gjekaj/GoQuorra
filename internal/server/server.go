@@ -119,8 +119,15 @@ func (s *Server) Run(ctx context.Context) error {
 	background, stopBackground := context.WithCancel(ctx)
 	defer stopBackground()
 
+	if s.cfg.RemovesAnything() {
+		// At warning, because a sweep that removes jobs is worth one line in
+		// a log somebody reads after an upgrade.
+		s.log.Warn("finished jobs will be removed once they are old enough",
+			"retention", s.cfg.Retention, "every", s.cfg.RetentionEvery)
+	}
+
 	var loops sync.WaitGroup
-	loops.Add(2)
+	loops.Add(3)
 	go func() {
 		defer loops.Done()
 		reclaim(background, s.store, s.metrics, s.log, s.cfg.ReclaimEvery, s.cfg.ReclaimBatch)
@@ -128,6 +135,11 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		defer loops.Done()
 		refreshStats(background, s.store, s.metrics, s.log, s.cfg.StatsEvery)
+	}()
+	go func() {
+		defer loops.Done()
+		sweep(background, s.store, s.metrics, s.log,
+			s.cfg.RetentionEvery, s.cfg.RetentionBatch, s.cfg.Retention)
 	}()
 
 	// A listener that dies is reported through this channel rather than

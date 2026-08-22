@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
@@ -47,6 +48,64 @@ func reclaim(ctx context.Context, s store.Store, m *metrics.Metrics, log *slog.L
 			// A count worth a line at info. Leases expiring means workers are
 			// dying or running past their time, and both are worth seeing.
 			log.Info("took back expired leases", "count", moved)
+		}
+	}
+}
+
+// sweep removes finished jobs that are older than their retention.
+//
+// It runs one status at a time, and skips any whose retention is zero. Zero
+// is the default for all of them, so a deployment that has not asked for this
+// keeps every job it has ever run.
+func sweep(
+	ctx context.Context,
+	s store.Store,
+	m *metrics.Metrics,
+	log *slog.Logger,
+	every time.Duration,
+	batch int,
+	retention map[jobs.Status]time.Duration,
+) {
+	wanted := make(map[jobs.Status]time.Duration, len(retention))
+	for status, keep := range retention {
+		if keep > 0 {
+			wanted[status] = keep
+		}
+	}
+	if len(wanted) == 0 {
+		log.Debug("no retention is set, so no job is ever removed")
+		return
+	}
+
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		for status, keep := range wanted {
+			// One batch per status per tick. Draining until empty would let
+			// a first sweep over a year of history hold a database
+			// connection for as long as it took, and the next tick is soon.
+			removed, err := s.DeleteFinished(ctx, status, time.Now().Add(-keep), batch)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Error("cannot remove finished jobs", "status", status, "error", err)
+				continue
+			}
+			if removed > 0 {
+				m.JobsRemoved(status, removed)
+				// At info, because this is the loop that deletes things. An
+				// operator asking where a job went should find the answer in
+				// the log rather than by reading the source.
+				log.Info("removed finished jobs", "status", status, "count", removed, "older_than", keep)
+			}
 		}
 	}
 }
