@@ -42,6 +42,8 @@ type createRequest struct {
 	// A pointer, because zero is a real answer meaning do not retry. The old
 	// handler used a plain int, so asking for no retries silently gave three.
 	MaxRetries *int `json:"max_retries"`
+
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
@@ -73,13 +75,17 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, _, err := a.opts.Store.Create(r.Context(), store.NewJob{
+	job, created, err := a.opts.Store.Create(r.Context(), store.NewJob{
 		Type:       req.Type,
 		Payload:    req.Payload,
 		Queue:      req.Queue,
 		Priority:   req.Priority,
 		Delay:      time.Duration(req.DelaySeconds) * time.Second,
 		MaxRetries: req.MaxRetries,
+
+		// The header wins over the body when both are set, because a proxy or
+		// a client library adds the header and the body is the application's.
+		IdempotencyKey: firstNonEmpty(r.Header.Get("Idempotency-Key"), req.IdempotencyKey),
 	})
 	if err != nil {
 		// A job the store refuses is the client's mistake, and the store says
@@ -94,11 +100,23 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.opts.Metrics.JobCreated()
-	a.log.Info("job accepted", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	// 200 for a submission that stored nothing, 201 for one that did.
+	//
+	// A client retrying because it did not see the first answer gets the
+	// first job back and a status that says so. Answering 201 to both would
+	// tell it that it had just created something, which is the belief the key
+	// exists to correct.
+	code := http.StatusOK
+	if created {
+		code = http.StatusCreated
+		a.opts.Metrics.JobCreated()
+		a.log.Info("job accepted", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	} else {
+		a.log.Info("job already submitted under this key", "job", job.ID, "key", job.IdempotencyKey)
+	}
 
 	w.Header().Set("Location", "/v1/jobs/"+job.ID)
-	a.send(w, http.StatusCreated, map[string]any{
+	a.send(w, code, map[string]any{
 		"id":     job.ID,
 		"status": job.Status,
 		"queue":  job.Queue,
@@ -270,6 +288,16 @@ func readLimit(r *http.Request, fallback, most int) (int, error) {
 		return 0, errors.New("limit must be between 1 and " + strconv.Itoa(most))
 	}
 	return limit, nil
+}
+
+// firstNonEmpty gives the first value that is set.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // isClientMistake reports whether the store refused a job because of what was

@@ -522,3 +522,81 @@ func TestAStaleCursorIsABadRequest(t *testing.T) {
 		t.Errorf("the answer does not say what to do: %s", got.Body)
 	}
 }
+
+// A repeated submission answers 200 and gives back the first job.
+//
+// Answering 201 to both would tell a client that it had just created
+// something, which is the belief the key exists to correct.
+func TestARepeatedSubmissionIsNotASecondJob(t *testing.T) {
+	handler, _ := serve(t)
+
+	body := `{"type":"charge","idempotency_key":"order-4471"}`
+
+	first := withKey(t, handler, "POST", "/v1/jobs", body)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("the first submission = %d", first.Code)
+	}
+
+	second := withKey(t, handler, "POST", "/v1/jobs", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("the repeat = %d, want 200, body %s", second.Code, second.Body)
+	}
+
+	var one, two struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(first.Body.Bytes(), &one)
+	json.Unmarshal(second.Body.Bytes(), &two)
+	if one.ID != two.ID {
+		t.Errorf("the repeat gave job %s, want the first at %s", two.ID, one.ID)
+	}
+
+	// And the Location header still points at the job, so a client following
+	// it lands in the same place either way.
+	if got := second.Header().Get("Location"); got != "/v1/jobs/"+one.ID {
+		t.Errorf("Location = %q", got)
+	}
+
+	if all, _ := listed(t, handler, ""); len(all) != 1 {
+		t.Errorf("the table holds %d jobs, want 1", len(all))
+	}
+}
+
+// The header is the one a proxy or a client library sets, and it wins over
+// the body, which belongs to the application.
+func TestTheIdempotencyHeaderIsAccepted(t *testing.T) {
+	handler, _ := serve(t)
+
+	headers := map[string]string{
+		"X-API-Key":       key,
+		"Content-Type":    "application/json",
+		"Idempotency-Key": "from-the-header",
+	}
+
+	first := call(t, handler, "POST", "/v1/jobs", `{"type":"charge"}`, headers)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("the first submission = %d, body %s", first.Code, first.Body)
+	}
+
+	second := call(t, handler, "POST", "/v1/jobs", `{"type":"charge"}`, headers)
+	if second.Code != http.StatusOK {
+		t.Errorf("the repeat = %d, want 200", second.Code)
+	}
+
+	// The header wins when both are set.
+	third := call(t, handler, "POST", "/v1/jobs", `{"type":"charge","idempotency_key":"from-the-body"}`, headers)
+	if third.Code != http.StatusOK {
+		t.Errorf("the header did not win over the body: %d", third.Code)
+	}
+}
+
+func TestJobsWithoutAKeyAreNeverMerged(t *testing.T) {
+	handler, _ := serve(t)
+
+	first := submit(t, handler, `{"type":"work"}`)
+	second := submit(t, handler, `{"type":"work"}`)
+
+	if first == second {
+		t.Fatal("two jobs with no key became one")
+	}
+}
