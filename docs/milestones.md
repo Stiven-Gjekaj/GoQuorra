@@ -24,11 +24,14 @@ Measured, on a real server against PostgreSQL 16:
 
 | Check | Result |
 | ----- | ------ |
-| Test cases | 128, of which 103 need nothing installed |
+| Test cases | 261, of which 202 need nothing installed |
+| Store contract rules | 58, and both stores pass all of them |
 | A worker stopped with SIGKILL while holding a job | The lease was taken back ten seconds later, the row named the worker that died, and the counter moved from 0 to 1 |
 | A job with `max_retries: 2` whose handler always fails | Ran three times, then `dead`, with the last error on the row |
 | Eight goroutines leasing forty jobs at once | No job handed out twice, against PostgreSQL and against the in-memory store |
-| Direct dependencies | Five |
+| Eight submissions at once under one idempotency key | Exactly one stored a job, and all eight were given the same one |
+| A handler running for two and a half times its lease | Finished once, because the heartbeat held the lease. With the heartbeat off it ran twice. |
+| Direct dependencies | Five, unchanged across seven features |
 
 ---
 
@@ -89,18 +92,6 @@ alone gets it wrong both times.
 **What would change the answer.** Somebody wanting it enough to specify the
 catch up behaviour, which is the part everybody forgets and then argues about.
 
-### Removing finished jobs
-
-A `succeeded` row stays for ever.
-On a busy queue the table grows without limit, and the index that finds ready
-jobs stays small only because it is partial.
-
-Deleting is easy and deciding is not: a finished job is the only record that
-the work happened, and somebody always wants it.
-
-**What would change the answer.** A retention setting, and an answer to where
-the row goes before it is deleted.
-
 ---
 
 ## Deliberately left
@@ -135,25 +126,88 @@ same thing as exactly once, and it must not be described as though it were.
 
 ### An idempotency key on submission
 
-A client that retries a submission because it did not see the answer creates a
-second job.
-A unique key supplied by the client, with a unique index, would remove that.
+Built. It was left out of the rebuild and the entry that recorded that said it
+was cheap and worth adding the first time somebody submitted from a network
+they did not trust. It is one nullable column, one partial unique index and
+one field, exactly as estimated.
 
-It was considered and left out of the rebuild, because it is the smaller half
-of the problem.
-It removes duplicates a client creates, and it does nothing about duplicates
-the queue creates when a lease is taken back.
-A handler still has to be safe to run twice, and once it is, the key buys much
-less.
-
-**What would change the answer.** It is cheap: one nullable column, one
-partial unique index, one field on the create request. It is worth adding the
-first time somebody submits from a network they do not trust. It should not be
-sold as a step towards exactly once, because it is not one.
+The warning in that entry still stands and is worth repeating here, because
+the feature now exists and can be misread. **It is not a step towards exactly
+once.** It removes the duplicates a client creates and none of the ones the
+queue creates when a lease is taken back. A handler still has to be safe to
+run twice.
 
 ---
 
 ## Recorded so nobody investigates them twice
+
+### The list of migrations has a limit, and here it is
+
+Every file in `migrations/` is applied in name order, and each is written to
+be safe to apply twice. There is no table recording what has run.
+
+That works while every change is additive, which all four are so far. The
+first change that is not, a column being dropped or a type being altered,
+needs a real migration tool, because "safe to apply twice" stops being
+achievable by writing IF NOT EXISTS.
+
+**What would change the answer.** The first destructive change. Do not reach
+for a tool before then: the list is three functions and a test, and a
+migration framework is a dependency, a state table and a failure mode.
+
+### The server refuses a lease under a second
+
+`rpc.DefaultLimits` sets a minimum of one second, and a worker asking for less
+gets a second anyway.
+
+This is recorded because it silently defeated a test. The first version of the
+slow handler test asked for a 300ms lease and ran a 900ms handler, expecting
+the reclaimer to take the job away without a heartbeat. The lease it actually
+held was one second, so the handler finished inside it and the test passed
+with the feature turned off.
+
+Any test about a lease running out has to use numbers above the minimum.
+
+### command in Kubernetes and command in Compose are different things
+
+`command:` in a Kubernetes manifest replaces the image's entrypoint.
+`command:` in a Compose file replaces its CMD.
+
+The image holds three binaries, so the caller has to choose one. With an
+ENTRYPOINT set, the Compose services asking for the worker ran the server with
+the path of the worker as an argument, and the server ignored the argument and
+started. The stack came up with no workers at all, jobs were accepted, and
+nothing ever leased them.
+
+The image uses CMD alone now, so both orchestrators select the same way, and
+both binaries refuse an argument they do not understand so the same mistake
+stops the container instead of starting the wrong program.
+
+### A nonce does not apply to a style attribute
+
+The dashboard carries a content policy naming a nonce for script and for
+style. A nonce applies to a `<style>` element and not to a `style=` attribute,
+so an inline style is refused by the browser and simply does not happen.
+
+The header of the page laid itself out with one, and the control it was meant
+to push to the right edge sat in the middle of the row instead, which read as
+a choice. Nothing failed, nothing reached the server log, and the only sign
+was a line in a console nobody had open.
+
+A test refuses a style attribute anywhere in the page. The same applies to any
+inline event handler, which is why every listener there is added in script.
+
+### The flag package stops at the first argument
+
+`quorractl get 6f1c0c64 -server http://elsewhere` used to read the address as
+a second job identifier, because Go's flag package stops parsing at the first
+token that is not an option. That is documented behaviour and a surprise to
+everybody, because every other tool on the machine takes them in either order.
+
+The tool moves the options in front before parsing, asking the flag set
+whether each one swallows the token after it. It writes a `--` between the two
+halves, always: the first version dropped a separator the caller had typed,
+and the argument it was protecting was then read as an option.
 
 ### Why the state machine has four states and not six
 
