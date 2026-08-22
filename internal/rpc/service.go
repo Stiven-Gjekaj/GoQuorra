@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
@@ -31,6 +32,11 @@ type Limits struct {
 	MinLeaseTTL     time.Duration
 	MaxLeaseTTL     time.Duration
 	DefaultLeaseTTL time.Duration
+
+	// MaxResultBytes bounds what a worker may hand back. A queue is not a
+	// place to put a large value: a row that holds one is read by every
+	// listing that touches it, and the dashboard shows a hundred at a time.
+	MaxResultBytes int
 }
 
 // DefaultLimits are used when the caller states none.
@@ -40,6 +46,7 @@ func DefaultLimits() Limits {
 		MinLeaseTTL:     time.Second,
 		MaxLeaseTTL:     time.Hour,
 		DefaultLeaseTTL: 30 * time.Second,
+		MaxResultBytes:  64 << 10,
 	}
 }
 
@@ -138,11 +145,21 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 			"outcome is %s, and it must be OUTCOME_SUCCEEDED or OUTCOME_FAILED", req.GetOutcome())
 	}
 
+	if len(req.GetResult()) > s.limits.MaxResultBytes {
+		// Refused rather than trimmed. Half a JSON document is not a smaller
+		// result, it is a broken one, and storing it would put a value on the
+		// job that nothing can read.
+		return nil, status.Errorf(codes.InvalidArgument,
+			"the result is %d bytes and the limit is %d. Store a large value where it belongs and report a reference to it.",
+			len(req.GetResult()), s.limits.MaxResultBytes)
+	}
+
 	job, err := s.store.Report(ctx, store.Report{
 		JobID:   req.GetJobId(),
 		LeaseID: req.GetLeaseId(),
 		Outcome: outcome,
 		Error:   req.GetError(),
+		Result:  req.GetResult(),
 	})
 
 	switch {
@@ -156,6 +173,11 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"the lease on job %s is no longer valid, so the job has been given to another worker", req.GetJobId())
 	case err != nil:
+		// A result that is not JSON is the worker's mistake, and the store
+		// says so. Answering Internal to it sends the reader to the server.
+		if strings.Contains(err.Error(), "not JSON") {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		s.log.Error("cannot record a report", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
 		return nil, status.Error(codes.Internal, "cannot record the report")
 	}
