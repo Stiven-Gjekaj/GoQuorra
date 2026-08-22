@@ -58,6 +58,16 @@ input, button {
 }
 button { cursor: pointer; }
 .err { color: var(--dead); }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+.filters button { font-size: 13px; padding: 5px 11px; }
+.filters button[aria-pressed="true"] { border-color: var(--leased); color: var(--leased); font-weight: 600; }
+td.act { white-space: nowrap; }
+/* The error is the widest thing on the row and the least urgent. Capped with
+   the full text on the title, so it cannot push the buttons at the end of the
+   row off the side of the table. */
+td.why { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
+td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
+.more { padding: 12px; text-align: center; }
 </style>
 </head>
 <body>
@@ -82,14 +92,16 @@ button { cursor: pointer; }
   <h3>Queues</h3>
   <div class="cards" id="queues"></div>
 
-  <h3>Recent jobs</h3>
+  <h3>Jobs</h3>
+  <div class="filters" id="filters"></div>
   <div class="scroll">
     <table>
       <thead>
-        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Priority</th><th>Attempts</th><th>Created</th><th>Last error</th></tr>
+        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Created</th><th>Last error</th><th>Actions</th></tr>
       </thead>
       <tbody id="jobs"></tbody>
     </table>
+    <div class="more" id="more"></div>
   </div>
 </main>
 
@@ -118,6 +130,21 @@ document.getElementById("keyform").addEventListener("submit", (event) => {
 function say(text, bad) {
   state.textContent = text;
   state.className = bad ? "tag err" : "tag";
+}
+
+// Which status the reader is looking at. Empty means all of them.
+let filter = "";
+
+async function post(path) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "X-API-Key": store.getItem("quorra.key") || "" },
+  });
+  if (!response.ok) {
+    const answer = await response.json().catch(() => ({}));
+    throw new Error(answer.error || ("the server answered " + response.status));
+  }
+  return response.json();
 }
 
 async function get(path) {
@@ -189,13 +216,56 @@ function renderQueues(rows) {
   }
 }
 
+// The statuses the filter row offers. Taken from what the server can hold,
+// not from what happens to be in the table right now, so a status with no
+// jobs in it is still a button somebody can press.
+const STATUSES = ["pending", "leased", "succeeded", "dead", "cancelled"];
+
+function renderFilters() {
+  const holder = document.getElementById("filters");
+  holder.replaceChildren();
+
+  for (const [value, label] of [["", "all"]].concat(STATUSES.map((s) => [s, s]))) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(filter === value));
+    button.addEventListener("click", () => {
+      filter = value;
+      renderFilters();
+      load();
+    });
+    holder.appendChild(button);
+  }
+}
+
+// A button that acts on one job, and says what happened where the reader is
+// already looking rather than in a box they have to dismiss.
+function action(row, label, path, id) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await post("/v1/jobs/" + encodeURIComponent(id) + "/" + path);
+      await load();
+    } catch (error) {
+      say(error.message, true);
+      button.disabled = false;
+    }
+  });
+  row.appendChild(button);
+}
+
 function renderJobs(list) {
   const body = document.getElementById("jobs");
   body.replaceChildren();
+  document.getElementById("more").textContent = "";
 
   if (!list || list.length === 0) {
     const row = document.createElement("tr");
-    const td = cell(row, "No jobs yet.");
+    const td = cell(row, filter ? "No " + filter + " jobs." : "No jobs yet.");
     td.colSpan = 8;
     td.className = "note";
     body.appendChild(row);
@@ -214,10 +284,36 @@ function renderJobs(list) {
     cell(row, job.type);
     cell(row, job.queue);
     cell(row, job.status, job.status);
-    cell(row, job.priority);
     cell(row, job.attempts + " of " + (job.max_retries + 1));
-    cell(row, new Date(job.created_at).toLocaleString());
-    cell(row, job.last_error || "");
+    // A short form for today and a date for anything older. The full moment
+    // is on the title. A column holding the date and the seconds of every
+    // row is the widest thing in the table and is read by nobody.
+    const created = new Date(job.created_at);
+    const today = new Date().toDateString() === created.toDateString();
+    const when = cell(row, today
+      ? created.toLocaleTimeString()
+      : created.toLocaleDateString());
+    when.title = created.toLocaleString();
+
+    // The result is worth seeing and too long for a column, so it hangs off
+    // the error cell as a title where there is no error to show.
+    const last = cell(row, job.last_error || "");
+    last.className = "why";
+    if (!job.last_error && job.result) {
+      last.textContent = "result";
+      last.title = JSON.stringify(job.result);
+    }
+
+    // Only the actions the server would accept. A button that always answers
+    // 409 teaches the reader to ignore the row.
+    const acts = cell(row, "");
+    acts.className = "act";
+    if (job.status === "pending" || job.status === "leased") {
+      action(acts, "cancel", "cancel", job.id);
+    }
+    if (job.status === "dead" || job.status === "cancelled") {
+      action(acts, "revive", "revive", job.id);
+    }
 
     body.appendChild(row);
   }
@@ -229,15 +325,21 @@ async function load() {
     return;
   }
   try {
-    const [queues, jobs] = await Promise.all([get("/v1/queues"), get("/v1/jobs?limit=25")]);
+    const path = "/v1/jobs?limit=25" + (filter ? "&status=" + encodeURIComponent(filter) : "");
+    const [queues, jobs] = await Promise.all([get("/v1/queues"), get(path)]);
     renderQueues(queues.queues || []);
     renderJobs(jobs.jobs || []);
+    if (jobs.next_cursor) {
+      document.getElementById("more").textContent =
+        "Showing the newest 25. Use quorractl list -all to see the rest.";
+    }
     say("updated " + new Date().toLocaleTimeString());
   } catch (error) {
     say(error.message, true);
   }
 }
 
+renderFilters();
 load();
 setInterval(load, 5000);
 </script>

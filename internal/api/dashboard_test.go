@@ -232,3 +232,42 @@ func TestTheDashboardStylesNothingInline(t *testing.T) {
 		t.Error("the dashboard uses a style attribute, which the policy on this page refuses")
 	}
 }
+
+// The filter row offers every status the server can hold.
+//
+// Built from a list rather than from whatever is in the table at the moment,
+// so a status with no jobs in it is still a button somebody can press. A
+// filter row that only shows what is already visible is no use for finding
+// the thing that is not.
+func TestTheDashboardOffersEveryStatus(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+
+	for _, status := range []string{"pending", "leased", "succeeded", "dead", "cancelled"} {
+		if !strings.Contains(string(source), `"`+status+`"`) {
+			t.Errorf("the dashboard does not offer the %q filter", status)
+		}
+	}
+}
+
+// The dashboard acts on a job through the same routes everything else uses.
+func TestTheDashboardUsesTheRealVerbs(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+
+	if !strings.Contains(string(source), `method: "POST"`) {
+		t.Error("the dashboard has no way to act on a job")
+	}
+	if !strings.Contains(string(source), "/v1/jobs/") {
+		t.Error("the dashboard does not call the job routes")
+	}
+	// Encoded, because a job identifier reaches this from the server and a
+	// path built by joining strings is a path somebody can escape.
+	if !strings.Contains(string(source), "encodeURIComponent") {
+		t.Error("the dashboard builds a path without encoding what it puts in it")
+	}
+}
