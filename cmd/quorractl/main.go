@@ -30,6 +30,8 @@ Commands:
   get       Show one job
   list      Show the most recent jobs
   queues    Count the jobs in each queue
+  cancel    Stop a job that has not finished
+  revive    Put a dead or cancelled job back in the queue
 
 Options common to every command:
   -server   The server address (default http://localhost:8080,
@@ -65,6 +67,10 @@ func run(args []string, out io.Writer) error {
 		return list(args[1:], out)
 	case "queues":
 		return queues(args[1:], out)
+	case "cancel":
+		return act(args[1:], out, "cancel", "cancelled")
+	case "revive":
+		return act(args[1:], out, "revive", "put back in the queue")
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
@@ -260,6 +266,33 @@ func queues(args []string, out io.Writer) error {
 		stat, _ := row.(map[string]any)
 		fmt.Fprintf(out, "%-20v %-12v %v\n", stat["queue"], stat["status"], number(stat["count"]))
 	}
+	return nil
+}
+
+// act runs one of the verbs that change a job.
+//
+// cancel and revive differ by a word each. Writing the flag parsing, the
+// argument check and the error handling twice is how the two of them end up
+// answering differently to the same mistake.
+func act(args []string, out io.Writer, verb, done string) error {
+	set := flag.NewFlagSet(verb, flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 1 {
+		set.Usage()
+		return errors.New("give exactly one job identifier")
+	}
+
+	id := set.Arg(0)
+	answer, err := c.send(context.Background(), http.MethodPost, "/v1/jobs/"+id+"/"+verb, nil)
+	if err != nil {
+		return err
+	}
+
+	status, _ := answer["status"].(string)
+	fmt.Fprintf(out, "%s %s (now %s)\n", id, done, status)
 	return nil
 }
 
