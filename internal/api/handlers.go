@@ -112,6 +112,36 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 	a.send(w, http.StatusOK, job)
 }
 
+// cancelJob handles POST /v1/jobs/{id}/cancel.
+//
+// A POST to a verb under the job, rather than a PATCH of its status. The
+// status is not a field a client may set: there is no request that legally
+// moves a job to succeeded, and an endpoint shaped like a field invites one.
+func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
+	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(w, err, "cannot cancel the job")
+		return
+	}
+
+	a.opts.Metrics.JobCancelled()
+	a.log.Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	a.send(w, http.StatusOK, job)
+}
+
+// reviveJob handles POST /v1/jobs/{id}/revive.
+func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
+	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(w, err, "cannot revive the job")
+		return
+	}
+
+	a.opts.Metrics.JobRevived()
+	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	a.send(w, http.StatusOK, job)
+}
+
 func (a *API) recentJobs(w http.ResponseWriter, r *http.Request) {
 	limit, err := readLimit(r, 50, 1000)
 	if err != nil {

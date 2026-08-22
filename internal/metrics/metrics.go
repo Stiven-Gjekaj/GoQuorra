@@ -29,6 +29,8 @@ type Metrics struct {
 	retried   prometheus.Counter
 	dead      prometheus.Counter
 	reclaimed prometheus.Counter
+	cancelled prometheus.Counter
+	revived   prometheus.Counter
 
 	queueLength *prometheus.GaugeVec
 	lifetime    *prometheus.HistogramVec
@@ -73,6 +75,19 @@ func New() *Metrics {
 			Help: "Leases that ran out before a worker reported, and were taken back.",
 		}),
 
+		// Cancellations and revivals are counted apart from everything else,
+		// because both are a person acting. A rise in either says something
+		// about the operators rather than about the work, and mixing them
+		// into the job counters would hide that.
+		cancelled: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "quorra_jobs_cancelled_total",
+			Help: "Jobs stopped by a person.",
+		}),
+		revived: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "quorra_jobs_revived_total",
+			Help: "Jobs put back in the queue by a person.",
+		}),
+
 		queueLength: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "quorra_queue_length",
 			Help: "Jobs in each queue, by status. Refreshed on a timer, so it lags by up to QUORRA_STATS_EVERY.",
@@ -97,6 +112,7 @@ func New() *Metrics {
 
 	registry.MustRegister(
 		m.created, m.leased, m.succeeded, m.retried, m.dead, m.reclaimed,
+		m.cancelled, m.revived,
 		m.queueLength, m.lifetime, m.httpLatency,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -156,6 +172,12 @@ func (m *Metrics) JobFinished(job *store.Job, now time.Time) {
 	m.lifetime.WithLabelValues(job.Queue, job.Status.String()).
 		Observe(now.Sub(job.CreatedAt).Seconds())
 }
+
+// JobCancelled records a job stopped by a person.
+func (m *Metrics) JobCancelled() { m.cancelled.Inc() }
+
+// JobRevived records a job put back in the queue by a person.
+func (m *Metrics) JobRevived() { m.revived.Inc() }
 
 // HTTPRequest records one answered request.
 func (m *Metrics) HTTPRequest(route, method, code string, took time.Duration) {

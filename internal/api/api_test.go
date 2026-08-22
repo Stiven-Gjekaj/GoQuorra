@@ -260,3 +260,130 @@ func TestTheLimitIsChecked(t *testing.T) {
 		t.Errorf("limit=10 gave %d", got.Code)
 	}
 }
+
+// submit stores a job through the API and gives back its identifier.
+func submit(t *testing.T, handler http.Handler, body string) string {
+	t.Helper()
+
+	made := withKey(t, handler, "POST", "/v1/jobs", body)
+	if made.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/jobs = %d, body %s", made.Code, made.Body)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(made.Body.Bytes(), &created); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	return created.ID
+}
+
+func statusOf(t *testing.T, handler http.Handler, id string) string {
+	t.Helper()
+
+	got := withKey(t, handler, "GET", "/v1/jobs/"+id, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET the job = %d", got.Code)
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &job); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	return job.Status
+}
+
+func TestAJobIsCancelledOverHTTP(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	if got := withKey(t, handler, "POST", "/v1/jobs/"+id+"/cancel", ""); got.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, body %s", got.Code, got.Body)
+	}
+	if got := statusOf(t, handler, id); got != "cancelled" {
+		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+func TestAJobIsRevivedOverHTTP(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	withKey(t, handler, "POST", "/v1/jobs/"+id+"/cancel", "")
+
+	if got := withKey(t, handler, "POST", "/v1/jobs/"+id+"/revive", ""); got.Code != http.StatusOK {
+		t.Fatalf("revive = %d, body %s", got.Code, got.Body)
+	}
+	if got := statusOf(t, handler, id); got != "pending" {
+		t.Errorf("status = %q, want pending", got)
+	}
+}
+
+// A job in the wrong state is 409 and not 400.
+//
+// The request is well formed and would be correct against the same job in
+// another state, so a client that retries once the job moves is behaving
+// sensibly. 400 tells it never to try again, which is the wrong advice.
+func TestTheWrongStateIsAConflict(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+
+	// A waiting job cannot be revived, because it is already in the queue.
+	got := withKey(t, handler, "POST", "/v1/jobs/"+id+"/revive", "")
+	if got.Code != http.StatusConflict {
+		t.Fatalf("revive of a waiting job = %d, want 409, body %s", got.Code, got.Body)
+	}
+	if !strings.Contains(got.Body.String(), "pending") {
+		t.Errorf("the answer does not say what state the job is in: %s", got.Body)
+	}
+
+	// Cancelling twice is the same shape.
+	withKey(t, handler, "POST", "/v1/jobs/"+id+"/cancel", "")
+	if again := withKey(t, handler, "POST", "/v1/jobs/"+id+"/cancel", ""); again.Code != http.StatusConflict {
+		t.Errorf("cancelling twice = %d, want 409", again.Code)
+	}
+}
+
+func TestActingOnAnUnknownJobIsFourOhFour(t *testing.T) {
+	handler, _ := serve(t)
+
+	for _, verb := range []string{"cancel", "revive"} {
+		got := withKey(t, handler, "POST", "/v1/jobs/6f1c0c64-0000-0000-0000-000000000000/"+verb, "")
+		if got.Code != http.StatusNotFound {
+			t.Errorf("%s of an unknown job = %d, want 404", verb, got.Code)
+		}
+	}
+}
+
+func TestTheNewRoutesNeedTheKey(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	for _, verb := range []string{"cancel", "revive"} {
+		got := call(t, handler, "POST", "/v1/jobs/"+id+"/"+verb, "", nil)
+		if got.Code != http.StatusUnauthorized {
+			t.Errorf("%s with no key = %d, want 401", verb, got.Code)
+		}
+	}
+}
+
+// The verbs are POST only. A GET that changes a job would be followed by any
+// crawler, any link checker, and any browser prefetching a link.
+func TestTheVerbsRefuseAGet(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	for _, verb := range []string{"cancel", "revive"} {
+		got := withKey(t, handler, "GET", "/v1/jobs/"+id+"/"+verb, "")
+		if got.Code == http.StatusOK {
+			t.Errorf("GET %s was accepted", verb)
+		}
+	}
+	if got := statusOf(t, handler, id); got != "pending" {
+		t.Errorf("a GET changed the job to %q", got)
+	}
+}

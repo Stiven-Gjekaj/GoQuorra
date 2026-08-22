@@ -78,6 +78,8 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs", a.guard(http.HandlerFunc(a.createJob)))
 	mux.Handle("GET /v1/jobs", a.guard(http.HandlerFunc(a.recentJobs)))
 	mux.Handle("GET /v1/jobs/{id}", a.guard(http.HandlerFunc(a.getJob)))
+	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(http.HandlerFunc(a.cancelJob)))
+	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(http.HandlerFunc(a.reviveJob)))
 	mux.Handle("GET /v1/queues", a.guard(http.HandlerFunc(a.queueStats)))
 
 	return a.observe(mux)
@@ -189,6 +191,14 @@ func (a *API) fail(w http.ResponseWriter, status int, message string) {
 func (a *API) failWith(w http.ResponseWriter, err error, what string) {
 	if errors.Is(err, store.ErrNotFound) {
 		a.fail(w, http.StatusNotFound, "no job carries that identifier")
+		return
+	}
+
+	// 409 and not 400. The request is well formed and would be correct
+	// against the same job in another state, so a client that retries after
+	// the job moves is behaving sensibly. 400 tells it never to try again.
+	if errors.Is(err, store.ErrWrongState) {
+		a.fail(w, http.StatusConflict, err.Error())
 		return
 	}
 
