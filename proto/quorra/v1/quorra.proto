@@ -34,6 +34,15 @@ service QueueService {
   // no code ever read, so a worker that set it to false and called AckJob was
   // recorded as having succeeded.
   rpc Report(ReportRequest) returns (ReportResponse);
+
+  // Heartbeat pushes the expiry of a lease further out.
+  //
+  // A worker calls it while a handler is still running, so that a job slower
+  // than the lease it was given is not taken back and handed to somebody
+  // else. The refusal is the useful part: a job that was cancelled, or one
+  // whose lease already ran out and was reclaimed, fails this call with
+  // FAILED_PRECONDITION, and that is how a worker learns to stop.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 // Job is one piece of work.
@@ -99,6 +108,22 @@ message ReportRequest {
   // error is kept on the job and shown in the dashboard. It is ignored when
   // the outcome is a success.
   string error = 5;
+}
+
+message HeartbeatRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  string lease_id = 3;
+
+  // extend_by is how much longer the worker is asking for, measured from the
+  // moment the server handles the call.
+  google.protobuf.Duration extend_by = 4;
+}
+
+message HeartbeatResponse {
+  // lease_expires_at is the new expiry. A worker that is close to it and
+  // still working knows its next heartbeat matters.
+  google.protobuf.Timestamp lease_expires_at = 1;
 }
 
 message ReportResponse {

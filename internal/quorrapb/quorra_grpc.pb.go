@@ -26,8 +26,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	QueueService_Lease_FullMethodName  = "/quorra.v1.QueueService/Lease"
-	QueueService_Report_FullMethodName = "/quorra.v1.QueueService/Report"
+	QueueService_Lease_FullMethodName     = "/quorra.v1.QueueService/Lease"
+	QueueService_Report_FullMethodName    = "/quorra.v1.QueueService/Report"
+	QueueService_Heartbeat_FullMethodName = "/quorra.v1.QueueService/Heartbeat"
 )
 
 // QueueServiceClient is the client API for QueueService service.
@@ -54,6 +55,14 @@ type QueueServiceClient interface {
 	// no code ever read, so a worker that set it to false and called AckJob was
 	// recorded as having succeeded.
 	Report(ctx context.Context, in *ReportRequest, opts ...grpc.CallOption) (*ReportResponse, error)
+	// Heartbeat pushes the expiry of a lease further out.
+	//
+	// A worker calls it while a handler is still running, so that a job slower
+	// than the lease it was given is not taken back and handed to somebody
+	// else. The refusal is the useful part: a job that was cancelled, or one
+	// whose lease already ran out and was reclaimed, fails this call with
+	// FAILED_PRECONDITION, and that is how a worker learns to stop.
+	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 }
 
 type queueServiceClient struct {
@@ -84,6 +93,16 @@ func (c *queueServiceClient) Report(ctx context.Context, in *ReportRequest, opts
 	return out, nil
 }
 
+func (c *queueServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HeartbeatResponse)
+	err := c.cc.Invoke(ctx, QueueService_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // QueueServiceServer is the server API for QueueService service.
 // All implementations must embed UnimplementedQueueServiceServer
 // for forward compatibility.
@@ -108,6 +127,14 @@ type QueueServiceServer interface {
 	// no code ever read, so a worker that set it to false and called AckJob was
 	// recorded as having succeeded.
 	Report(context.Context, *ReportRequest) (*ReportResponse, error)
+	// Heartbeat pushes the expiry of a lease further out.
+	//
+	// A worker calls it while a handler is still running, so that a job slower
+	// than the lease it was given is not taken back and handed to somebody
+	// else. The refusal is the useful part: a job that was cancelled, or one
+	// whose lease already ran out and was reclaimed, fails this call with
+	// FAILED_PRECONDITION, and that is how a worker learns to stop.
+	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	mustEmbedUnimplementedQueueServiceServer()
 }
 
@@ -123,6 +150,9 @@ func (UnimplementedQueueServiceServer) Lease(context.Context, *LeaseRequest) (*L
 }
 func (UnimplementedQueueServiceServer) Report(context.Context, *ReportRequest) (*ReportResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Report not implemented")
+}
+func (UnimplementedQueueServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Heartbeat not implemented")
 }
 func (UnimplementedQueueServiceServer) mustEmbedUnimplementedQueueServiceServer() {}
 func (UnimplementedQueueServiceServer) testEmbeddedByValue()                      {}
@@ -181,6 +211,24 @@ func _QueueService_Report_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QueueService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QueueServiceServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QueueService_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QueueServiceServer).Heartbeat(ctx, req.(*HeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // QueueService_ServiceDesc is the grpc.ServiceDesc for QueueService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -195,6 +243,10 @@ var QueueService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Report",
 			Handler:    _QueueService_Report_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _QueueService_Heartbeat_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -408,6 +408,122 @@ func (x *ReportRequest) GetError() string {
 	return ""
 }
 
+type HeartbeatRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	JobId    string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	LeaseId  string                 `protobuf:"bytes,3,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	// extend_by is how much longer the worker is asking for, measured from the
+	// moment the server handles the call.
+	ExtendBy      *durationpb.Duration `protobuf:"bytes,4,opt,name=extend_by,json=extendBy,proto3" json:"extend_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatRequest) Reset() {
+	*x = HeartbeatRequest{}
+	mi := &file_quorra_v1_quorra_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatRequest) ProtoMessage() {}
+
+func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_quorra_v1_quorra_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *HeartbeatRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetExtendBy() *durationpb.Duration {
+	if x != nil {
+		return x.ExtendBy
+	}
+	return nil
+}
+
+type HeartbeatResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// lease_expires_at is the new expiry. A worker that is close to it and
+	// still working knows its next heartbeat matters.
+	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=lease_expires_at,json=leaseExpiresAt,proto3" json:"lease_expires_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_quorra_v1_quorra_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_quorra_v1_quorra_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *HeartbeatResponse) GetLeaseExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LeaseExpiresAt
+	}
+	return nil
+}
+
 type ReportResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is where the job ended up: pending when it will be retried,
@@ -423,7 +539,7 @@ type ReportResponse struct {
 
 func (x *ReportResponse) Reset() {
 	*x = ReportResponse{}
-	mi := &file_quorra_v1_quorra_proto_msgTypes[4]
+	mi := &file_quorra_v1_quorra_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -435,7 +551,7 @@ func (x *ReportResponse) String() string {
 func (*ReportResponse) ProtoMessage() {}
 
 func (x *ReportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_quorra_v1_quorra_proto_msgTypes[4]
+	mi := &file_quorra_v1_quorra_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -448,7 +564,7 @@ func (x *ReportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportResponse.ProtoReflect.Descriptor instead.
 func (*ReportResponse) Descriptor() ([]byte, []int) {
-	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{4}
+	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ReportResponse) GetStatus() string {
@@ -504,7 +620,14 @@ const file_quorra_v1_quorra_proto_rawDesc = "" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x19\n" +
 	"\blease_id\x18\x03 \x01(\tR\aleaseId\x12,\n" +
 	"\aoutcome\x18\x04 \x01(\x0e2\x12.quorra.v1.OutcomeR\aoutcome\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"w\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"\x99\x01\n" +
+	"\x10HeartbeatRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x19\n" +
+	"\blease_id\x18\x03 \x01(\tR\aleaseId\x126\n" +
+	"\textend_by\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\bextendBy\"Y\n" +
+	"\x11HeartbeatResponse\x12D\n" +
+	"\x10lease_expires_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt\"w\n" +
 	"\x0eReportResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1a\n" +
 	"\battempts\x18\x02 \x01(\x05R\battempts\x121\n" +
@@ -512,10 +635,11 @@ const file_quorra_v1_quorra_proto_rawDesc = "" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11OUTCOME_SUCCEEDED\x10\x01\x12\x12\n" +
-	"\x0eOUTCOME_FAILED\x10\x022\x89\x01\n" +
+	"\x0eOUTCOME_FAILED\x10\x022\xd1\x01\n" +
 	"\fQueueService\x12:\n" +
 	"\x05Lease\x12\x17.quorra.v1.LeaseRequest\x1a\x18.quorra.v1.LeaseResponse\x12=\n" +
-	"\x06Report\x12\x18.quorra.v1.ReportRequest\x1a\x19.quorra.v1.ReportResponseB>Z<github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb;quorrapbb\x06proto3"
+	"\x06Report\x12\x18.quorra.v1.ReportRequest\x1a\x19.quorra.v1.ReportResponse\x12F\n" +
+	"\tHeartbeat\x12\x1b.quorra.v1.HeartbeatRequest\x1a\x1c.quorra.v1.HeartbeatResponseB>Z<github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb;quorrapbb\x06proto3"
 
 var (
 	file_quorra_v1_quorra_proto_rawDescOnce sync.Once
@@ -530,34 +654,40 @@ func file_quorra_v1_quorra_proto_rawDescGZIP() []byte {
 }
 
 var file_quorra_v1_quorra_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_quorra_v1_quorra_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_quorra_v1_quorra_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_quorra_v1_quorra_proto_goTypes = []any{
 	(Outcome)(0),                  // 0: quorra.v1.Outcome
 	(*Job)(nil),                   // 1: quorra.v1.Job
 	(*LeaseRequest)(nil),          // 2: quorra.v1.LeaseRequest
 	(*LeaseResponse)(nil),         // 3: quorra.v1.LeaseResponse
 	(*ReportRequest)(nil),         // 4: quorra.v1.ReportRequest
-	(*ReportResponse)(nil),        // 5: quorra.v1.ReportResponse
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 7: google.protobuf.Duration
+	(*HeartbeatRequest)(nil),      // 5: quorra.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),     // 6: quorra.v1.HeartbeatResponse
+	(*ReportResponse)(nil),        // 7: quorra.v1.ReportResponse
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 9: google.protobuf.Duration
 }
 var file_quorra_v1_quorra_proto_depIdxs = []int32{
-	6, // 0: quorra.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
-	6, // 1: quorra.v1.Job.run_at:type_name -> google.protobuf.Timestamp
-	6, // 2: quorra.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	7, // 3: quorra.v1.LeaseRequest.lease_ttl:type_name -> google.protobuf.Duration
-	1, // 4: quorra.v1.LeaseResponse.jobs:type_name -> quorra.v1.Job
-	0, // 5: quorra.v1.ReportRequest.outcome:type_name -> quorra.v1.Outcome
-	6, // 6: quorra.v1.ReportResponse.run_at:type_name -> google.protobuf.Timestamp
-	2, // 7: quorra.v1.QueueService.Lease:input_type -> quorra.v1.LeaseRequest
-	4, // 8: quorra.v1.QueueService.Report:input_type -> quorra.v1.ReportRequest
-	3, // 9: quorra.v1.QueueService.Lease:output_type -> quorra.v1.LeaseResponse
-	5, // 10: quorra.v1.QueueService.Report:output_type -> quorra.v1.ReportResponse
-	9, // [9:11] is the sub-list for method output_type
-	7, // [7:9] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	8,  // 0: quorra.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
+	8,  // 1: quorra.v1.Job.run_at:type_name -> google.protobuf.Timestamp
+	8,  // 2: quorra.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	9,  // 3: quorra.v1.LeaseRequest.lease_ttl:type_name -> google.protobuf.Duration
+	1,  // 4: quorra.v1.LeaseResponse.jobs:type_name -> quorra.v1.Job
+	0,  // 5: quorra.v1.ReportRequest.outcome:type_name -> quorra.v1.Outcome
+	9,  // 6: quorra.v1.HeartbeatRequest.extend_by:type_name -> google.protobuf.Duration
+	8,  // 7: quorra.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	8,  // 8: quorra.v1.ReportResponse.run_at:type_name -> google.protobuf.Timestamp
+	2,  // 9: quorra.v1.QueueService.Lease:input_type -> quorra.v1.LeaseRequest
+	4,  // 10: quorra.v1.QueueService.Report:input_type -> quorra.v1.ReportRequest
+	5,  // 11: quorra.v1.QueueService.Heartbeat:input_type -> quorra.v1.HeartbeatRequest
+	3,  // 12: quorra.v1.QueueService.Lease:output_type -> quorra.v1.LeaseResponse
+	7,  // 13: quorra.v1.QueueService.Report:output_type -> quorra.v1.ReportResponse
+	6,  // 14: quorra.v1.QueueService.Heartbeat:output_type -> quorra.v1.HeartbeatResponse
+	12, // [12:15] is the sub-list for method output_type
+	9,  // [9:12] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_quorra_v1_quorra_proto_init() }
@@ -571,7 +701,7 @@ func file_quorra_v1_quorra_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_quorra_v1_quorra_proto_rawDesc), len(file_quorra_v1_quorra_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
