@@ -54,8 +54,9 @@ To see the whole thing running:
 | A new HTTP route | `internal/api/` |
 | The worker protocol | `proto/quorra/v1/quorra.proto`, then `make proto` |
 | What a worker does | `worker/` |
+| What a producer can ask for | `client/` |
 | The dashboard | `internal/api/dashboard.html` |
-| The schema | `migrations/`, and the contract suite applies it |
+| The schema | a new file in `migrations/`, never an edit to an old one |
 | Something not built yet | `docs/milestones.md` |
 
 ## The rules that catch people
@@ -75,6 +76,12 @@ as to an agent. These five cause the most rework.
 - **A new rule about storage goes in the contract suite first.** Then both
   stores are made to pass it. A rule added to one store alone is a rule the
   other one quietly breaks.
+- **A schema change is a new file, and it is safe to apply twice.** Every file
+  in `migrations/` is applied in name order on every start, and there is no
+  table recording what has run. Name it with four digits, because `10_x.sql`
+  sorts before `9_x.sql`. Write `IF NOT EXISTS` on every `CREATE`, because a
+  statement that fails on a second apply turns a container restart into an
+  outage. Both rules are tested.
 
 ## Four traps that this design creates
 
@@ -102,6 +109,14 @@ Take the time as a parameter.
 Every store here takes a `func() time.Time`, which is what lets a test move
 time forward and watch a lease expire in microseconds rather than in the
 thirty seconds it takes in production.
+
+**A limit you forgot about can defeat a test.**
+The server refuses a lease under a second, so a test asking for 300ms holds
+one second.
+A test written around a shorter lease passed with the feature it was testing
+switched off.
+When a test is about a bound being reached, check what the server actually
+applied rather than what the test asked for.
 
 ## Do not edit the generated code
 
