@@ -601,7 +601,9 @@ detector, the generated code check, and the documentation links.
 
 **261 cases pass. 202 of them need nothing installed.**
 
-The 59 that do are the store contract suite against PostgreSQL:
+The other 59 need a database. Fifty eight of them are the store contract
+suite, and the fifty ninth is the test that holds the suite, which skips
+without one:
 
 ```
 export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra_test?sslmode=disable"
