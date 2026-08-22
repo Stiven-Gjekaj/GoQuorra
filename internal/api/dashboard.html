@@ -97,7 +97,7 @@ td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
   <div class="scroll">
     <table>
       <thead>
-        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Created</th><th>Last error</th><th>Actions</th></tr>
+        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Created</th><th>Outcome</th><th>Actions</th></tr>
       </thead>
       <tbody id="jobs"></tbody>
     </table>
@@ -295,8 +295,13 @@ function renderJobs(list) {
       : created.toLocaleDateString());
     when.title = created.toLocaleString();
 
-    // The result is worth seeing and too long for a column, so it hangs off
-    // the error cell as a title where there is no error to show.
+    // One column for what came of the job, because a job has an error or a
+    // result and never both. The full text of either is too long for a
+    // column and hangs off the cell as a title.
+    //
+    // The column is headed Outcome and not Last error. It held that name
+    // while it also showed the word "result", which put a successful job
+    // under a heading that says it failed.
     const last = cell(row, job.last_error || "");
     last.className = "why";
     if (!job.last_error && job.result) {

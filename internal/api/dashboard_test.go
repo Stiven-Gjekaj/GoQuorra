@@ -271,3 +271,34 @@ func TestTheDashboardUsesTheRealVerbs(t *testing.T) {
 		t.Error("the dashboard builds a path without encoding what it puts in it")
 	}
 }
+
+// A column that shows a result is not headed with a word that means a fault.
+//
+// The result of a succeeded job hangs off the same cell as the error of a
+// failed one, because a job has one or the other and never both. That is
+// worth the saved column, but only while the heading covers both. The
+// heading said Last error, so a job that finished correctly was listed with
+// the word "result" underneath it, which reads as the name of what went
+// wrong.
+//
+// Nothing reports this. The server answers 200, the page draws, and the row
+// is merely wrong.
+func TestTheDashboardDoesNotCallAResultAnError(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	// The cell carries a result when there is no error to show.
+	if !strings.Contains(page, `last.textContent = "result"`) {
+		t.Skip("the dashboard no longer puts a result in that cell, so there is nothing to head")
+	}
+
+	if strings.Contains(page, "<th>Last error</th>") {
+		t.Error("the dashboard writes a result into a column headed Last error")
+	}
+	if !strings.Contains(page, "<th>Outcome</th>") {
+		t.Error("the dashboard has no Outcome column for the error or the result")
+	}
+}
