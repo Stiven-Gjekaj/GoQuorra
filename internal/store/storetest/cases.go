@@ -1006,6 +1006,98 @@ var cases = []testCase{
 		}
 	}},
 
+	{"a job keeps what it produced", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "count"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		got, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeDone,
+			Result:  []byte(`{"rows":41,"skipped":1}`),
+		})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		samePayload(t, got.Result, []byte(`{"rows":41,"skipped":1}`))
+
+		stored, err := s.Get(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		samePayload(t, stored.Result, []byte(`{"rows":41,"skipped":1}`))
+	}},
+
+	// The output of an attempt that failed is not an output. Keeping it would
+	// leave the value from a failed run sitting on a job that later succeeded
+	// with a different one, and nothing on the row would say which it was.
+	{"a failed attempt keeps no result", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "count"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		got, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeFailed,
+			Error:   "half of it worked",
+			Result:  []byte(`{"rows":20}`),
+		})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		if len(got.Result) != 0 {
+			t.Errorf("a failed attempt kept the result %s", got.Result)
+		}
+
+		// And the retry that succeeds writes the real one.
+		clock.Advance(time.Hour)
+		again := lease(t, s, store.LeaseRequest{})[0]
+		done, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: again.LeaseID,
+			Outcome: jobs.OutcomeDone,
+			Result:  []byte(`{"rows":41}`),
+		})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		samePayload(t, done.Result, []byte(`{"rows":41}`))
+	}},
+
+	{"a job that produced nothing carries no result", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		got, err := s.Report(ctx(), store.Report{JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		if len(got.Result) != 0 {
+			t.Errorf("a job with no result carries %s", got.Result)
+		}
+	}},
+
+	{"a result that is not JSON is refused", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		_, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeDone,
+			Result:  []byte(`{"rows":`),
+		})
+		if err == nil {
+			t.Fatal("a result that is not JSON was stored")
+		}
+
+		// And the job is untouched rather than half reported.
+		stored, _ := s.Get(ctx(), made.ID)
+		if stored.Status != jobs.Leased {
+			t.Errorf("status = %q, want the job left alone", stored.Status)
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

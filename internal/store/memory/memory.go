@@ -174,6 +174,9 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := rep.Validate(); err != nil {
+		return nil, err
+	}
 
 	now := s.opts.Now()
 
@@ -193,6 +196,14 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 	}
 
 	s.apply(rec, rep.Outcome, rep.Error, now)
+
+	// Only on a success. The output of an attempt that failed is not an
+	// output, and keeping it would leave the value from a failed run sitting
+	// on a job that later succeeded with a different one.
+	if rep.Outcome == jobs.OutcomeDone && len(rep.Result) > 0 {
+		rec.job.Result = append(json.RawMessage(nil), rep.Result...)
+	}
+
 	return clone(&rec.job), nil
 }
 
@@ -499,6 +510,9 @@ func clone(job *store.Job) *store.Job {
 
 	if job.Payload != nil {
 		out.Payload = append(json.RawMessage(nil), job.Payload...)
+	}
+	if job.Result != nil {
+		out.Result = append(json.RawMessage(nil), job.Result...)
 	}
 	if job.LeaseExpiresAt != nil {
 		expires := *job.LeaseExpiresAt

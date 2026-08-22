@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -18,6 +19,10 @@ import (
 // lock the reclaimer can take the job back between the first and the third.
 // The job would then be given to another worker and retired by this one.
 func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error) {
+	if err := rep.Validate(); err != nil {
+		return nil, err
+	}
+
 	now := s.opts.Now()
 
 	tx, err := s.pool.Begin(ctx)
@@ -56,7 +61,7 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 		return nil, store.ErrLeaseNotValid
 	}
 
-	job, err := s.applyDecision(ctx, tx, rep.JobID, attempts, maxRetries, rep.Outcome, rep.Error, now)
+	job, err := s.applyDecision(ctx, tx, rep.JobID, attempts, maxRetries, rep.Outcome, rep.Error, now, rep.Result)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +129,7 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 
 	for _, e := range found {
 		if _, err := s.applyDecision(ctx, tx, e.id, e.attempts, e.maxRetries,
-			jobs.OutcomeExpired, expiryMessage(e.worker), now); err != nil {
+			jobs.OutcomeExpired, expiryMessage(e.worker), now, nil); err != nil {
 			return 0, err
 		}
 	}
@@ -148,6 +153,7 @@ func (s *Store) applyDecision(
 	outcome jobs.Outcome,
 	message string,
 	now time.Time,
+	result json.RawMessage,
 ) (*store.Job, error) {
 	decision := s.opts.PolicyFor(maxRetries).Decide(attempts, outcome, now, s.opts.Jitter())
 
@@ -159,6 +165,14 @@ func (s *Store) applyDecision(
 		lastError = &message
 	}
 
+	// Only on a success. The output of an attempt that failed is not an
+	// output, and keeping it would leave the value from a failed run sitting
+	// on a job that later succeeded with a different one.
+	var kept []byte
+	if outcome == jobs.OutcomeDone && len(result) > 0 {
+		kept = result
+	}
+
 	row := tx.QueryRow(ctx, `
 		UPDATE jobs SET
 			status = $1,
@@ -166,12 +180,13 @@ func (s *Store) applyDecision(
 			run_at = $3,
 			updated_at = $4,
 			last_error = COALESCE($5, last_error),
+			result = COALESCE($6, result),
 			lease_id = NULL,
 			leased_by = NULL,
 			lease_expires_at = NULL
-		WHERE id = $6
+		WHERE id = $7
 		RETURNING `+columns,
-		string(decision.Status), decision.Attempts, decision.RunAt, now, lastError, id,
+		string(decision.Status), decision.Attempts, decision.RunAt, now, lastError, kept, id,
 	)
 
 	job, _, err := scanJob(row)

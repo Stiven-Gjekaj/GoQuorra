@@ -70,6 +70,11 @@ type Job struct {
 	// named it at all.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
+	// Result is what the worker produced, if it produced anything. It is
+	// whatever JSON the handler returned, and this project does not look
+	// inside it.
+	Result json.RawMessage `json:"result,omitempty"`
+
 	RunAt     time.Time `json:"run_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -150,6 +155,18 @@ type Report struct {
 
 	// Error is the message to keep on a failure. It is ignored on a success.
 	Error string
+
+	// Result is what the job produced. It is kept only on a success, because
+	// the output of an attempt that failed is not an output.
+	Result json.RawMessage
+}
+
+// Validate refuses a report that cannot be stored.
+func (r Report) Validate() error {
+	if len(r.Result) > 0 && !json.Valid(r.Result) {
+		return errors.New("store: the result is not JSON")
+	}
+	return nil
 }
 
 // Filter narrows a listing.
