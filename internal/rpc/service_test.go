@@ -297,3 +297,88 @@ func leaseOne(t *testing.T, client quorrapb.QueueServiceClient, ctx context.Cont
 	}
 	return got.GetJobs()[0]
 }
+
+func TestAHeartbeatPushesTheExpiryOut(t *testing.T) {
+	client, backing, tick := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+	first := leased.GetLeaseExpiresAt().AsTime()
+
+	tick.Advance(30 * time.Second)
+	got, err := client.Heartbeat(ctx, &quorrapb.HeartbeatRequest{
+		JobId:    leased.GetId(),
+		WorkerId: "worker-1",
+		LeaseId:  leased.GetLeaseId(),
+		ExtendBy: durationpb.New(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	extended := got.GetLeaseExpiresAt().AsTime()
+	if !extended.After(first) {
+		t.Errorf("the expiry is %s, which is not after the original %s", extended, first)
+	}
+	if want := start.Add(90 * time.Second); !extended.Equal(want) {
+		t.Errorf("the expiry is %s, want %s measured from the moment of the call", extended, want)
+	}
+}
+
+// A worker learns that its job was cancelled by being refused a heartbeat.
+//
+// The code is the same one the report path uses for the same condition, so a
+// worker has one thing to check and one thing to do about it.
+func TestAHeartbeatOnACancelledJobIsRefused(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	if _, err := backing.Cancel(ctx, leased.GetId()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	_, err := client.Heartbeat(ctx, &quorrapb.HeartbeatRequest{
+		JobId:   leased.GetId(),
+		LeaseId: leased.GetLeaseId(),
+	})
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition (error: %v)", got, err)
+	}
+}
+
+// A worker cannot get through this call what it was refused at lease time.
+// Without the same cap here, the one on Lease is decoration.
+func TestAHeartbeatIsBoundedLikeALease(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	got, err := client.Heartbeat(ctx, &quorrapb.HeartbeatRequest{
+		JobId:    leased.GetId(),
+		LeaseId:  leased.GetLeaseId(),
+		ExtendBy: durationpb.New(9000 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	limits := rpc.DefaultLimits()
+	if want := start.Add(limits.MaxLeaseTTL); !got.GetLeaseExpiresAt().AsTime().Equal(want) {
+		t.Errorf("the expiry is %s, want the server cap at %s", got.GetLeaseExpiresAt().AsTime(), want)
+	}
+}
+
+func TestAHeartbeatNeedsAJobAndALease(t *testing.T) {
+	client, _, _ := dial(t)
+
+	_, err := client.Heartbeat(t.Context(), &quorrapb.HeartbeatRequest{})
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("code = %s, want InvalidArgument", got)
+	}
+}

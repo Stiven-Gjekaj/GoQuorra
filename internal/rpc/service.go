@@ -171,6 +171,49 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 	}, nil
 }
 
+// Heartbeat pushes the expiry of a lease further out.
+func (s *Service) Heartbeat(ctx context.Context, req *quorrapb.HeartbeatRequest) (*quorrapb.HeartbeatResponse, error) {
+	if req.GetJobId() == "" || req.GetLeaseId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id and lease_id are both required")
+	}
+
+	by := s.limits.DefaultLeaseTTL
+	if req.GetExtendBy() != nil {
+		by = req.GetExtendBy().AsDuration()
+	}
+	// Bounded by the same limits a lease is. A worker asking for a week
+	// through this call would otherwise get what it was refused at lease
+	// time, which makes the cap at lease time decoration.
+	if by < s.limits.MinLeaseTTL {
+		by = s.limits.MinLeaseTTL
+	}
+	if by > s.limits.MaxLeaseTTL {
+		by = s.limits.MaxLeaseTTL
+	}
+
+	job, err := s.store.ExtendLease(ctx, req.GetJobId(), req.GetLeaseId(), by)
+
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, status.Errorf(codes.NotFound, "no job carries the identifier %s", req.GetJobId())
+	case errors.Is(err, store.ErrLeaseNotValid):
+		// The same code the report path uses for the same condition, so a
+		// worker has one thing to check. It means stop: the job has been
+		// cancelled, or taken back and given to somebody else.
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"the lease on job %s is no longer valid, so the job is no longer yours", req.GetJobId())
+	case err != nil:
+		s.log.Error("cannot extend a lease", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
+		return nil, status.Error(codes.Internal, "cannot extend the lease")
+	}
+
+	answer := &quorrapb.HeartbeatResponse{}
+	if job.LeaseExpiresAt != nil {
+		answer.LeaseExpiresAt = timestamppb.New(*job.LeaseExpiresAt)
+	}
+	return answer, nil
+}
+
 // toProto turns a stored job into one on the wire.
 func toProto(job *store.Job) *quorrapb.Job {
 	out := &quorrapb.Job{
