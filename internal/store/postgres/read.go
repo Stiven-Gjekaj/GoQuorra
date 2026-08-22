@@ -144,12 +144,13 @@ func scanJob(r row) (*store.Job, int64, error) {
 		leaseID  *string
 		leasedBy *string
 		expires  *time.Time
+		key      *string
 	)
 
 	err := r.Scan(
 		&job.ID, &seq, &job.Type, &payload, &job.Queue, &job.Priority,
 		&status, &job.Attempts, &job.MaxRetries, &job.LastError,
-		&leaseID, &leasedBy, &expires,
+		&leaseID, &leasedBy, &expires, &key,
 		&job.RunAt, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err != nil {
@@ -168,6 +169,9 @@ func scanJob(r row) (*store.Job, int64, error) {
 	}
 	if leasedBy != nil {
 		job.LeasedBy = *leasedBy
+	}
+	if key != nil {
+		job.IdempotencyKey = *key
 	}
 	if expires != nil {
 		// UTC, so that a time from the database compares against a time from

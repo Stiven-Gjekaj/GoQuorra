@@ -34,7 +34,11 @@ type Store struct {
 
 	mu      sync.Mutex
 	records map[string]*record
-	next    uint64
+
+	// byKey points an idempotency key at the job that claimed it.
+	byKey map[string]string
+
+	next uint64
 }
 
 // record is a job and the order it arrived in.
@@ -53,26 +57,38 @@ func New(opts store.Options) *Store {
 	return &Store{
 		opts:    opts.WithDefaults(),
 		records: make(map[string]*record),
+		byKey:   make(map[string]string),
 	}
 }
 
 // Create stores a new job.
-func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, error) {
+func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := n.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	job := s.opts.Prepare(n, uuid.NewString(), s.opts.Now())
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// The check and the write are both inside the lock, because two
+	// submissions carrying one key arriving together is the case this exists
+	// for. Checking first and writing after would let both through.
+	if n.IdempotencyKey != "" {
+		if id, taken := s.byKey[n.IdempotencyKey]; taken {
+			return clone(&s.records[id].job), false, nil
+		}
+		s.byKey[n.IdempotencyKey] = job.ID
+	}
+
 	s.next++
 	s.records[job.ID] = &record{job: *job, seq: s.next}
 
-	return clone(job), nil
+	return clone(job), true, nil
 }
 
 // Get returns one job.

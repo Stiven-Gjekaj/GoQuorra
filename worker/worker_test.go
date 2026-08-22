@@ -109,7 +109,7 @@ func TestAHandlerRunsTheJobItIsRegisteredFor(t *testing.T) {
 		return nil
 	})
 
-	made, err := backing.Create(t.Context(), store.NewJob{
+	made, _, err := backing.Create(t.Context(), store.NewJob{
 		Type:    "email",
 		Payload: json.RawMessage(`{"to":"a@b.c"}`),
 	})
@@ -141,7 +141,7 @@ func TestAnUnknownJobTypeFailsAndSaysSo(t *testing.T) {
 
 	w.Handle("known", func(context.Context, worker.Job) error { return nil })
 
-	made, err := backing.Create(t.Context(), store.NewJob{Type: "nobody_handles_this"})
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "nobody_handles_this"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestAPanicInAHandlerCostsOneJob(t *testing.T) {
 		return nil
 	})
 
-	bad, err := backing.Create(t.Context(), store.NewJob{Type: "explodes"})
+	bad, _, err := backing.Create(t.Context(), store.NewJob{Type: "explodes"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestAPanicInAHandlerCostsOneJob(t *testing.T) {
 	})
 
 	// The worker is still alive, so a job submitted afterwards still runs.
-	later, err := backing.Create(t.Context(), store.NewJob{Type: "fine"})
+	later, _, err := backing.Create(t.Context(), store.NewJob{Type: "fine"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestAFailingHandlerSendsTheJobBackAndThenBuriesIt(t *testing.T) {
 		return errors.New("the host refused the connection")
 	})
 
-	made, err := backing.Create(t.Context(), store.NewJob{Type: "always_fails"})
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "always_fails"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestAStoppingWorkerFinishesTheJobItIsRunning(t *testing.T) {
 		return nil
 	})
 
-	made, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestASlowHandlerKeepsItsJob(t *testing.T) {
 		}
 	})
 
-	made, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestCancellingAJobStopsTheHandler(t *testing.T) {
 		return nil
 	})
 
-	made, err := backing.Create(t.Context(), store.NewJob{Type: "long"})
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "long"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

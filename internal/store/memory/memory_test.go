@@ -28,7 +28,7 @@ func TestAReturnedJobSharesNothingWithTheStore(t *testing.T) {
 	s := memory.New(store.Options{})
 	defer s.Close()
 
-	made, err := s.Create(t.Context(), store.NewJob{Type: "work", Payload: []byte(`{"n":1}`)})
+	made, _, err := s.Create(t.Context(), store.NewJob{Type: "work", Payload: []byte(`{"n":1}`)})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

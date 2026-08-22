@@ -60,9 +60,12 @@ func ctx() context.Context { return context.Background() }
 // create stores a job and fails the test if it cannot.
 func create(t *testing.T, s store.Store, n store.NewJob) *store.Job {
 	t.Helper()
-	job, err := s.Create(ctx(), n)
+	job, created, err := s.Create(ctx(), n)
 	if err != nil {
 		t.Fatalf("Create(%+v): %v", n, err)
+	}
+	if !created {
+		t.Fatalf("Create(%+v) stored nothing, and this job carries no idempotency key", n)
 	}
 	return job
 }

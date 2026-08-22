@@ -43,16 +43,17 @@ func (o Options) Prepare(n NewJob, id string, now time.Time) *Job {
 	}
 
 	return &Job{
-		ID:         id,
-		Type:       n.Type,
-		Payload:    payload,
-		Queue:      queue,
-		Priority:   n.Priority,
-		Status:     jobs.Pending,
-		Attempts:   0,
-		MaxRetries: maxRetries,
-		RunAt:      now.Add(n.Delay),
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:             id,
+		IdempotencyKey: n.IdempotencyKey,
+		Type:           n.Type,
+		Payload:        payload,
+		Queue:          queue,
+		Priority:       n.Priority,
+		Status:         jobs.Pending,
+		Attempts:       0,
+		MaxRetries:     maxRetries,
+		RunAt:          now.Add(n.Delay),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 }

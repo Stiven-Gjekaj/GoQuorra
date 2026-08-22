@@ -84,7 +84,7 @@ func TestAJobIsLeasedAndReportedOverTheWire(t *testing.T) {
 	client, backing, _ := dial(t)
 	ctx := t.Context()
 
-	made, err := backing.Create(ctx, store.NewJob{
+	made, _, err := backing.Create(ctx, store.NewJob{
 		Type:    "email",
 		Payload: json.RawMessage(`{"to":"a@b.c"}`),
 	})
@@ -275,7 +275,7 @@ func TestTheServerBoundsWhatAWorkerAsksFor(t *testing.T) {
 // allowed to make its own work.
 func create(t *testing.T, backing store.Store, ctx context.Context) {
 	t.Helper()
-	if _, err := backing.Create(ctx, store.NewJob{Type: "work"}); err != nil {
+	if _, _, err := backing.Create(ctx, store.NewJob{Type: "work"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }

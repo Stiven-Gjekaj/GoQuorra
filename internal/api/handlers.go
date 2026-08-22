@@ -73,7 +73,7 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := a.opts.Store.Create(r.Context(), store.NewJob{
+	job, _, err := a.opts.Store.Create(r.Context(), store.NewJob{
 		Type:       req.Type,
 		Payload:    req.Payload,
 		Queue:      req.Queue,

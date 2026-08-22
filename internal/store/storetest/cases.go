@@ -762,6 +762,129 @@ var cases = []testCase{
 		}
 	}},
 
+	// A submission repeated with the same key stores one job.
+	//
+	// A client that sends a job and does not see the answer cannot tell
+	// whether the server stored it. Retrying is the only thing it can do, and
+	// the key is what stops that retry becoming a second job.
+	{"a repeated submission with one key stores one job", func(t *testing.T, s store.Store, clock *Clock) {
+		first, created, err := s.Create(ctx(), store.NewJob{Type: "charge", IdempotencyKey: "order-4471"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if !created {
+			t.Fatal("the first submission stored nothing")
+		}
+
+		clock.Advance(time.Minute)
+		second, created, err := s.Create(ctx(), store.NewJob{Type: "charge", IdempotencyKey: "order-4471"})
+		if err != nil {
+			t.Fatalf("the repeated Create: %v", err)
+		}
+		if created {
+			t.Error("the repeated submission stored a second job")
+		}
+		if second.ID != first.ID {
+			t.Errorf("the repeat gave job %s, want the first one at %s", second.ID, first.ID)
+		}
+
+		// And there really is only one.
+		all, err := s.List(ctx(), store.Filter{Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(all) != 1 {
+			t.Errorf("the table holds %d jobs, want 1", len(all))
+		}
+	}},
+
+	// The key is what matches, and nothing else about the job is compared.
+	//
+	// A client retrying is sending the same request, so the fields agree. A
+	// client reusing a key for different work has made a mistake, and giving
+	// it the first job back is the safe answer: storing the second under a
+	// key that names the first is how one piece of work runs twice.
+	{"a key that is taken wins over the rest of the job", func(t *testing.T, s store.Store, clock *Clock) {
+		first, _, err := s.Create(ctx(), store.NewJob{Type: "charge", Queue: "money", IdempotencyKey: "k"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		second, created, err := s.Create(ctx(), store.NewJob{Type: "refund", Queue: "other", IdempotencyKey: "k"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if created {
+			t.Fatal("a different job under a used key was stored")
+		}
+		if second.Type != "charge" || second.Queue != "money" || second.ID != first.ID {
+			t.Errorf("the answer is %+v, want the job that claimed the key", second)
+		}
+	}},
+
+	{"jobs without a key are never merged", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "work"})
+		second := create(t, s, store.NewJob{Type: "work"})
+
+		if first.ID == second.ID {
+			t.Fatal("two jobs with no key became one")
+		}
+
+		all, _ := s.List(ctx(), store.Filter{Limit: 10})
+		if len(all) != 2 {
+			t.Errorf("the table holds %d jobs, want 2", len(all))
+		}
+	}},
+
+	{"the key is kept on the job", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work", IdempotencyKey: "order-9"})
+
+		got, err := s.Get(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.IdempotencyKey != "order-9" {
+			t.Errorf("the key on the job is %q", got.IdempotencyKey)
+		}
+	}},
+
+	// Two submissions carrying one key arriving together is the case the key
+	// exists for, and a check followed by a write lets both through.
+	{"one key survives two submissions at once", func(t *testing.T, s store.Store, clock *Clock) {
+		const callers = 8
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var stored int
+		seen := map[string]bool{}
+
+		for i := 0; i < callers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				job, created, err := s.Create(ctx(), store.NewJob{Type: "charge", IdempotencyKey: "once"})
+				if err != nil {
+					t.Errorf("Create: %v", err)
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if created {
+					stored++
+				}
+				seen[job.ID] = true
+			}()
+		}
+		wg.Wait()
+
+		if stored != 1 {
+			t.Errorf("%d of %d submissions stored a job, want exactly 1", stored, callers)
+		}
+		if len(seen) != 1 {
+			t.Errorf("the callers were given %d different jobs, want 1", len(seen))
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

@@ -26,7 +26,7 @@ import (
 // six queries that read a job cannot fall out of step with the scanner.
 const columns = `id, seq, type, payload, queue, priority, status, attempts,
 	max_retries, last_error, lease_id, leased_by, lease_expires_at,
-	run_at, created_at, updated_at`
+	idempotency_key, run_at, created_at, updated_at`
 
 // Store keeps jobs in PostgreSQL.
 type Store struct {
@@ -68,29 +68,63 @@ func NewWithPool(pool *pgxpool.Pool, opts store.Options) *Store {
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Create stores a new job.
-func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, error) {
+//
+// The idempotency check is the database's and not this code's. Reading for an
+// existing key and inserting afterwards lets two submissions carrying one key
+// both find nothing and both insert, which is the exact case the key exists
+// to prevent. ON CONFLICT makes the check and the write one statement, and the
+// unique index is what decides.
+func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, error) {
 	if err := n.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	job := s.opts.Prepare(n, uuid.NewString(), s.opts.Now())
 
+	var key *string
+	if n.IdempotencyKey != "" {
+		key = &n.IdempotencyKey
+	}
+
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO jobs (id, type, payload, queue, priority, status,
 		                  attempts, max_retries, last_error,
-		                  run_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                  idempotency_key, run_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+columns,
 		job.ID, job.Type, []byte(job.Payload), job.Queue, job.Priority,
 		string(job.Status), job.Attempts, job.MaxRetries, job.LastError,
-		job.RunAt, job.CreatedAt, job.UpdatedAt,
+		key, job.RunAt, job.CreatedAt, job.UpdatedAt,
 	)
 
 	stored, _, err := scanJob(row)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: cannot store the job: %w", err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// DO NOTHING returns no row, which here can only mean the key was
+		// already claimed.
+		existing, err := s.byIdempotencyKey(ctx, n.IdempotencyKey)
+		if err != nil {
+			return nil, false, err
+		}
+		return existing, false, nil
 	}
-	return stored, nil
+	if err != nil {
+		return nil, false, fmt.Errorf("postgres: cannot store the job: %w", err)
+	}
+	return stored, true, nil
+}
+
+// byIdempotencyKey reads the job that claimed a key.
+func (s *Store) byIdempotencyKey(ctx context.Context, key string) (*store.Job, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+columns+` FROM jobs WHERE idempotency_key = $1`, key)
+
+	job, _, err := scanJob(row)
+	if err != nil {
+		// The row was there a moment ago, so this is a real fault rather than
+		// a job that never existed.
+		return nil, fmt.Errorf("postgres: the idempotency key %q is taken and its job cannot be read: %w", key, err)
+	}
+	return job, nil
 }
 
 // parseID checks that an identifier could name a row.

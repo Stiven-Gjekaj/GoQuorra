@@ -66,6 +66,10 @@ type Job struct {
 	LeasedBy       string     `json:"leased_by,omitempty"`
 	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 
+	// IdempotencyKey is what the client called this piece of work, if it
+	// named it at all.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+
 	RunAt     time.Time `json:"run_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -84,6 +88,14 @@ type NewJob struct {
 	// MaxRetries counts the retries after the first attempt. A nil value
 	// takes the default from the store.
 	MaxRetries *int
+
+	// IdempotencyKey makes the submission safe to repeat. A second Create
+	// carrying a key that has been used gives back the job that already
+	// exists and stores nothing.
+	//
+	// An empty key means the caller is not asking for that, and two jobs
+	// submitted without one are two jobs.
+	IdempotencyKey string
 }
 
 // Validate refuses a job that cannot be stored.
@@ -102,6 +114,9 @@ func (n NewJob) Validate() error {
 	}
 	if n.MaxRetries != nil && *n.MaxRetries < 0 {
 		return fmt.Errorf("store: max retries is %d, and it cannot be negative", *n.MaxRetries)
+	}
+	if len(n.IdempotencyKey) > 255 {
+		return fmt.Errorf("store: the idempotency key is %d characters, and the column holds 255", len(n.IdempotencyKey))
 	}
 	// An empty payload is allowed and becomes {}. Text that is not JSON is
 	// not, because the column is JSONB and the database would refuse it
@@ -186,7 +201,12 @@ type QueueStat struct {
 // from several goroutines at once, because the server does.
 type Store interface {
 	// Create stores a new job and returns it as stored.
-	Create(ctx context.Context, n NewJob) (*Job, error)
+	//
+	// The second value says whether anything was stored. It is false when the
+	// job carried an idempotency key that had been used before, in which case
+	// the job returned is the one that already existed. A caller answering
+	// HTTP uses it to choose between 201 and 200.
+	Create(ctx context.Context, n NewJob) (*Job, bool, error)
 
 	// Get returns one job, or ErrNotFound.
 	Get(ctx context.Context, id string) (*Job, error)
