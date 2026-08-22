@@ -92,10 +92,52 @@ wait_for() {
 wait_for "$good" succeeded
 wait_for "$bad" dead
 
+# The dead letter queue is only useful if somebody can act on it.
+revived=$(curl -fsS -X POST "$SERVER/v1/jobs/$bad/revive" -H "X-API-Key: $KEY" |
+	sed -n 's/.*"status":"\([a-z]*\)".*/\1/p')
+if [ "$revived" != "pending" ]; then
+	say "reviving the dead job gave $revived"
+	exit 1
+fi
+say "$bad was revived"
+wait_for "$bad" dead
+
+# A submission repeated under one key is one job.
+key="smoke-$$"
+one=$(curl -fsS -X POST "$SERVER/v1/jobs" -H "Content-Type: application/json" \
+	-H "X-API-Key: $KEY" -H "Idempotency-Key: $key" \
+	-d '{"type":"echo","payload":{}}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+two=$(curl -fsS -X POST "$SERVER/v1/jobs" -H "Content-Type: application/json" \
+	-H "X-API-Key: $KEY" -H "Idempotency-Key: $key" \
+	-d '{"type":"echo","payload":{}}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+if [ "$one" != "$two" ] || [ -z "$one" ]; then
+	say "one key made two jobs: $one and $two"
+	exit 1
+fi
+say "a repeated submission gave back $one"
+
+# Cancelling, and the filter that finds what was cancelled.
+stoppable=$(submit '{"type":"sleep","payload":{"ms":600000},"delay_seconds":3600}' |
+	sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+curl -fsS -X POST "$SERVER/v1/jobs/$stoppable/cancel" -H "X-API-Key: $KEY" > /dev/null
+wait_for "$stoppable" cancelled
+
+listed=$(curl -fsS "$SERVER/v1/jobs?status=cancelled" -H "X-API-Key: $KEY")
+if ! echo "$listed" | grep -q "$stoppable"; then
+	say "the cancelled filter did not find $stoppable"
+	exit 1
+fi
+if echo "$listed" | grep -q "$good"; then
+	say "the cancelled filter returned a job that is not cancelled"
+	exit 1
+fi
+say "the status filter works"
+
 # The counters must have moved. A metric that reads zero for ever is the way
 # this project's measurements were wrong before, so the check is on the number
 # and not on the name being present.
-for name in quorra_jobs_created_total quorra_jobs_succeeded_total quorra_jobs_dead_total; do
+for name in quorra_jobs_created_total quorra_jobs_succeeded_total quorra_jobs_dead_total \
+	quorra_jobs_cancelled_total quorra_jobs_revived_total; do
 	value=$(counter "$name")
 	if [ -z "$value" ]; then
 		say "$name is not published"
