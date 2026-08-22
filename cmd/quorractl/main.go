@@ -80,6 +80,71 @@ func run(args []string, out io.Writer) error {
 	}
 }
 
+// reorder moves the options in front of the arguments.
+//
+// The flag package stops parsing at the first thing that is not an option, so
+// `quorractl get 6f1c0c64 -server http://elsewhere` reads the address as a
+// second job identifier and refuses the command with a message about how many
+// identifiers were given. That is standard behaviour for the package and a
+// surprise to everybody who meets it, because every other tool on the machine
+// takes them in either order.
+//
+// Whether an option swallows the token after it is asked of the flag set
+// rather than guessed, because -limit 20 takes one and a boolean does not.
+//
+// One limit, and it does not bite here: a bare negative number is read as an
+// option. Every argument this tool takes is a job identifier.
+func reorder(set *flag.FlagSet, args []string) []string {
+	var options, rest []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// Everything after -- is an argument, whatever it looks like.
+		if arg == "--" {
+			rest = append(rest, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			rest = append(rest, arg)
+			continue
+		}
+
+		options = append(options, arg)
+
+		// -name=value carries its value already.
+		if strings.Contains(arg, "=") {
+			continue
+		}
+
+		named := set.Lookup(strings.TrimLeft(arg, "-"))
+		if named == nil {
+			// Unknown. Leave it for the flag package to report by name.
+			continue
+		}
+		if boolean, ok := named.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			options = append(options, args[i])
+		}
+	}
+
+	if len(rest) == 0 {
+		return options
+	}
+
+	// A -- between the two halves, always.
+	//
+	// Without it the flag package reads the arguments that were moved to the
+	// back as options, and the first version of this function did exactly
+	// that to whatever followed a -- the caller had typed. Ending the options
+	// explicitly means no argument can ever be read as one, whether the
+	// caller wrote a separator or not.
+	return append(append(options, "--"), rest...)
+}
+
 // client holds where to send a request and how to prove who is asking.
 type client struct {
 	server string
@@ -159,7 +224,7 @@ func create(args []string, out io.Writer) error {
 	delay := set.Int("delay", 0, "seconds to wait before the job is ready")
 	retries := set.Int("retries", -1, "retries after the first attempt, or -1 for the server default")
 
-	if err := set.Parse(args); err != nil {
+	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 	if *jobType == "" {
@@ -198,7 +263,7 @@ func create(args []string, out io.Writer) error {
 func get(args []string, out io.Writer) error {
 	set := flag.NewFlagSet("get", flag.ContinueOnError)
 	c := common(set)
-	if err := set.Parse(args); err != nil {
+	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {
@@ -217,7 +282,7 @@ func list(args []string, out io.Writer) error {
 	set := flag.NewFlagSet("list", flag.ContinueOnError)
 	c := common(set)
 	limit := set.Int("limit", 20, "how many jobs to show")
-	if err := set.Parse(args); err != nil {
+	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 
@@ -246,7 +311,7 @@ func list(args []string, out io.Writer) error {
 func queues(args []string, out io.Writer) error {
 	set := flag.NewFlagSet("queues", flag.ContinueOnError)
 	c := common(set)
-	if err := set.Parse(args); err != nil {
+	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 
@@ -277,7 +342,7 @@ func queues(args []string, out io.Writer) error {
 func act(args []string, out io.Writer, verb, done string) error {
 	set := flag.NewFlagSet(verb, flag.ContinueOnError)
 	c := common(set)
-	if err := set.Parse(args); err != nil {
+	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {

@@ -193,3 +193,80 @@ func TestListAndQueues(t *testing.T) {
 		t.Errorf("queues printed %q", counted)
 	}
 }
+
+// An option after an argument works.
+//
+// The flag package stops parsing at the first thing that is not an option, so
+// this is the shape that fails without the reordering: every other tool on
+// the machine takes them in either order, and somebody who types them that
+// way gets a message about how many job identifiers they gave.
+func TestAnOptionAfterAnArgumentWorks(t *testing.T) {
+	flags := serve(t)
+
+	printed, _ := cli(t, flags, "create", "-type", "work")
+	id := strings.TrimSpace(printed)
+
+	// The identifier first, then the connection options.
+	shown, err := runCLI(t, append([]string{"get", id}, flags...)...)
+	if err != nil {
+		t.Fatalf("get with the options last: %v", err)
+	}
+	if !strings.Contains(shown, id) {
+		t.Errorf("get printed %q", shown)
+	}
+
+	// And mixed through.
+	stopped, err := runCLI(t, "cancel", flags[0], flags[1], id, flags[2], flags[3])
+	if err != nil {
+		t.Fatalf("cancel with the options either side: %v", err)
+	}
+	if !strings.Contains(stopped, "cancelled") {
+		t.Errorf("cancel printed %q", stopped)
+	}
+}
+
+// The value of an option is not mistaken for an argument.
+//
+// -limit takes the token after it and a boolean does not, so the reordering
+// asks the flag set rather than guessing.
+func TestAnOptionKeepsItsValue(t *testing.T) {
+	flags := serve(t)
+
+	cli(t, flags, "create", "-type", "alpha")
+	cli(t, flags, "create", "-type", "beta")
+
+	listed, err := runCLI(t, append([]string{"list", "-limit", "1"}, flags...)...)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if strings.Contains(listed, "alpha") {
+		t.Errorf("the limit was not applied:\n%s", listed)
+	}
+
+	// And in the equals form.
+	same, err := runCLI(t, append([]string{"list", "-limit=1"}, flags...)...)
+	if err != nil {
+		t.Fatalf("list with an equals: %v", err)
+	}
+	if strings.Contains(same, "alpha") {
+		t.Errorf("the limit was not applied:\n%s", same)
+	}
+}
+
+// Everything after -- is an argument, whatever it looks like.
+func TestADoubleDashEndsTheOptions(t *testing.T) {
+	flags := serve(t)
+
+	args := append([]string{"get"}, flags...)
+	args = append(args, "--", "-not-a-flag")
+
+	_, err := runCLI(t, args...)
+	if err == nil {
+		t.Fatal("a job identifier of -not-a-flag was accepted")
+	}
+	// It reaches the server as an identifier and comes back missing, rather
+	// than being refused by the flag package as an unknown option.
+	if strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Errorf("the token after -- was read as an option: %v", err)
+	}
+}
