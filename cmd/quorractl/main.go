@@ -307,7 +307,11 @@ func list(args []string, out io.Writer) error {
 		}
 	}
 	if *ready {
+		// Two conditions and not one. A job the queue would hand out now is
+		// pending and due, and due alone matches every job that has ever run,
+		// because a finished job keeps the run_at of its last attempt.
 		query.Set("due", "now")
+		query.Set("status", "pending")
 	}
 	if *soonest {
 		query.Set("order", "soonest")

@@ -282,6 +282,49 @@ func TestListFindsWhatIsReadyAndInWhatOrder(t *testing.T) {
 	}
 }
 
+// Ready leaves out a job that has stopped.
+//
+// A job that has finished keeps the run_at of its last attempt, so a filter
+// that only asks what is due matches every job that has ever run. Ready says
+// it gives what the queue would hand out now, so it asks for pending as well.
+func TestReadyLeavesOutAJobThatHasStopped(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	waiting, err := c.Submit(ctx, client.NewJob{Type: "waiting"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	stopped, err := c.Submit(ctx, client.NewJob{Type: "stopped"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := c.Cancel(ctx, stopped.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Due alone matches both, which is what makes this worth asserting.
+	due, err := c.List(ctx, client.Filter{DueBy: time.Now().Add(time.Minute), Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(due.Jobs) != 2 {
+		t.Fatalf("due alone gave %d jobs, want both, so this test proves nothing", len(due.Jobs))
+	}
+
+	ready, err := c.List(ctx, client.Filter{Ready: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ready.Jobs) != 1 || ready.Jobs[0].ID != waiting.ID {
+		got := make([]string, 0, len(ready.Jobs))
+		for _, j := range ready.Jobs {
+			got = append(got, j.Type+"/"+j.Status)
+		}
+		t.Errorf("Ready gave %v, want only the pending one", got)
+	}
+}
+
 func TestListNarrowsToOneWorker(t *testing.T) {
 	c := connect(t)
 	ctx := t.Context()

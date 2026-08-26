@@ -375,7 +375,10 @@ async function load() {
     // answer what runs next.
     let path = "/v1/jobs?limit=25";
     if (filter === "ready") {
-      path += "&due=now&order=soonest";
+      // Pending as well as due. A finished job keeps the run_at of its last
+      // attempt, so asking only what is due lists every job that has ever
+      // run, which is the opposite of what this button says.
+      path += "&status=pending&due=now&order=soonest";
     } else if (filter) {
       path += "&status=" + encodeURIComponent(filter);
     }

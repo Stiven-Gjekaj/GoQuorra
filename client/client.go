@@ -273,8 +273,12 @@ type Filter struct {
 	// value keeps every job. Use Ready for the common case.
 	DueBy time.Time
 
-	// Ready keeps only the jobs the queue would hand out now, so it separates
-	// what is waiting for a worker from what is waiting out a backoff.
+	// Ready keeps only the jobs the queue would hand out now: pending, and
+	// due. It separates what is waiting for a worker from what is waiting out
+	// a backoff.
+	//
+	// It overrides Status, because a job that is ready is pending by
+	// definition and any other status would give an empty page.
 	//
 	// The server reads its own clock for this, which is the point: the two
 	// machines do not have to agree on the time for the answer to be right.
@@ -304,6 +308,14 @@ func (c *Client) List(ctx context.Context, f Filter) (*Page, error) {
 		// from here would make the answer depend on the two machines
 		// agreeing about the time.
 		query.Set("due", "now")
+
+		// And pending, because a job the queue would hand out now is both.
+		// A finished job keeps the run_at of its last attempt, so due alone
+		// matches every job that has ever run.
+		// The literal and not a constant from inside this repository. This
+		// package deliberately holds no type from in here, so a caller
+		// depends on it without depending on how the server stores anything.
+		query.Set("status", "pending")
 	} else if !f.DueBy.IsZero() {
 		query.Set("due", f.DueBy.UTC().Format(time.RFC3339))
 	}

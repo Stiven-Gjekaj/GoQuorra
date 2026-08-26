@@ -327,6 +327,13 @@ func TestTheDashboardCanAskWhatIsReady(t *testing.T) {
 		t.Error("the ready filter does not ask for the order the queue works in")
 	}
 
+	// Pending as well as due. A job that has stopped keeps the run_at of its
+	// last attempt, so asking only what is due lists every job that has ever
+	// run, which is the opposite of what the button says.
+	if !strings.Contains(page, "status=pending&due=now") {
+		t.Error("the ready filter asks what is due without asking for pending, so it lists finished jobs")
+	}
+
 	// ready must not be one of the statuses. The filter row builds the
 	// buttons from that list, and a value in it would be sent as
 	// status=ready, which the server refuses.

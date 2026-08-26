@@ -313,12 +313,31 @@ func TestListFindsWhatIsReadyAndInWhatOrder(t *testing.T) {
 	cli(t, flags, "create", "-type", "waiting", "-delay", "3600")
 	cli(t, flags, "create", "-type", "ready")
 
+	// A job that has stopped. Its run_at is in the past, so a filter that
+	// only asks what is due matches it, and -ready says it lists what the
+	// queue would hand out now.
+	made, err := cli(t, flags, "create", "-type", "stopped")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := cli(t, flags, "cancel", strings.TrimSpace(made)); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
 	ready, err := cli(t, flags, "list", "-ready")
 	if err != nil {
 		t.Fatalf("list -ready: %v", err)
 	}
 	if !strings.Contains(ready, "ready") || strings.Contains(ready, "waiting") {
 		t.Errorf("-ready showed the delayed job:\n%s", ready)
+	}
+	// Nothing that has finished. A job the queue would hand out now is
+	// pending as well as due, and asking only what is due lists every job
+	// that has ever run.
+	for _, gone := range []string{"succeeded", "dead", "cancelled"} {
+		if strings.Contains(ready, gone) {
+			t.Errorf("-ready listed a %s job, which the queue will not hand out:\n%s", gone, ready)
+		}
 	}
 
 	// A column for when a job runs, because a list sorted by a value it does
