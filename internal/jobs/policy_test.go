@@ -194,11 +194,22 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// Every outcome has a name.
+//
+// The names reach a person: they go into the store, and an outcome with no
+// name arrives in a log line as Outcome(3), which says nothing about what
+// happened. Listing all four here is what makes adding a fifth without a name
+// fail rather than pass.
+//
+// Two outcomes sharing one value is not tested here, because it cannot be:
+// the compiler refuses a duplicate case in String and a duplicate key in the
+// map below, so a test of it would be a test that can never fail.
 func TestOutcomeString(t *testing.T) {
 	cases := map[Outcome]string{
 		OutcomeDone:    "done",
 		OutcomeFailed:  "failed",
 		OutcomeExpired: "expired",
+		OutcomeRefused: "refused",
 		Outcome(99):    "Outcome(99)",
 	}
 	for outcome, want := range cases {

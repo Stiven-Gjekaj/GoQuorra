@@ -20,6 +20,17 @@ const (
 	// slow. The queue cannot tell these apart, so it treats all three the
 	// same way as a reported failure.
 	OutcomeExpired
+
+	// OutcomeRefused means the worker read the job and will never finish it.
+	// A payload that names no account does not name one on the third
+	// attempt, and an upstream that has no record of an identifier will not
+	// grow one while the job waits.
+	//
+	// This is different from OutcomeFailed in one way only, and it is the
+	// way that matters: the attempt count does not decide what happens next.
+	// Only the worker can tell these apart, because only the worker sees the
+	// error.
+	OutcomeRefused
 )
 
 func (o Outcome) String() string {
@@ -30,6 +41,8 @@ func (o Outcome) String() string {
 		return "failed"
 	case OutcomeExpired:
 		return "expired"
+	case OutcomeRefused:
+		return "refused"
 	default:
 		return fmt.Sprintf("Outcome(%d)", int(o))
 	}
