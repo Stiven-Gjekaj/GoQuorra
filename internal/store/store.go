@@ -206,15 +206,22 @@ const (
 	// This is the zero value, so a caller who does not care gets what the
 	// dashboard shows, which is what somebody watching a queue wants.
 	Newest Order = iota
+
+	// Soonest gives the job that runs first, first. This is the order the
+	// queue itself works in, so it is the order that answers what is at the
+	// front of the line and what is waiting behind a backoff.
+	Soonest
 )
 
 // Valid says whether an order is one this package knows.
-func (o Order) Valid() bool { return o == Newest }
+func (o Order) Valid() bool { return o == Newest || o == Soonest }
 
 func (o Order) String() string {
 	switch o {
 	case Newest:
 		return "newest"
+	case Soonest:
+		return "soonest"
 	default:
 		return fmt.Sprintf("Order(%d)", int(o))
 	}

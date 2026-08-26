@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1337,6 +1338,76 @@ var cases = []testCase{
 				t.Errorf("position %d is %s, want %s", i, order[i], made[total-1-i])
 				break
 			}
+		}
+	}},
+
+	{"the list gives the job that runs soonest first when it is asked to", func(t *testing.T, s store.Store, clock *Clock) {
+		// Submitted in one order and due in another, so a list that came back
+		// in submission order would pass a test that only counted rows.
+		late := create(t, s, store.NewJob{Type: "late", Delay: time.Hour})
+		soon := create(t, s, store.NewJob{Type: "soon", Delay: time.Minute})
+		middle := create(t, s, store.NewJob{Type: "middle", Delay: 30 * time.Minute})
+
+		got, err := s.List(ctx(), store.Filter{Limit: 10, Order: store.Soonest})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+
+		want := []string{soon.ID, middle.ID, late.ID}
+		if diff := ids(got); !slices.Equal(diff, want) {
+			t.Errorf("order = %v, want soonest first %v", diff, want)
+		}
+
+		// And the default is still the newest first, which is the reverse of
+		// the order they were submitted in and of the order above.
+		back, err := s.List(ctx(), store.Filter{Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if diff := ids(back); !slices.Equal(diff, []string{middle.ID, soon.ID, late.ID}) {
+			t.Errorf("the default order changed: %v", diff)
+		}
+	}},
+
+	// This is the rule the compound cursor exists for, and it is the one that
+	// passes for the wrong reason if it is written carelessly.
+	//
+	// Jobs created one after another each get their own run_at, and a cursor
+	// comparing run_at alone pages through those correctly. It only breaks
+	// when several jobs share a moment, which is what a burst of submissions
+	// and what every reclaim sweep produces. So the clock does not move here.
+	{"paging in the soonest order shows every job once when they share a moment", func(t *testing.T, s store.Store, clock *Clock) {
+		const total = 9
+		made := map[string]bool{}
+		for i := 0; i < total; i++ {
+			// No clock.Advance. Every one of these has the same run_at, so
+			// run_at alone cannot place a cursor among them.
+			made[create(t, s, store.NewJob{Type: fmt.Sprintf("job-%d", i)}).ID] = true
+		}
+
+		seen := map[string]int{}
+		cursor := ""
+		for page := 0; page < total+2; page++ {
+			got, err := s.List(ctx(), store.Filter{Limit: 3, Before: cursor, Order: store.Soonest})
+			if err != nil {
+				t.Fatalf("page %d: %v", page, err)
+			}
+			if len(got) == 0 {
+				break
+			}
+			for _, job := range got {
+				seen[job.ID]++
+			}
+			cursor = got[len(got)-1].ID
+		}
+
+		for id := range made {
+			if seen[id] != 1 {
+				t.Errorf("a job sharing its moment with eight others was seen %d times, want once", seen[id])
+			}
+		}
+		if len(seen) != total {
+			t.Errorf("%d jobs came back across the pages, want %d", len(seen), total)
 		}
 	}},
 

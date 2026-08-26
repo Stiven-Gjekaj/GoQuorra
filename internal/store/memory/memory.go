@@ -451,12 +451,32 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 	// A cursor naming a job that has been removed leaves the page start
 	// undefined, so it is refused rather than quietly treated as the start.
 	var before uint64
+	var beforeRunAt time.Time
 	if f.Before != "" {
 		rec, found := s.records[f.Before]
 		if !found {
 			return nil, store.ErrNotFound
 		}
 		before = rec.seq
+		beforeRunAt = rec.job.RunAt
+	}
+
+	// after says whether a record falls on the far side of the cursor, in
+	// whatever order was asked for.
+	//
+	// In the soonest order the comparison is on the pair and not on run_at
+	// alone, because run_at is not unique: a burst of submissions shares one
+	// value and every job a reclaim sweep returns shares one. seq is unique,
+	// so the pair is, so the order is total and the cursor lands between two
+	// rows rather than in the middle of a group.
+	after := func(rec *record) bool {
+		if f.Order == store.Soonest {
+			if rec.job.RunAt.Equal(beforeRunAt) {
+				return rec.seq > before
+			}
+			return rec.job.RunAt.After(beforeRunAt)
+		}
+		return rec.seq < before
 	}
 
 	matching := make([]*record, 0, len(s.records))
@@ -470,13 +490,21 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		if f.Type != "" && rec.job.Type != f.Type {
 			continue
 		}
-		if f.Before != "" && rec.seq >= before {
+		if f.Before != "" && !after(rec) {
 			continue
 		}
 		matching = append(matching, rec)
 	}
 
-	sort.Slice(matching, func(i, j int) bool { return matching[i].seq > matching[j].seq })
+	sort.Slice(matching, func(i, j int) bool {
+		if f.Order == store.Soonest {
+			if !matching[i].job.RunAt.Equal(matching[j].job.RunAt) {
+				return matching[i].job.RunAt.Before(matching[j].job.RunAt)
+			}
+			return matching[i].seq < matching[j].seq
+		}
+		return matching[i].seq > matching[j].seq
+	})
 
 	if len(matching) > f.Limit {
 		matching = matching[:f.Limit]

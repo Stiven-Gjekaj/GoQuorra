@@ -87,19 +87,42 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		// undefined, so it is refused rather than quietly read as the start
 		// of the list, which would send the reader back to page one.
 		var seq int64
-		err := s.pool.QueryRow(ctx, `SELECT seq FROM jobs WHERE id = $1`, f.Before).Scan(&seq)
+		var runAt time.Time
+		err := s.pool.QueryRow(ctx, `SELECT seq, run_at FROM jobs WHERE id = $1`, f.Before).Scan(&seq, &runAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
 		if err != nil {
 			return nil, fmt.Errorf("postgres: cannot read the cursor: %w", err)
 		}
-		add("seq < $%d", seq)
+
+		if f.Order == store.Soonest {
+			// The pair and not run_at alone. run_at is not unique: a burst of
+			// submissions shares one value, and every job a reclaim sweep
+			// returns shares one. Comparing run_at alone would hand back the
+			// whole group again on the next page, or skip the rest of it,
+			// and which of the two would depend on how many jobs happened to
+			// share a moment.
+			//
+			// Written as a row comparison and not as the OR it stands for.
+			// PostgreSQL turns this form into an index condition on
+			// jobs_due_idx and seeks; it cannot do that with the OR, and
+			// measuring both showed the OR reading 955 rows to return 25.
+			args = append(args, runAt, seq)
+			where = append(where, fmt.Sprintf("(run_at, seq) > ($%d, $%d)", len(args)-1, len(args)))
+		} else {
+			add("seq < $%d", seq)
+		}
+	}
+
+	order := `seq DESC`
+	if f.Order == store.Soonest {
+		order = `run_at, seq`
 	}
 
 	args = append(args, f.Limit)
 	query := `SELECT ` + columns + ` FROM jobs WHERE ` + strings.Join(where, " AND ") +
-		fmt.Sprintf(` ORDER BY seq DESC LIMIT $%d`, len(args))
+		fmt.Sprintf(` ORDER BY %s LIMIT $%d`, order, len(args))
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
