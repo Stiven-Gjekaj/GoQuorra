@@ -33,7 +33,7 @@ PostgreSQL is optional for most of the work.
     make verify
 
 `make verify` runs everything CI runs.
-It needs no database, because 240 of the 306 cases need nothing installed.
+It needs no database, because 241 of the 307 cases need nothing installed.
 
 To run the 66 that do:
 

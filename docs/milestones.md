@@ -24,7 +24,7 @@ Measured, on a real server against PostgreSQL 16:
 
 | Check | Result |
 | ----- | ------ |
-| Test cases | 306, of which 240 need nothing installed |
+| Test cases | 307, of which 241 need nothing installed |
 | Store contract rules | 65, and both stores pass all of them |
 | A worker stopped with SIGKILL while holding a job | The lease was taken back ten seconds later, the row named the worker that died, and the counter moved from 0 to 1 |
 | A job with `max_retries: 2` whose handler always fails | Ran three times, then `dead`, with the last error on the row |
