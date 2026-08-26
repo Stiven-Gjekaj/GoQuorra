@@ -228,6 +228,78 @@ func TestEachStopsWhenTheWalkFails(t *testing.T) {
 	}
 }
 
+// Ready separates the jobs the queue would hand out now from the ones waiting
+// out a delay, and Soonest puts them in the order the queue works in.
+//
+// Both are asked for from a caller that never sends a moment. Ready becomes
+// due=now on the wire and the server resolves it, so the answer does not
+// depend on the two machines agreeing about the time.
+func TestListFindsWhatIsReadyAndInWhatOrder(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	// Submitted sooner first, so the two orders disagree and the assertion
+	// below can tell them apart.
+	soon, err := c.Submit(ctx, client.NewJob{Type: "soon", Delay: time.Minute})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	late, err := c.Submit(ctx, client.NewJob{Type: "late", Delay: time.Hour})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	now, err := c.Submit(ctx, client.NewJob{Type: "now"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ready, err := c.List(ctx, client.Filter{Ready: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ready.Jobs) != 1 || ready.Jobs[0].ID != now.ID {
+		t.Errorf("Ready gave %d jobs, want only the one with no delay", len(ready.Jobs))
+	}
+
+	sorted, err := c.List(ctx, client.Filter{Soonest: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []string{now.ID, soon.ID, late.ID}
+	for i, job := range sorted.Jobs {
+		if i < len(want) && job.ID != want[i] {
+			t.Errorf("position %d is %s, want %s", i, job.ID, want[i])
+		}
+	}
+
+	// The default is the newest first, which is the reverse of that.
+	back, err := c.List(ctx, client.Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(back.Jobs) != 3 || back.Jobs[0].ID != now.ID || back.Jobs[2].ID != soon.ID {
+		t.Errorf("the default order changed")
+	}
+}
+
+func TestListNarrowsToOneWorker(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	if _, err := c.Submit(ctx, client.NewJob{Type: "held"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Nothing has leased it, so no worker holds anything yet.
+	page, err := c.List(ctx, client.Filter{Worker: "worker-7", Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Jobs) != 0 {
+		t.Errorf("worker-7 holds %d jobs before anything leased one", len(page.Jobs))
+	}
+}
+
 func TestListNarrows(t *testing.T) {
 	c := connect(t)
 	ctx := t.Context()

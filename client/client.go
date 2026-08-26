@@ -264,6 +264,25 @@ type Filter struct {
 
 	// Cursor continues a previous page. Take it from Page.Cursor.
 	Cursor string
+
+	// Worker keeps only the jobs that worker is holding right now. A finished
+	// job belongs to nobody, whoever ran it.
+	Worker string
+
+	// DueBy keeps only the jobs that run at or before this moment. The zero
+	// value keeps every job. Use Ready for the common case.
+	DueBy time.Time
+
+	// Ready keeps only the jobs the queue would hand out now, so it separates
+	// what is waiting for a worker from what is waiting out a backoff.
+	//
+	// The server reads its own clock for this, which is the point: the two
+	// machines do not have to agree on the time for the answer to be right.
+	Ready bool
+
+	// Soonest gives the job that runs first, first, which is the order the
+	// queue itself works in. The default is the newest job first.
+	Soonest bool
 }
 
 // Page is one page of a listing.
@@ -280,8 +299,20 @@ func (c *Client) List(ctx context.Context, f Filter) (*Page, error) {
 	if f.Limit > 0 {
 		query.Set("limit", strconv.Itoa(f.Limit))
 	}
+	if f.Ready {
+		// The server resolves this against its own clock. Sending a moment
+		// from here would make the answer depend on the two machines
+		// agreeing about the time.
+		query.Set("due", "now")
+	} else if !f.DueBy.IsZero() {
+		query.Set("due", f.DueBy.UTC().Format(time.RFC3339))
+	}
+	if f.Soonest {
+		query.Set("order", "soonest")
+	}
 	for name, value := range map[string]string{
-		"queue": f.Queue, "status": f.Status, "type": f.Type, "before": f.Cursor,
+		"queue": f.Queue, "status": f.Status, "type": f.Type,
+		"before": f.Cursor, "worker": f.Worker,
 	} {
 		if value != "" {
 			query.Set(name, value)
