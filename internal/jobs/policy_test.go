@@ -60,6 +60,56 @@ func TestAnExpiredLeaseAgesAJobLikeAFailure(t *testing.T) {
 	}
 }
 
+// A refusal buries the job on the attempt it was refused on.
+//
+// The whole point of the outcome is that the attempt count stops deciding, so
+// the count is what this drives. A generous retry limit is used on purpose:
+// with MaxRetries of 5 a plain failure on attempt 1 goes back to the queue,
+// and this asserts that the same attempt with a refusal does not.
+func TestARefusalBuriesTheJobWhateverTheAttemptCount(t *testing.T) {
+	p := Policy{MaxRetries: 5, Base: 2 * time.Second, Max: time.Hour}
+
+	for attempts := 1; attempts <= 7; attempts++ {
+		got := p.Decide(attempts, OutcomeRefused, epoch, 0.5)
+
+		if got.Status != Dead {
+			t.Errorf("attempt %d: a refused job ended at %q, want %q", attempts, got.Status, Dead)
+		}
+		if got.Attempts != attempts {
+			t.Errorf("attempt %d: the count became %d", attempts, got.Attempts)
+		}
+		// No backoff. A job nothing will run again has no next run, and a
+		// run_at in the future on a dead job reads as a job that is waiting.
+		if !got.RunAt.Equal(epoch) {
+			t.Errorf("attempt %d: a refused job was given a wait of %v", attempts, got.RunAt.Sub(epoch))
+		}
+	}
+}
+
+// A refusal and a failure differ on the attempts that still have retries left.
+//
+// This is the other half of the rule and it is the half that can rot. If a
+// refusal ever stopped being read, every case above would still pass on the
+// attempts past the limit, because a plain failure buries the job there too.
+// The difference only shows below the limit.
+func TestARefusalDiffersFromAFailureWhileRetriesRemain(t *testing.T) {
+	p := Policy{MaxRetries: 3, Base: time.Second, Max: time.Minute}
+
+	for attempts := 1; attempts <= 3; attempts++ {
+		failed := p.Decide(attempts, OutcomeFailed, epoch, 0.5)
+		refused := p.Decide(attempts, OutcomeRefused, epoch, 0.5)
+
+		if failed.Status != Pending {
+			t.Fatalf("attempt %d of 3 retries: a plain failure gave %q, so this test proves nothing",
+				attempts, failed.Status)
+		}
+		if refused.Status != Dead {
+			t.Errorf("attempt %d: a refusal gave %q while a failure gave %q",
+				attempts, refused.Status, failed.Status)
+		}
+	}
+}
+
 func TestSuccessEndsTheJobWhateverTheAttemptCount(t *testing.T) {
 	p := Policy{MaxRetries: 1, Base: time.Second, Max: time.Minute}
 

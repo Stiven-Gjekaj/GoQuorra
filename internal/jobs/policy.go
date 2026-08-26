@@ -108,7 +108,16 @@ func (p Policy) Decide(attempts int, outcome Outcome, now time.Time, jitter floa
 		return Decision{Status: Succeeded, Attempts: attempts, RunAt: now}
 	}
 
-	if attempts > p.MaxRetries {
+	// A refusal ends the job whatever the attempt count says. The worker has
+	// read the job and says no attempt will finish it, and running it again
+	// spends a worker to reach the same answer.
+	//
+	// The job still ends in Dead and not in a status of its own. Dead means
+	// the queue will not run this job again, which is exactly what a refusal
+	// means, and the reason is on the row. This project has removed two
+	// statuses that described how a job arrived somewhere rather than where
+	// it was, and it is not adding a third.
+	if outcome == OutcomeRefused || attempts > p.MaxRetries {
 		return Decision{Status: Dead, Attempts: attempts, RunAt: now}
 	}
 
