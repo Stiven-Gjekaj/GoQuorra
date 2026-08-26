@@ -1098,6 +1098,97 @@ var cases = []testCase{
 		}
 	}},
 
+	{"a refused job is buried on its first attempt", func(t *testing.T, s store.Store, clock *Clock) {
+		retries := 5
+		made := create(t, s, store.NewJob{Type: "work", MaxRetries: &retries})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		got, err := s.Report(ctx(), store.Report{
+			JobID:   made.ID,
+			LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeRefused,
+			Error:   "the payload names no account",
+		})
+		if err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		// Five retries were asked for, so a plain failure here would send the
+		// job back to the queue. That is what makes this rule mean something.
+		if got.Status != jobs.Dead {
+			t.Errorf("status = %q, want the job buried with five retries unused", got.Status)
+		}
+		if got.Attempts != 1 {
+			t.Errorf("attempts = %d, want 1", got.Attempts)
+		}
+		if got.LastError != "the payload names no account" {
+			t.Errorf("last error = %q", got.LastError)
+		}
+
+		// No wait. A job nothing will run again has no next run, and a run_at
+		// in the future on a dead job reads as a job that is waiting.
+		requireTime(t, "run at", got.RunAt, clock.Now())
+
+		// And the lease is let go, like any other ending.
+		if got.LeaseID != "" || got.LeasedBy != "" || got.LeaseExpiresAt != nil {
+			t.Errorf("a buried job still carries a lease: %+v", got)
+		}
+	}},
+
+	{"a refused job is never offered again", func(t *testing.T, s store.Store, clock *Clock) {
+		retries := 5
+		made := create(t, s, store.NewJob{Type: "work", MaxRetries: &retries})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeRefused, Error: "no",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		// A status is a claim about what happens next. This asks the queue
+		// itself rather than reading the column, because a job that says dead
+		// and is still handed out is the failure this rule exists to catch.
+		clock.Advance(24 * time.Hour)
+		again, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "worker-2", Limit: 10, TTL: time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+		for _, job := range again {
+			if job.ID == made.ID {
+				t.Fatal("a refused job was handed out again a day later")
+			}
+		}
+	}},
+
+	{"a refused job can be revived like any other dead job", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{})[0]
+
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeRefused, Error: "no",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		// The refusal says the job cannot be finished as it stands. Somebody
+		// who has fixed what was wrong is the one who decides that has
+		// changed, and revive is how they say so. A refusal that could not be
+		// revived would be a second kind of dead, and there is one kind.
+		back, err := s.Revive(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if back.Status != jobs.Pending {
+			t.Errorf("status = %q, want the job back in the queue", back.Status)
+		}
+		if back.Attempts != 0 {
+			t.Errorf("attempts = %d, want a full set again", back.Attempts)
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})
