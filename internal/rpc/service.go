@@ -137,12 +137,17 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 		outcome = jobs.OutcomeDone
 	case quorrapb.Outcome_OUTCOME_FAILED:
 		outcome = jobs.OutcomeFailed
+	case quorrapb.Outcome_OUTCOME_REFUSED:
+		outcome = jobs.OutcomeRefused
 	default:
 		// An unset outcome is refused rather than read as a success. Zero is
 		// what an older client sends, and retiring a job nobody finished is
-		// the most expensive way to be wrong here.
+		// the most expensive way to be wrong here. The same line answers a
+		// worker built after this server, which sends a number this server
+		// has never heard of.
 		return nil, status.Errorf(codes.InvalidArgument,
-			"outcome is %s, and it must be OUTCOME_SUCCEEDED or OUTCOME_FAILED", req.GetOutcome())
+			"outcome is %s, and it must be OUTCOME_SUCCEEDED, OUTCOME_FAILED or OUTCOME_REFUSED",
+			req.GetOutcome())
 	}
 
 	if len(req.GetResult()) > s.limits.MaxResultBytes {

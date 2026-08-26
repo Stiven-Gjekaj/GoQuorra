@@ -168,6 +168,48 @@ func TestAFailureSendsTheJobBack(t *testing.T) {
 	}
 }
 
+// A refusal buries the job on its first attempt.
+//
+// The job here is made with the default retry count, so a plain failure would
+// send it back to the queue. TestAFailureSendsTheJobBack above proves that on
+// the same setup, which is what makes this test mean something: the only
+// difference between the two is the outcome.
+func TestARefusalBuriesTheJobOverTheWire(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	got, err := client.Report(ctx, &quorrapb.ReportRequest{
+		JobId:    leased.GetId(),
+		WorkerId: "worker-1",
+		LeaseId:  leased.GetLeaseId(),
+		Outcome:  quorrapb.Outcome_OUTCOME_REFUSED,
+		Error:    "the payload names no account",
+	})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	if got.GetStatus() != "dead" {
+		t.Errorf("status = %q, want the job buried", got.GetStatus())
+	}
+	if got.GetAttempts() != 1 {
+		t.Errorf("attempts = %d, want 1, so the job ran once and no more", got.GetAttempts())
+	}
+
+	// The reason reaches the row. A dead job with no reason on it tells
+	// whoever finds it nothing about why it is there.
+	stored, err := backing.Get(ctx, leased.GetId())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.LastError != "the payload names no account" {
+		t.Errorf("last error = %q", stored.LastError)
+	}
+}
+
 // An unset outcome is refused.
 //
 // Zero is what an older client sends and what a new field left unwritten
