@@ -204,6 +204,13 @@ type Filter struct {
 	// stated time, and its tests would wait for a moment to arrive instead of
 	// stating it. This is the same rule jobs.Decide follows.
 	DueBy time.Time
+
+	// Worker keeps only the jobs that this worker holds.
+	//
+	// It matches leased_by, which is set while a lease is held and cleared
+	// when the job ends, so this only ever answers about work in flight. A
+	// finished job belongs to nobody, whoever ran it.
+	Worker string
 }
 
 // Order is the order a listing comes back in.

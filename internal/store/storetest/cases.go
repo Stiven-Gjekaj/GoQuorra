@@ -1413,6 +1413,48 @@ var cases = []testCase{
 		}
 	}},
 
+	{"the list narrows to the jobs one worker holds", func(t *testing.T, s store.Store, clock *Clock) {
+		create(t, s, store.NewJob{Type: "a"})
+		create(t, s, store.NewJob{Type: "b"})
+		create(t, s, store.NewJob{Type: "c"})
+
+		mine := lease(t, s, store.LeaseRequest{WorkerID: "worker-7", Limit: 2})
+		if len(mine) != 2 {
+			t.Fatalf("leased %d jobs, want 2", len(mine))
+		}
+		lease(t, s, store.LeaseRequest{WorkerID: "worker-8", Limit: 1})
+
+		got, err := s.List(ctx(), store.Filter{Limit: 10, Worker: "worker-7"})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("worker-7 holds %v, want the two it leased", ids(got))
+		}
+		for _, job := range got {
+			if job.LeasedBy != "worker-7" {
+				t.Errorf("%s is held by %q", job.ID, job.LeasedBy)
+			}
+		}
+
+		// A finished job belongs to nobody, whoever ran it. The lease is let
+		// go when the job ends, so asking by worker answers about work in
+		// flight and never about work that is over.
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: mine[0].ID, LeaseID: mine[0].LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		got, err = s.List(ctx(), store.Filter{Limit: 10, Worker: "worker-7"})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if diff := ids(got); !slices.Equal(diff, []string{mine[1].ID}) {
+			t.Errorf("after one finished, worker-7 holds %v, want only the other", diff)
+		}
+	}},
+
 	// This is the rule the compound cursor exists for, and it is the one that
 	// passes for the wrong reason if it is written carelessly.
 	//

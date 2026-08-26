@@ -490,6 +490,9 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		if f.Type != "" && rec.job.Type != f.Type {
 			continue
 		}
+		if f.Worker != "" && rec.job.LeasedBy != f.Worker {
+			continue
+		}
 		if !f.DueBy.IsZero() && rec.job.RunAt.After(f.DueBy) {
 			continue
 		}
