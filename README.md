@@ -243,6 +243,67 @@ Without the jitter, a database that goes away for a minute sends every job
 that failed in that minute back at the same instant, and the retry storm takes
 the database down a second time.
 
+### A handler can refuse a retry
+
+Some failures do not go away.
+A payload that names no account does not name one on the third attempt, and an
+upstream with no record of an identifier will not grow one while the job
+waits.
+
+A handler says so by wrapping `worker.ErrPermanent`:
+
+```go
+w.Handle("charge", func(ctx context.Context, job worker.Job) error {
+	account, err := accounts.Find(ctx, id)
+	if errors.Is(err, accounts.ErrNoSuchAccount) {
+		return worker.Permanent(fmt.Errorf("no account %q: %w", id, err))
+	}
+	if err != nil {
+		return err // A timeout. Try again.
+	}
+	return charge(ctx, account)
+})
+```
+
+The job goes to the dead letter queue on that attempt, whatever its retry
+count, with the reason on the row.
+It can be revived like any other dead job once the thing that was wrong is
+fixed.
+
+Use it when the job is the problem.
+Do not use it for a timeout, a refused connection or a rate limit, which are
+the failures retrying exists for.
+A handler that panics is retried, because a panic on one payload says nothing
+about the next attempt.
+
+The producer could already ask for this with `max_retries: 0`, and that is the
+wrong actor at the wrong moment: the producer does not know which failures are
+permanent, and the handler is the only thing that does.
+
+### Finding the job that is stuck
+
+A job in `pending` with a `run_at` two hours out looks exactly like one that
+is ready this second, so a queue that is not moving gives up nothing.
+
+Four questions, and what answers each:
+
+| The question | Ask for |
+| ------------ | ------- |
+| What would run right now? | `?due=now` |
+| What is waiting out a backoff? | `?due=now` and read what is missing, or `?order=soonest` |
+| What is `worker-7` holding? | `?worker=worker-7` |
+| What is at the front of the line? | `?order=soonest` |
+
+`quorractl list` spells the same things `-ready`, `-soonest` and `-worker`,
+and shows a `RUNS AT` column when the answer depends on it.
+The dashboard has a `ready` button beside the status filters and a `Runs at`
+column.
+
+`due` also takes a moment in RFC 3339, which is how to ask what the queue
+looked like at a time that is not now.
+The server resolves `now` against its own clock, so the answer does not depend
+on two machines agreeing about the time.
+
 ### A slow job keeps its lease
 
 A worker asks the server to push its lease out three times per lease while a
@@ -458,7 +519,7 @@ before.
 | Route | Gives |
 | ----- | ----- |
 | `GET /v1/jobs/{id}` | One job. `404` when there is none, and `500` when the database is unreachable. |
-| `GET /v1/jobs` | Jobs, newest first. Narrowed by `queue`, `status`, `type` and `limit`, and paged with `before`. |
+| `GET /v1/jobs` | Jobs, newest first. Narrowed by `queue`, `status`, `type`, `worker`, `due` and `limit`, ordered by `order`, and paged with `before`. |
 | `POST /v1/jobs/{id}/cancel` | Stops a job that has not finished. `409` when it already has. |
 | `POST /v1/jobs/{id}/revive` | Puts a dead or cancelled job back with a fresh set of attempts. `409` for any other state. |
 | `GET /v1/queues` | A count for each queue and status. |
@@ -473,6 +534,14 @@ while somebody is reading shifts every later page by one, which shows them a
 row twice and hides another entirely.
 Take `next_cursor` from a page and pass it back as `before`.
 A short page carries no cursor, because a short page is the end.
+
+`order=soonest` gives the job that runs first, first, which is the order the
+queue itself works in.
+Paging still holds under it, because the cursor compares the pair of `run_at`
+and the row sequence rather than `run_at` alone.
+`run_at` is not unique: a burst of submissions shares one value and every job
+a reclaim sweep returns shares one, so a cursor on it alone would repeat rows
+or skip them.
 
 A job in the wrong state answers `409` and not `400`.
 The request is well formed and would be correct against the same job a moment
@@ -495,7 +564,8 @@ outage worse.
 | `quorra_jobs_leased_total` | counter | Times a job has been handed to a worker |
 | `quorra_jobs_succeeded_total` | counter | Jobs a worker reported as finished |
 | `quorra_jobs_retried_total` | counter | Failures that sent a job back |
-| `quorra_jobs_dead_total` | counter | Jobs that used every attempt |
+| `quorra_jobs_dead_total` | counter | Jobs in the dead letter queue, however they got there |
+| `quorra_jobs_refused_total` | counter | Jobs a handler refused, a part of the line above |
 | `quorra_leases_reclaimed_total` | counter | Leases taken back after they ran out |
 | `quorra_jobs_cancelled_total` | counter | Jobs stopped by a person |
 | `quorra_jobs_revived_total` | counter | Jobs put back in the queue by a person |
@@ -503,6 +573,12 @@ outage worse.
 | `quorra_queue_length{queue,status}` | gauge | Jobs in each queue, refreshed on a timer |
 | `quorra_job_lifetime_seconds{queue,status}` | histogram | Acceptance to final state, so the waiting and the retries are in it |
 | `quorra_http_request_duration_seconds` | histogram | Labelled by route pattern, not by path |
+
+`quorra_jobs_refused_total` is a part of `quorra_jobs_dead_total` and not a
+number beside it, so the two divide.
+A dead letter queue filling with refusals says the work being submitted is
+wrong, and one filling with exhausted attempts says something outside is down.
+Those need different people.
 
 A retry and a burial are separate counters.
 The previous version raised one counter for both, so the failure rate counted
@@ -527,7 +603,7 @@ reads no clock.
 A table test drives every state a job reaches with nothing installed.
 
 **Two stores answer to one suite.**
-[`internal/store/storetest`](internal/store/storetest) holds fifty eight
+[`internal/store/storetest`](internal/store/storetest) holds sixty five
 rules.
 The in-memory store passes them with nothing installed and the PostgreSQL
 store passes them against a real database.
@@ -536,24 +612,24 @@ in for a database it does not behave like.
 
 | Area | Lines | Holds |
 | ---- | ----- | ----- |
-| `internal/jobs` | 242 | The states, the retry decision, the backoff. Standard library only. |
-| `internal/store` | 400 | The interface, the errors, the defaults |
-| `internal/store/memory` | 523 | Jobs in a map |
-| `internal/store/postgres` | 838 | Jobs in PostgreSQL |
-| `internal/api` | 658 | The REST routes and the dashboard |
-| `internal/rpc` | 257 | The worker protocol |
+| `internal/jobs` | 264 | The states, the retry decision, the backoff. Standard library only. |
+| `internal/store` | 461 | The interface, the errors, the defaults |
+| `internal/store/memory` | 557 | Jobs in a map |
+| `internal/store/postgres` | 867 | Jobs in PostgreSQL |
+| `internal/api` | 700 | The REST routes and the dashboard |
+| `internal/rpc` | 297 | The worker protocol |
 | `internal/server` | 352 | Assembly, the background loops, shutdown |
 | `internal/config` | 375 | Reading the environment |
-| `internal/metrics` | 215 | What the server publishes |
-| `worker` | 592 | The package a consumer imports |
-| `client` | 397 | The package a producer imports |
-| `cmd` | 622 | Three binaries |
-| **Total** | **5534** | 50 Go files, not counting 5686 lines of tests or 985 of generated code |
+| `internal/metrics` | 241 | What the server publishes |
+| `worker` | 660 | The package a consumer imports |
+| `client` | 428 | The package a producer imports |
+| `cmd` | 665 | Three binaries |
+| **Total** | **5930** | 50 Go files, not counting 6847 lines of tests or 995 of generated code |
 
 ```
 proto/quorra/v1/       the worker protocol
 internal/quorrapb/     generated from it, and checked by CI
-migrations/            four files, applied in name order and embedded so the
+migrations/            five files, applied in name order and embedded so the
                        tests apply the same bytes an operator reads
 deployments/           the compose stack and the Kubernetes manifests
 scripts/               generation, the link check, the smoke test
@@ -599,11 +675,10 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**262 cases pass. 203 of them need nothing installed.**
+**306 cases pass. 240 of them need nothing installed.**
 
-The other 59 need a database. Fifty eight of them are the store contract
-suite, and the fifty ninth is the test that holds the suite, which skips
-without one:
+The other 66 need a database. Sixty five of them are the store contract suite,
+and the sixty sixth is the test that holds the suite, which skips without one:
 
 ```
 export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra_test?sslmode=disable"
