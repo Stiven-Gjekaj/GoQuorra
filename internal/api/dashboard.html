@@ -326,17 +326,26 @@ function renderJobs(list) {
     }
 
     // One column for what came of the job, because a job has an error or a
-    // result and never both. The full text of either is too long for a
-    // column and hangs off the cell as a title.
+    // result and never both worth showing.
     //
     // The column is headed Outcome and not Last error. It held that name
     // while it also showed the word "result", which put a successful job
     // under a heading that says it failed.
-    const last = cell(row, job.last_error || "");
+    //
+    // The status decides which of the two is shown, and not which field
+    // happens to be filled in. last_error is deliberately kept when a job
+    // succeeds, so a job that failed once and then worked carries both, and
+    // preferring the error showed the stale failure and hid what the job
+    // actually produced.
+    const succeeded = job.status === "succeeded";
+    const last = cell(row, "");
     last.className = "why";
-    if (!job.last_error && job.result) {
+    if (succeeded && job.result) {
       last.textContent = "result";
       last.title = JSON.stringify(job.result);
+    } else if (!succeeded && job.last_error) {
+      last.textContent = job.last_error;
+      last.title = job.last_error;
     }
 
     // Only the actions the server would accept. A button that always answers

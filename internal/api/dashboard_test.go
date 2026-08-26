@@ -362,3 +362,33 @@ func TestTheDashboardShowsWhenAJobRuns(t *testing.T) {
 		t.Errorf("the table has %d columns and the empty row spans a different number", columns)
 	}
 }
+
+// A job that failed and then succeeded shows what it produced, not the
+// failure before it.
+//
+// last_error is kept when a job succeeds, on purpose: the record that an
+// attempt failed is worth having. The Outcome cell used to prefer it, so a
+// job that failed once and then worked displayed its old error and hid its
+// result. Nothing reports this. The server answers 200, the page draws, and
+// the row says the wrong thing.
+func TestTheOutcomeCellFollowsTheStatusAndNotTheFields(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	// The old shape, which reads last_error first and only falls back to the
+	// result when there is no error at all.
+	if strings.Contains(page, `cell(row, job.last_error || "")`) {
+		t.Error("the outcome cell prefers last_error, so a job that failed and then succeeded hides its result")
+	}
+	if strings.Contains(page, "!job.last_error && job.result") {
+		t.Error("the result is shown only when there is no error, which is the same fault")
+	}
+
+	// What decides is the status.
+	if !strings.Contains(page, `job.status === "succeeded"`) {
+		t.Error("the outcome cell does not read the status, so it cannot tell the two cases apart")
+	}
+}
