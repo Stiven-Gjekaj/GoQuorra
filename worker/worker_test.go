@@ -697,3 +697,82 @@ func TestAHandlerWithNoResultStoresNone(t *testing.T) {
 		t.Errorf("a plain handler stored the result %s", job.Result)
 	}
 }
+
+// The context a handler is given does not end at LeaseExpiresAt.
+//
+// The documentation on that field said it did. Nothing set a deadline, and
+// setting one would have been wrong: the heartbeat pushes the lease out while
+// the handler runs, so a deadline at the value captured when the job was
+// handed over would stop work that is being kept alive on purpose.
+//
+// A handler that ran past its first expiry proves both halves at once. It
+// finishes, so no deadline cut it off, and it finishes successfully, so the
+// heartbeat did its job.
+func TestTheHandlerContextDoesNotEndAtTheFirstLeaseExpiry(t *testing.T) {
+	backing, dial := serve(t)
+
+	// A lease short enough that the handler crosses it. The server refuses a
+	// lease under a second, so a second is the shortest real one, and the
+	// handler below runs past it.
+	w, err := worker.New(worker.Config{
+		ID:             "patient",
+		ServerAddr:     "passthrough:///bufnet",
+		Queues:         []string{"default"},
+		MaxJobs:        1,
+		LeaseTTL:       time.Second,
+		HeartbeatEvery: 200 * time.Millisecond,
+		PollEvery:      5 * time.Millisecond,
+		ShutdownGrace:  5 * time.Second,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialOptions:    dial,
+	})
+	if err != nil {
+		t.Fatalf("worker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	var expiry atomic.Value
+	var ranPast, deadlineSet atomic.Bool
+
+	w.Handle("slow", func(ctx context.Context, job worker.Job) error {
+		expiry.Store(job.LeaseExpiresAt)
+		if _, ok := ctx.Deadline(); ok {
+			deadlineSet.Store(true)
+		}
+		// Past the lease the job arrived with. The heartbeat keeps it.
+		select {
+		case <-time.After(1600 * time.Millisecond):
+			ranPast.Store(true)
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "slow"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the job to finish", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Succeeded
+	})
+
+	if deadlineSet.Load() {
+		t.Error("the handler context carries a deadline, which the heartbeat would fight")
+	}
+	if !ranPast.Load() {
+		t.Error("the handler did not run past the expiry it was given, so this proves nothing")
+	}
+
+	// And the moment it was given really was in the past by the time it
+	// finished, so the test is measuring what it says it is.
+	given, _ := expiry.Load().(time.Time)
+	if time.Now().Before(given) {
+		t.Errorf("the handler finished before the expiry it was given (%s), so it never crossed it", given)
+	}
+}

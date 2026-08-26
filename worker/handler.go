@@ -52,9 +52,26 @@ type Job struct {
 	Attempts   int
 	MaxRetries int
 
-	// LeaseExpiresAt is when the server takes the job back. The context given
-	// to a handler ends at this moment, so a handler that respects its
-	// context does not need to check this itself.
+	// LeaseExpiresAt is when the server would take the job back, as things
+	// stood when the job was handed over.
+	//
+	// It is not a deadline for the handler, and the context does not end at
+	// it. While a handler runs, the worker asks the server to push the lease
+	// out, so this moment moves and the value here goes stale almost at once.
+	// A handler that stopped at it would stop work the heartbeat was
+	// successfully keeping alive.
+	//
+	// What ends the context is losing the lease: the server saying the job is
+	// no longer this worker's. That arrives as a cancellation whose cause is
+	// ErrLeaseLost, and a handler that respects its context needs nothing
+	// else.
+	//
+	//	if errors.Is(context.Cause(ctx), worker.ErrLeaseLost) {
+	//		// Somebody else has the job. Stop, and do not report.
+	//	}
+	//
+	// This field is here for a handler that wants to reason about how much
+	// room it had, or to log it. Use the context for control.
 	LeaseExpiresAt time.Time
 
 	RunAt     time.Time
