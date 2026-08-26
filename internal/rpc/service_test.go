@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -422,5 +423,85 @@ func TestAHeartbeatNeedsAJobAndALease(t *testing.T) {
 	_, err := client.Heartbeat(t.Context(), &quorrapb.HeartbeatRequest{})
 	if got := status.Code(err); got != codes.InvalidArgument {
 		t.Fatalf("code = %s, want InvalidArgument", got)
+	}
+}
+
+// The message a worker sends with a failure is bounded, like the result.
+//
+// The result had a cap from the start and the error had none, although the
+// error is the field that shows in every listing that touches the row. A
+// worker handing back a stack trace, or the body of an HTML error page, put
+// all of it in the table and in every page that read it.
+func TestTheErrorAWorkerSendsIsBounded(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	huge := strings.Repeat("a stack frame nobody will read. ", 5000)
+	limit := rpc.DefaultLimits().MaxErrorBytes
+	if len(huge) <= limit {
+		t.Fatalf("the test message is %d bytes and the limit is %d, so this proves nothing", len(huge), limit)
+	}
+
+	// Trimmed and not refused. A refusal would throw away the outcome as well
+	// as the message and leave the job leased until the reclaimer took it
+	// back, which turns a long error message into a stuck job.
+	got, err := client.Report(ctx, &quorrapb.ReportRequest{
+		JobId:    leased.GetId(),
+		WorkerId: "worker-1",
+		LeaseId:  leased.GetLeaseId(),
+		Outcome:  quorrapb.Outcome_OUTCOME_FAILED,
+		Error:    huge,
+	})
+	if err != nil {
+		t.Fatalf("a long message was refused rather than cut: %v", err)
+	}
+	if got.GetStatus() != "pending" {
+		t.Errorf("status = %q, want the job back in the queue", got.GetStatus())
+	}
+
+	stored, err := backing.Get(ctx, leased.GetId())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(stored.LastError) > limit+200 {
+		t.Errorf("the stored message is %d bytes, and the limit is %d", len(stored.LastError), limit)
+	}
+	// It says that it was cut, so nobody hunts for the rest of a stack trace
+	// that was never stored.
+	if !strings.Contains(stored.LastError, "cut") {
+		t.Errorf("the message does not say it was cut: %q", stored.LastError[:100])
+	}
+	if !strings.HasPrefix(stored.LastError, "a stack frame") {
+		t.Errorf("the start of the message was lost: %q", stored.LastError[:60])
+	}
+}
+
+// A message that fits is stored exactly as it was sent.
+//
+// Without this, a cap that trimmed everything would pass the test above.
+func TestAMessageThatFitsIsNotTouched(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	message := "the host refused the connection"
+	if _, err := client.Report(ctx, &quorrapb.ReportRequest{
+		JobId:    leased.GetId(),
+		WorkerId: "worker-1",
+		LeaseId:  leased.GetLeaseId(),
+		Outcome:  quorrapb.Outcome_OUTCOME_FAILED,
+		Error:    message,
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	stored, _ := backing.Get(ctx, leased.GetId())
+	if stored.LastError != message {
+		t.Errorf("last error = %q, want %q", stored.LastError, message)
 	}
 }

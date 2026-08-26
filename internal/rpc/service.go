@@ -8,8 +8,9 @@ package rpc
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
 	"strings"
+	"log/slog"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
@@ -37,6 +38,14 @@ type Limits struct {
 	// place to put a large value: a row that holds one is read by every
 	// listing that touches it, and the dashboard shows a hundred at a time.
 	MaxResultBytes int
+
+	// MaxErrorBytes caps the message a worker sends with a failure.
+	//
+	// The result had a cap from the start and the error had none, although
+	// the error is the field that appears in every listing that touches the
+	// row. A worker handing back a stack trace, or the body of an HTML error
+	// page, put all of it in the table and in every page that showed it.
+	MaxErrorBytes int
 }
 
 // DefaultLimits are used when the caller states none.
@@ -47,6 +56,11 @@ func DefaultLimits() Limits {
 		MaxLeaseTTL:     time.Hour,
 		DefaultLeaseTTL: 30 * time.Second,
 		MaxResultBytes:  64 << 10,
+
+		// Two thousand characters. Long enough for a sentence, a wrapped
+		// chain of them, and a short stack; short enough that a listing of
+		// fifty jobs is not a megabyte of somebody else's stack traces.
+		MaxErrorBytes: 2000,
 	}
 }
 
@@ -150,6 +164,22 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 			req.GetOutcome())
 	}
 
+	if len(req.GetError()) > s.limits.MaxErrorBytes {
+		// Trimmed and not refused, which is the opposite of the rule for a
+		// result, and the reason is what each one is for. A result is a value
+		// a caller reads, and half a JSON document is broken rather than
+		// smaller. An error is a sentence a person reads, and its first two
+		// thousand characters say what went wrong. Refusing the report would
+		// throw away the outcome as well as the message, and leave the job
+		// leased until the reclaimer took it back.
+		//
+		// It says that it was cut, so nobody hunts for the rest of a stack
+		// trace that was never stored.
+		cut := string(req.GetError()[:s.limits.MaxErrorBytes])
+		req.Error = fmt.Sprintf("%s [cut: the worker sent %d bytes and the limit is %d]",
+			cut, len(req.GetError()), s.limits.MaxErrorBytes)
+	}
+
 	if len(req.GetResult()) > s.limits.MaxResultBytes {
 		// Refused rather than trimmed. Half a JSON document is not a smaller
 		// result, it is a broken one, and storing it would put a value on the
@@ -180,6 +210,7 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 	case err != nil:
 		// A result that is not JSON is the worker's mistake, and the store
 		// says so. Answering Internal to it sends the reader to the server.
+		//
 		if strings.Contains(err.Error(), "not JSON") {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
