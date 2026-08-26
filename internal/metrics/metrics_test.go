@@ -45,9 +45,9 @@ func TestTwoSetsCanExistAtOnce(t *testing.T) {
 func TestABuriedJobIsCountedAsBuriedAndNotAsARetry(t *testing.T) {
 	m := New()
 
-	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), now)
-	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), now)
-	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Minute)), now)
+	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), jobs.OutcomeFailed, now)
+	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), jobs.OutcomeFailed, now)
+	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Minute)), jobs.OutcomeFailed, now)
 
 	if got := testutil.ToFloat64(m.dead); got != 1 {
 		t.Errorf("dead = %v, want 1", got)
@@ -62,10 +62,52 @@ func TestABuriedJobIsCountedAsBuriedAndNotAsARetry(t *testing.T) {
 
 func TestASucceededJobIsCounted(t *testing.T) {
 	m := New()
-	m.JobFinished(job(jobs.Succeeded, "mail", now.Add(-30*time.Second)), now)
+	m.JobFinished(job(jobs.Succeeded, "mail", now.Add(-30*time.Second)), jobs.OutcomeDone, now)
 
 	if got := testutil.ToFloat64(m.succeeded); got != 1 {
 		t.Errorf("succeeded = %v, want 1", got)
+	}
+}
+
+// A refused job is counted twice on purpose: once as dead and once as
+// refused.
+//
+// The two numbers divide, and the division is the point. A dead letter queue
+// filling with refusals says the work being submitted is wrong, and one
+// filling with exhausted attempts says something outside is down. Those need
+// different people. A refusal counted apart from the deaths rather than
+// inside them would not divide, and every dashboard reading dead_total would
+// undercount.
+func TestARefusedJobIsCountedInsideTheBuriedOnes(t *testing.T) {
+	m := New()
+
+	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Minute)), jobs.OutcomeRefused, now)
+	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Minute)), jobs.OutcomeFailed, now)
+
+	if got := testutil.ToFloat64(m.dead); got != 2 {
+		t.Errorf("dead = %v, want both of them", got)
+	}
+	if got := testutil.ToFloat64(m.refused); got != 1 {
+		t.Errorf("refused = %v, want the one the handler refused", got)
+	}
+	if got := testutil.ToFloat64(m.retried); got != 0 {
+		t.Errorf("retried = %v, want none", got)
+	}
+}
+
+// A refusal that did not bury the job is counted nowhere.
+//
+// The counter answers what share of the dead letter queue is refusals, and a
+// share that can exceed the whole is not an answer. This is the guard on the
+// rule that the outcome divides a status and never decides one.
+func TestARefusalIsOnlyCountedWhenTheJobIsBuried(t *testing.T) {
+	m := New()
+
+	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), jobs.OutcomeRefused, now)
+	m.JobFinished(job(jobs.Succeeded, "default", now.Add(-time.Minute)), jobs.OutcomeRefused, now)
+
+	if got := testutil.ToFloat64(m.refused); got != 0 {
+		t.Errorf("refused = %v, want none, because neither job is dead", got)
 	}
 }
 
@@ -75,12 +117,12 @@ func TestASucceededJobIsCounted(t *testing.T) {
 func TestOnlyAFinishedJobContributesALifetime(t *testing.T) {
 	m := New()
 
-	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), now)
+	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Minute)), jobs.OutcomeFailed, now)
 	if count := testutil.CollectAndCount(m.lifetime); count != 0 {
 		t.Errorf("a retried job recorded %d lifetimes", count)
 	}
 
-	m.JobFinished(job(jobs.Succeeded, "default", now.Add(-90*time.Second)), now)
+	m.JobFinished(job(jobs.Succeeded, "default", now.Add(-90*time.Second)), jobs.OutcomeDone, now)
 	if count := testutil.CollectAndCount(m.lifetime); count != 1 {
 		t.Errorf("a finished job recorded %d lifetimes, want 1", count)
 	}
@@ -130,7 +172,7 @@ func TestCountersIgnoreNothingAndNegatives(t *testing.T) {
 	m.JobsLeased(0)
 	m.JobsLeased(-3)
 	m.LeasesReclaimed(0)
-	m.JobFinished(nil, now)
+	m.JobFinished(nil, jobs.OutcomeDone, now)
 
 	if got := testutil.ToFloat64(m.leased); got != 0 {
 		t.Errorf("leased = %v after leasing nothing", got)
@@ -154,9 +196,9 @@ func TestTheMetricsPageNamesEveryCounter(t *testing.T) {
 	m.JobCreated()
 	m.JobsLeased(2)
 	m.LeasesReclaimed(1)
-	m.JobFinished(job(jobs.Succeeded, "default", now.Add(-time.Second)), now)
-	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Second)), now)
-	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Second)), now)
+	m.JobFinished(job(jobs.Succeeded, "default", now.Add(-time.Second)), jobs.OutcomeDone, now)
+	m.JobFinished(job(jobs.Dead, "default", now.Add(-time.Second)), jobs.OutcomeFailed, now)
+	m.JobFinished(job(jobs.Pending, "default", now.Add(-time.Second)), jobs.OutcomeFailed, now)
 	m.HTTPRequest("/v1/jobs", "POST", "201", 12*time.Millisecond)
 
 	page := gather(t, m)

@@ -187,7 +187,7 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 		return nil, status.Error(codes.Internal, "cannot record the report")
 	}
 
-	s.metrics.JobFinished(job, s.now())
+	s.metrics.JobFinished(job, outcome, s.now())
 	s.log.Debug("recorded a report",
 		"job", job.ID, "worker", req.GetWorkerId(), "outcome", outcome, "status", job.Status)
 

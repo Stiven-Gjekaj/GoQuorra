@@ -28,6 +28,7 @@ type Metrics struct {
 	succeeded prometheus.Counter
 	retried   prometheus.Counter
 	dead      prometheus.Counter
+	refused   prometheus.Counter
 	reclaimed prometheus.Counter
 	cancelled prometheus.Counter
 	revived   prometheus.Counter
@@ -69,7 +70,23 @@ func New() *Metrics {
 		}),
 		dead: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "quorra_jobs_dead_total",
-			Help: "Jobs that used every attempt and moved to the dead letter queue.",
+			Help: "Jobs that moved to the dead letter queue, however they got there.",
+		}),
+
+		// Refusals are a part of the deaths above and not a number beside
+		// them, so the two divide. The question an operator asks is what
+		// share of the dead letter queue is the queue giving up against a
+		// handler saying no, and those are different problems: the first is
+		// usually something outside that is down, and the second is usually
+		// something wrong with the work being submitted.
+		//
+		// A label on the dead counter would answer the same question. Two
+		// counters are used because a label makes every existing dashboard
+		// panel and alert that reads quorra_jobs_dead_total start summing
+		// over a dimension it does not know about.
+		refused: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "quorra_jobs_refused_total",
+			Help: "Jobs a handler refused, which are a part of quorra_jobs_dead_total.",
 		}),
 		reclaimed: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "quorra_leases_reclaimed_total",
@@ -117,7 +134,7 @@ func New() *Metrics {
 	}
 
 	registry.MustRegister(
-		m.created, m.leased, m.succeeded, m.retried, m.dead, m.reclaimed,
+		m.created, m.leased, m.succeeded, m.retried, m.dead, m.refused, m.reclaimed,
 		m.cancelled, m.revived, m.removed,
 		m.queueLength, m.lifetime, m.httpLatency,
 		collectors.NewGoCollector(),
@@ -152,12 +169,18 @@ func (m *Metrics) LeasesReclaimed(n int) {
 	}
 }
 
-// JobFinished records where a job ended up.
+// JobFinished records where a job ended up, and what put it there.
 //
 // It takes the job after the store has written it, so the status it counts is
 // the status the table holds. Counting the intention instead is how the old
 // code raised its failure counter for a job that had in fact been buried.
-func (m *Metrics) JobFinished(job *store.Job, now time.Time) {
+//
+// The outcome is read only to divide one of those statuses, never to decide
+// it. A refusal is counted when the job is dead, and a refusal that somehow
+// left the job somewhere else is not counted at all, because the counter
+// answers "what share of the dead letter queue is refusals" and an answer
+// that could exceed the whole is not an answer.
+func (m *Metrics) JobFinished(job *store.Job, outcome jobs.Outcome, now time.Time) {
 	if job == nil {
 		return
 	}
@@ -167,6 +190,9 @@ func (m *Metrics) JobFinished(job *store.Job, now time.Time) {
 		m.succeeded.Inc()
 	case jobs.Dead:
 		m.dead.Inc()
+		if outcome == jobs.OutcomeRefused {
+			m.refused.Inc()
+		}
 	case jobs.Pending:
 		// Back in the queue, so the job has not finished. This is a retry.
 		m.retried.Inc()
