@@ -271,6 +271,97 @@ func TestADoubleDashEndsTheOptions(t *testing.T) {
 	}
 }
 
+// The tool names an option that has to exist.
+//
+// The last page of a listing printed "add -all, or -before <id>", and -before
+// was never registered, so following the instruction answered "flag provided
+// but not defined". The message named a flag the tool refused.
+func TestTheOptionTheListNamesIsRegistered(t *testing.T) {
+	flags := serve(t)
+
+	cli(t, flags, "create", "-type", "alpha")
+	cli(t, flags, "create", "-type", "beta")
+
+	first, err := cli(t, flags, "list", "-limit", "1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(first, "-before ") {
+		t.Fatalf("the page does not offer -before:\n%s", first)
+	}
+
+	// Take the identifier the message gives and hand it straight back, which
+	// is what somebody reading the message does.
+	fields := strings.Fields(first[strings.Index(first, "-before "):])
+	if len(fields) < 2 {
+		t.Fatalf("the message carries no identifier: %q", first)
+	}
+
+	second, err := cli(t, flags, "list", "-limit", "1", "-before", fields[1])
+	if err != nil {
+		t.Fatalf("the option the message named was refused: %v", err)
+	}
+	if strings.Contains(second, fields[1]) {
+		t.Errorf("the second page repeats the job the cursor named:\n%s", second)
+	}
+}
+
+// The tool can answer the questions somebody asks when a queue is stuck.
+func TestListFindsWhatIsReadyAndInWhatOrder(t *testing.T) {
+	flags := serve(t)
+
+	cli(t, flags, "create", "-type", "waiting", "-delay", "3600")
+	cli(t, flags, "create", "-type", "ready")
+
+	ready, err := cli(t, flags, "list", "-ready")
+	if err != nil {
+		t.Fatalf("list -ready: %v", err)
+	}
+	if !strings.Contains(ready, "ready") || strings.Contains(ready, "waiting") {
+		t.Errorf("-ready showed the delayed job:\n%s", ready)
+	}
+
+	// A column for when a job runs, because a list sorted by a value it does
+	// not show reads as a list that is not sorted.
+	if !strings.Contains(ready, "RUNS AT") {
+		t.Errorf("-ready does not show when a job runs:\n%s", ready)
+	}
+
+	sorted, err := cli(t, flags, "list", "-soonest")
+	if err != nil {
+		t.Fatalf("list -soonest: %v", err)
+	}
+	if !strings.Contains(sorted, "RUNS AT") {
+		t.Errorf("-soonest does not show when a job runs:\n%s", sorted)
+	}
+	if strings.Index(sorted, "ready") > strings.Index(sorted, "waiting") {
+		t.Errorf("-soonest put the delayed job first:\n%s", sorted)
+	}
+
+	// And the plain listing keeps its old shape, with no extra column.
+	plain, err := cli(t, flags, "list")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if strings.Contains(plain, "RUNS AT") {
+		t.Errorf("a plain listing grew a column:\n%s", plain)
+	}
+}
+
+func TestListNarrowsToOneWorker(t *testing.T) {
+	flags := serve(t)
+	cli(t, flags, "create", "-type", "work")
+
+	// Nothing has leased it, so no worker holds it.
+	held, err := cli(t, flags, "list", "-worker", "worker-7")
+	if err != nil {
+		t.Fatalf("list -worker: %v", err)
+	}
+	if !strings.Contains(held, "No jobs") {
+		t.Errorf("worker-7 holds something before anything leased it:\n%s", held)
+	}
+}
+
 func TestListFilters(t *testing.T) {
 	flags := serve(t)
 

@@ -287,6 +287,10 @@ func list(args []string, out io.Writer) error {
 	queue := set.String("queue", "", "only this queue")
 	status := set.String("status", "", "only this status: pending, leased, succeeded, dead or cancelled")
 	jobType := set.String("type", "", "only this job type")
+	worker := set.String("worker", "", "only the jobs this worker is holding")
+	ready := set.Bool("ready", false, "only the jobs the queue would hand out now")
+	soonest := set.Bool("soonest", false, "the job that runs first, first, rather than the newest first")
+	before := set.String("before", "", "start after this job, from a previous page")
 	all := set.Bool("all", false, "follow the pages to the end")
 
 	if err := set.Parse(reorder(set, args)); err != nil {
@@ -295,14 +299,22 @@ func list(args []string, out io.Writer) error {
 
 	query := url.Values{}
 	query.Set("limit", strconv.Itoa(*limit))
-	for name, value := range map[string]string{"queue": *queue, "status": *status, "type": *jobType} {
+	for name, value := range map[string]string{
+		"queue": *queue, "status": *status, "type": *jobType, "worker": *worker,
+	} {
 		if value != "" {
 			query.Set(name, value)
 		}
 	}
+	if *ready {
+		query.Set("due", "now")
+	}
+	if *soonest {
+		query.Set("order", "soonest")
+	}
 
 	shown := 0
-	cursor := ""
+	cursor := *before
 
 	for {
 		if cursor != "" {
@@ -321,14 +333,27 @@ func list(args []string, out io.Writer) error {
 		}
 
 		// The heading once, and only when there is something under it.
+		//
+		// The run at column appears when the order or the filter is about
+		// when a job runs. A list sorted by a value it does not show reads as
+		// a list that is not sorted at all.
+		when := *soonest || *ready
 		if shown == 0 {
-			fmt.Fprintf(out, "%-38s %-20s %-12s %-10s %s\n", "ID", "TYPE", "QUEUE", "STATUS", "ATTEMPTS")
+			fmt.Fprintf(out, "%-38s %-20s %-12s %-10s %s", "ID", "TYPE", "QUEUE", "STATUS", "ATTEMPTS")
+			if when {
+				fmt.Fprintf(out, "  %s", "RUNS AT")
+			}
+			fmt.Fprintln(out)
 		}
 		for _, row := range rows {
 			job, _ := row.(map[string]any)
-			fmt.Fprintf(out, "%-38v %-20v %-12v %-10v %v of %v\n",
+			fmt.Fprintf(out, "%-38v %-20v %-12v %-10v %v of %v",
 				job["id"], job["type"], job["queue"], job["status"],
 				number(job["attempts"]), number(job["max_retries"])+1)
+			if when {
+				fmt.Fprintf(out, "  %v", runAt(job["run_at"]))
+			}
+			fmt.Fprintln(out)
 			shown++
 		}
 
@@ -410,6 +435,24 @@ func print(out io.Writer, value any) error {
 // number turns a JSON number into an int. Every number in a decoded JSON
 // document is a float64, and printing one straight gives 3 as "3" but 1e+06
 // as "1e+06".
+// runAt renders a moment for the table.
+//
+// The time of day when the job runs today, and the date when it does not. A
+// full timestamp on every row is the widest thing in the table and is read by
+// nobody, and the reason to look at this column is to tell soon from later.
+func runAt(value any) string {
+	text, _ := value.(string)
+	moment, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return text
+	}
+	moment = moment.Local()
+	if moment.Format("2006-01-02") == time.Now().Format("2006-01-02") {
+		return moment.Format("15:04:05")
+	}
+	return moment.Format("2006-01-02 15:04")
+}
+
 func number(value any) int {
 	if asFloat, ok := value.(float64); ok {
 		return int(asFloat)
