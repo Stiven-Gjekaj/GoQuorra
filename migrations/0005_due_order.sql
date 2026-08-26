@@ -1,0 +1,25 @@
+-- The order the queue itself works in.
+--
+-- A listing can now ask for the job that runs soonest first, which is how an
+-- operator finds what is ready against what is waiting out a backoff. Nothing
+-- serves that order today. jobs_ready_idx leads with priority and covers only
+-- pending jobs, so it answers the lease query and not this one.
+--
+-- Measured against PostgreSQL 16.13 with 200000 rows, asking for the first 25
+-- in this order:
+--
+--   without this index   3259 buffers, 36ms, a parallel top-N sort
+--   with this index         5 buffers, 0.12ms, an index scan
+--
+-- The pair and not run_at alone. run_at is not unique: a burst of submissions
+-- shares one value, and every job a reclaim sweep returns shares one. seq is
+-- unique, so the pair is unique, so the order is total and a cursor placed on
+-- it lands between two rows rather than in the middle of a group. A cursor on
+-- run_at alone would repeat rows or skip them, and which of the two it did
+-- would depend on how many jobs happened to share a moment.
+--
+-- Not partial, and not composite with status. A composite (status, run_at,
+-- seq) was built and measured, and the planner did not choose it: the cursor
+-- is the selective condition and the status filter removes a handful of rows
+-- after it. It costs 6.2 MB for 200000 rows.
+CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs (run_at, seq);
