@@ -33,9 +33,9 @@ PostgreSQL is optional for most of the work.
     make verify
 
 `make verify` runs everything CI runs.
-It needs no database, because 103 of the 128 cases need nothing installed.
+It needs no database, because 240 of the 306 cases need nothing installed.
 
-To run the 25 that do:
+To run the 66 that do:
 
     docker compose -f deployments/docker-compose.yml up -d postgres
     export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra?sslmode=disable"

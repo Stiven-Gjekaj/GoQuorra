@@ -24,14 +24,16 @@ Measured, on a real server against PostgreSQL 16:
 
 | Check | Result |
 | ----- | ------ |
-| Test cases | 262, of which 203 need nothing installed |
-| Store contract rules | 58, and both stores pass all of them |
+| Test cases | 306, of which 240 need nothing installed |
+| Store contract rules | 65, and both stores pass all of them |
 | A worker stopped with SIGKILL while holding a job | The lease was taken back ten seconds later, the row named the worker that died, and the counter moved from 0 to 1 |
 | A job with `max_retries: 2` whose handler always fails | Ran three times, then `dead`, with the last error on the row |
 | Eight goroutines leasing forty jobs at once | No job handed out twice, against PostgreSQL and against the in-memory store |
 | Eight submissions at once under one idempotency key | Exactly one stored a job, and all eight were given the same one |
 | A handler running for two and a half times its lease | Finished once, because the heartbeat held the lease. With the heartbeat off it ran twice. |
-| Direct dependencies | Five, unchanged across seven features |
+| A handler refusing a job, against one that only fails, both with `max_retries: 3` | The refused one was buried on attempt 1 and the failing one on attempt 4. `quorra_jobs_refused_total` moved to 1 inside a `quorra_jobs_dead_total` of 2 |
+| Forty jobs over five `run_at` moments, paged seven at a time in the soonest order | Six pages, forty rows, no repeat and nothing missing |
+| Direct dependencies | Five, unchanged across nine features |
 
 ---
 
@@ -155,6 +157,50 @@ achievable by writing IF NOT EXISTS.
 for a tool before then: the list is three functions and a test, and a
 migration framework is a dependency, a state table and a failure mode.
 
+### A cursor on a time alone is wrong, and passes a careless test
+
+Paging in the soonest order compares the pair `(run_at, seq)` and not `run_at`
+alone.
+`run_at` is not unique.
+A burst of submissions shares one value, and every job a reclaim sweep returns
+shares one.
+A cursor on it alone either repeats that whole group on the next page or skips
+the rest of it.
+
+The trap is in the test and not in the code.
+Jobs created one after another each get their own `run_at`, so a paging test
+written the obvious way passes against the broken cursor.
+The rule in the contract suite does not move the clock, so nine jobs share one
+moment, and it fails against a `run_at` cursor in both stores.
+
+It is written as a row comparison and not as the `OR` that means the same
+thing, and that is measured rather than preferred.
+PostgreSQL turns the row form into an index condition on `jobs_due_idx` and
+seeks.
+It cannot do that with the `OR`: on 200000 rows the `OR` form read 955 rows to
+return 25 while the row form read 25.
+
+**What would change the answer.** A planner that stops using the row form.
+Check with `EXPLAIN` before rewriting it, because the spelled out form looks
+like the safer one and is not.
+
+### A comment can be the wrong side of a disagreement
+
+`worker.Job.LeaseExpiresAt` was documented as the moment the handler's context
+ends.
+Nothing set a deadline anywhere in that package, so the code and the comment
+disagreed, and the obvious fix is the wrong one.
+
+The heartbeat pushes the lease out while a handler runs, so the moment the
+handler was handed goes stale almost at once.
+A deadline at it stops work that is being kept alive on purpose.
+Writing that deadline fails both the test for it and
+`TestASlowHandlerKeepsItsJob`, which is the test the heartbeat exists for.
+
+The comment was corrected, not the code.
+When a comment and the code disagree, the comment is not automatically the one
+telling the truth about what should happen.
+
 ### The server refuses a lease under a second
 
 `rpc.DefaultLimits` sets a minimum of one second, and a worker asking for less
@@ -208,6 +254,24 @@ The tool moves the options in front before parsing, asking the flag set
 whether each one swallows the token after it. It writes a `--` between the two
 halves, always: the first version dropped a separator the caller had typed,
 and the argument it was protecting was then read as an option.
+
+### The dashboard polls for ever, and that is not fixed
+
+The page reloads every five seconds with `setInterval` and no backoff, no
+check for whether the tab is visible, and no stop when the key is wrong.
+So a wrong key makes two failing requests every five seconds for as long as
+the tab is open, and a tab left in the background polls until it is closed.
+
+This is real and it is left.
+Fixing it properly means giving the page a request lifecycle: a backoff, a
+pause when hidden, and a stop after a run of failures.
+That is its own piece of work rather than a line, and the cost today is a
+request every five seconds against a server that answers it in under a
+millisecond.
+
+**What would change the answer.** A deployment where the dashboard is open on
+many screens at once, or one where the server is not on the same network as
+the people watching it.
 
 ### Why the state machine has four states and not six
 
