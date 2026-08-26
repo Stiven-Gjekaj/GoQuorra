@@ -13,6 +13,82 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Saying no, and finding what is stuck
+
+Two things a person running this hits on the first bad day: a handler with no
+way to say that a job will never work, and no way to tell a job that is ready
+from one that is waiting out a backoff.
+
+**Added**
+
+- **A handler can refuse a retry.** An error wrapping `worker.ErrPermanent`,
+  or one built with `worker.Permanent`, buries the job on that attempt
+  whatever its retry count. A payload that names no account does not name one
+  on the third attempt, and spending three more workers and three backoffs to
+  reach the answer the handler already gave is waste. The producer could ask
+  for this with `max_retries: 0`, and that is the wrong actor at the wrong
+  moment: the producer does not know which failures are permanent.
+- **The job ends in `dead`**, with the reason on the row, and not in a status
+  of its own. Two statuses that described how a job arrived somewhere rather
+  than where it was have already been removed from this project.
+- **`quorra_jobs_refused_total`**, which is a part of `quorra_jobs_dead_total`
+  and not a number beside it. A dead letter queue filling with refusals says
+  the work being submitted is wrong; one filling with exhausted attempts says
+  something outside is down. Those need different people.
+- **A listing can be ordered by when a job runs**, with `order=soonest`, and
+  narrowed by `worker` and by `due`. `due=now` is resolved by the server
+  against its own clock, so the answer does not depend on two machines
+  agreeing about the time.
+- **Paging holds under the new order.** The cursor compares the pair of
+  `run_at` and the row sequence. `run_at` is not unique: a burst of
+  submissions shares one value and every job a reclaim sweep returns shares
+  one, so a cursor on it alone would repeat rows or skip them. Written as a
+  row comparison because PostgreSQL turns that into an index condition and
+  seeks, which the `OR` it stands for cannot do.
+- **An index for that order**, `jobs_due_idx` on `(run_at, seq)`. Measured on
+  200000 rows: 3259 buffers and 36ms without it, 5 buffers and 0.12ms with it.
+- **`quorractl list -ready`, `-soonest`, `-worker` and `-before`**, with a
+  `RUNS AT` column when the answer depends on when a job runs.
+- **A `ready` filter and a `Runs at` column on the dashboard.** Three pending
+  jobs, one ready and two waiting, were identical in every column on that
+  page. They now read "now", "in 54s" and "in 2h".
+
+**Fixed**
+
+- **The command line tool named an option it refused.** The last page of a
+  listing printed "add -all, or -before <id>", and `-before` was never
+  registered, so following the instruction answered "flag provided but not
+  defined".
+- **The dashboard showed a stale error instead of a result.** `last_error` is
+  kept when a job succeeds, on purpose, and the Outcome cell read that field
+  first. So a job that failed once and then worked displayed its old failure
+  and hid what it produced. The status decides now.
+- **The error a worker reports had no size limit** while the result had one
+  from the start, although the error is the field that shows in every listing
+  that touches the row. It is cut at two thousand characters and says that it
+  was cut. Cut and not refused: refusing the report would throw away the
+  outcome as well as the message and leave the job leased until the reclaimer
+  took it back.
+- **The worker package promised a deadline it did not set.** The
+  documentation on `LeaseExpiresAt` said the handler's context ended at that
+  moment. Nothing set one, and setting one would have been wrong, because the
+  heartbeat pushes the lease out while the handler runs. The comment was the
+  wrong side.
+- **One layer decided by matching the text of another layer's error.** The
+  gRPC service searched the store's message for "not JSON" to answer 400
+  rather than 500, so rewording one sentence in another package would have
+  silently moved every one of those answers and pointed the reader at the
+  server for a mistake the worker made. It reads `store.ErrNotJSON` now.
+
+**Changed**
+
+- **`store.Filter` carries an `Order`**, and `Newest` is its zero value, so
+  every caller that existed keeps getting what it got.
+- **`metrics.JobFinished` takes the outcome** as well as the job. It reads it
+  only to divide a status, never to decide one.
+- **`api.Options` takes a clock**, like the store and the gRPC service, so one
+  route can resolve `due=now` without the store reading one.
+
 ### Acting on the queue
 
 The rebuild made the queue correct. This makes it usable: a dead letter queue
