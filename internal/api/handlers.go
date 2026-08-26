@@ -182,6 +182,37 @@ func (a *API) listJobs(w http.ResponseWriter, r *http.Request) {
 		Type:   query.Get("type"),
 		Limit:  limit,
 		Before: query.Get("before"),
+		Worker: query.Get("worker"),
+	}
+
+	// order=soonest gives the order the queue works in, so the first page
+	// holds what runs next rather than what was submitted last.
+	switch wanted := query.Get("order"); wanted {
+	case "", "newest":
+		filter.Order = store.Newest
+	case "soonest":
+		filter.Order = store.Soonest
+	default:
+		a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"%q is not an order. It must be newest or soonest.", wanted))
+		return
+	}
+
+	// due=now is the spelling for the question people actually ask, and the
+	// handler resolves it. The store must not read a clock, and a caller
+	// should not have to send a timestamp to ask what is ready.
+	if wanted := query.Get("due"); wanted != "" {
+		if wanted == "now" {
+			filter.DueBy = a.opts.Now()
+		} else {
+			moment, err := time.Parse(time.RFC3339, wanted)
+			if err != nil {
+				a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+					"%q is not a moment. Use now, or a time in RFC 3339 such as 2026-01-02T15:04:05Z.", wanted))
+				return
+			}
+			filter.DueBy = moment
+		}
 	}
 
 	if wanted := query.Get("status"); wanted != "" {

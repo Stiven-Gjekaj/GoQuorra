@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -19,11 +20,19 @@ import (
 
 const key = "a-key-that-somebody-chose"
 
+// frozen is the moment every test in this file runs at.
+//
+// Stated and not read, so a test can ask what the queue looked like at a
+// moment rather than arranging for its assertion to be true at the instant it
+// happens to run.
+var frozen = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
 func serve(t *testing.T) (http.Handler, store.Store) {
 	t.Helper()
 
 	backing := memory.New(store.Options{
 		Policy: jobs.Policy{MaxRetries: 2, Base: time.Second, Max: time.Minute},
+		Now:    func() time.Time { return frozen },
 	})
 	t.Cleanup(func() { _ = backing.Close() })
 
@@ -34,6 +43,7 @@ func serve(t *testing.T) (http.Handler, store.Store) {
 		APIKey:           key,
 		MaxBodyBytes:     1 << 16,
 		DashboardEnabled: true,
+		Now:              func() time.Time { return frozen },
 	}).Handler(), backing
 }
 
@@ -435,6 +445,107 @@ func TestTheListNarrowsByQueueStatusAndType(t *testing.T) {
 	}
 	if got, _ := listed(t, handler, "?status=dead"); len(got) != 0 {
 		t.Errorf("status=dead gave %d jobs, want none", len(got))
+	}
+}
+
+// due=now is resolved by the handler, from a clock the caller can state.
+//
+// The store is not allowed to read a clock, so this route reads it and passes
+// a moment. Stating the moment is what lets this test ask what the queue
+// looked like then, rather than arranging for the answer to be true at the
+// instant it happens to run.
+func TestTheListAnswersWhatIsReadyNow(t *testing.T) {
+	handler, _ := serve(t)
+
+	ready := submit(t, handler, `{"type":"now"}`)
+	submit(t, handler, `{"type":"later","delay_seconds":3600}`)
+
+	got, _ := listed(t, handler, "?due=now")
+	if len(got) != 1 || got[0] != ready {
+		t.Errorf("due=now gave %v, want only the job that is ready", got)
+	}
+
+	// And a stated moment reaches past the delay.
+	future := frozen.Add(2 * time.Hour).Format(time.RFC3339)
+	got, _ = listed(t, handler, "?due="+url.QueryEscape(future))
+	if len(got) != 2 {
+		t.Errorf("due=%s gave %d jobs, want both", future, len(got))
+	}
+
+	// Without the filter, every job.
+	got, _ = listed(t, handler, "")
+	if len(got) != 2 {
+		t.Errorf("no filter gave %d jobs, want both", len(got))
+	}
+}
+
+func TestTheListOrdersBySoonestWhenAsked(t *testing.T) {
+	handler, _ := serve(t)
+
+	// Submitted sooner first and later second, so the two orders disagree.
+	// Submitting them the other way round makes both orders give the same
+	// answer, and the test then passes without telling them apart.
+	soon := submit(t, handler, `{"type":"soon","delay_seconds":60}`)
+	late := submit(t, handler, `{"type":"late","delay_seconds":3600}`)
+
+	got, _ := listed(t, handler, "?order=soonest")
+	if len(got) != 2 || got[0] != soon || got[1] != late {
+		t.Errorf("order=soonest gave %v, want the sooner one first", got)
+	}
+
+	// The default is unchanged, and here it is the reverse.
+	got, _ = listed(t, handler, "")
+	if len(got) != 2 || got[0] != late || got[1] != soon {
+		t.Errorf("the default order gave %v, want the newest first", got)
+	}
+}
+
+func TestTheListNarrowsToOneWorker(t *testing.T) {
+	handler, backing := serve(t)
+
+	submit(t, handler, `{"type":"a"}`)
+	submit(t, handler, `{"type":"b"}`)
+
+	held, err := backing.Lease(t.Context(), store.LeaseRequest{
+		Queue: "default", WorkerID: "worker-7", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 {
+		t.Fatalf("Lease: %v (%d jobs)", err, len(held))
+	}
+
+	got, _ := listed(t, handler, "?worker=worker-7")
+	if len(got) != 1 || got[0] != held[0].ID {
+		t.Errorf("worker=worker-7 gave %v, want the one job it holds", got)
+	}
+	if other, _ := listed(t, handler, "?worker=worker-8"); len(other) != 0 {
+		t.Errorf("worker-8 holds %v, want nothing", other)
+	}
+}
+
+// An order and a moment the server cannot read are refused, and each answer
+// says what would have worked. A caller who guessed wrong once guesses wrong
+// again without that.
+func TestABadOrderOrMomentSaysWhatWouldWork(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "GET", "/v1/jobs?order=oldest", "")
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("order=oldest = %d, want 400", got.Code)
+	}
+	for _, want := range []string{"newest", "soonest"} {
+		if !strings.Contains(got.Body.String(), want) {
+			t.Errorf("the answer does not name %q: %s", want, got.Body)
+		}
+	}
+
+	got = withKey(t, handler, "GET", "/v1/jobs?due=tomorrow", "")
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("due=tomorrow = %d, want 400", got.Code)
+	}
+	for _, want := range []string{"now", "RFC 3339"} {
+		if !strings.Contains(got.Body.String(), want) {
+			t.Errorf("the answer does not name %q: %s", want, got.Body)
+		}
 	}
 }
 

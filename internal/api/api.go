@@ -35,6 +35,14 @@ type Options struct {
 	// API key because the page is public: it asks the reader for a key and
 	// keeps it in the browser.
 	DashboardEnabled bool
+
+	// Now reads the clock. Leave it nil for time.Now.
+	//
+	// It is here because one route resolves "due=now" into a moment before it
+	// asks the store, and the store is not allowed to read a clock. A test
+	// that states the moment can then ask what the queue looked like then,
+	// rather than arranging for the answer to be true at the instant it runs.
+	Now func() time.Time
 }
 
 // API answers HTTP requests.
@@ -50,6 +58,9 @@ func New(opts Options) *API {
 	}
 	if opts.MaxBodyBytes <= 0 {
 		opts.MaxBodyBytes = 1 << 20
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
 	}
 	return &API{opts: opts, log: opts.Log}
 }
