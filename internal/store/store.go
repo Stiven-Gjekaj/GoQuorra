@@ -185,13 +185,39 @@ type Filter struct {
 	Limit int
 
 	// Before is the identifier of the last job on the page already seen. The
-	// next page holds the jobs older than it.
+	// next page carries on from it, in whatever order was asked for.
 	//
 	// A cursor and not an offset. An offset re-reads and skips every row
 	// before the page, so page five hundred costs five hundred pages of work
 	// and jobs submitted meanwhile shift every later page by one, which shows
 	// the reader a row twice and hides another entirely.
 	Before string
+
+	// Order is the order the jobs come back in. The zero value is Newest.
+	Order Order
+}
+
+// Order is the order a listing comes back in.
+type Order int
+
+const (
+	// Newest gives the most recently submitted job first.
+	//
+	// This is the zero value, so a caller who does not care gets what the
+	// dashboard shows, which is what somebody watching a queue wants.
+	Newest Order = iota
+)
+
+// Valid says whether an order is one this package knows.
+func (o Order) Valid() bool { return o == Newest }
+
+func (o Order) String() string {
+	switch o {
+	case Newest:
+		return "newest"
+	default:
+		return fmt.Sprintf("Order(%d)", int(o))
+	}
 }
 
 // Validate refuses a filter that cannot be answered.
@@ -201,6 +227,9 @@ func (f Filter) Validate() error {
 	}
 	if f.Limit < 0 {
 		return fmt.Errorf("store: the limit is %d", f.Limit)
+	}
+	if !f.Order.Valid() {
+		return fmt.Errorf("store: %s is not an order", f.Order)
 	}
 	return nil
 }

@@ -124,6 +124,37 @@ func TestTheSentinelErrorsAreDistinct(t *testing.T) {
 	}
 }
 
+// A filter that names no order asks for the newest first.
+//
+// Every caller that exists was written before there was an order to name, so
+// the zero value has to keep meaning what those callers already get. This is
+// what makes naming the order a rename rather than a change.
+func TestAFilterWithNoOrderAsksForTheNewestFirst(t *testing.T) {
+	var f Filter
+	if f.Order != Newest {
+		t.Errorf("the zero order is %s, want %s", f.Order, Newest)
+	}
+	if err := f.Validate(); err != nil {
+		t.Errorf("an empty filter was refused: %v", err)
+	}
+}
+
+// An order the package does not know is refused rather than quietly read as
+// the default.
+//
+// A caller who sends a number from a newer build is asking for something this
+// store cannot do, and answering with the newest first would give them a page
+// that looks right and is in the wrong order.
+func TestAnOrderTheStoreDoesNotKnowIsRefused(t *testing.T) {
+	err := Filter{Order: Order(99)}.Validate()
+	if err == nil {
+		t.Fatal("an unknown order was accepted")
+	}
+	if !strings.Contains(err.Error(), "Order(99)") {
+		t.Errorf("the error does not name the order: %v", err)
+	}
+}
+
 func TestDefaultJitterStaysInRange(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		if j := defaultJitter(); j < 0 || j >= 1 {
