@@ -110,3 +110,39 @@ func TestAnUnsetOutcomeIsUnspecified(t *testing.T) {
 		t.Errorf("an empty report reads as %v", empty.GetOutcome())
 	}
 }
+
+// A refusal keeps its own number on the wire.
+//
+// The four outcomes travel as numbers, and a refusal that arrived as a
+// success would retire a job nobody finished, while one that arrived as a
+// plain failure would be retried until the attempts ran out. Both are silent.
+// This pins the number and the round trip together, because the number is the
+// part a later edit can move.
+func TestARefusalSurvivesTheWire(t *testing.T) {
+	if quorrapb.Outcome_OUTCOME_REFUSED != 3 {
+		t.Errorf("a refusal travels as %d, want 3", quorrapb.Outcome_OUTCOME_REFUSED)
+	}
+
+	sent := &quorrapb.ReportRequest{
+		JobId:   "6f1c0c64-0000-0000-0000-000000000000",
+		LeaseId: "0d3a9d8e-0000-0000-0000-000000000000",
+		Outcome: quorrapb.Outcome_OUTCOME_REFUSED,
+		Error:   "the payload names no account",
+	}
+
+	raw, err := proto.Marshal(sent)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	got := &quorrapb.ReportRequest{}
+	if err := proto.Unmarshal(raw, got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.GetOutcome() != quorrapb.Outcome_OUTCOME_REFUSED {
+		t.Errorf("outcome = %v, want a refusal", got.GetOutcome())
+	}
+	if got.GetError() != sent.GetError() {
+		t.Errorf("error = %q, want %q", got.GetError(), sent.GetError())
+	}
+}

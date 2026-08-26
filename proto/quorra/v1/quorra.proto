@@ -97,6 +97,14 @@ enum Outcome {
 
   OUTCOME_SUCCEEDED = 1;
   OUTCOME_FAILED = 2;
+
+  // The worker read the job and says no attempt will finish it. The server
+  // buries the job at once, whatever its attempt count.
+  //
+  // A server built before this value sees a number it does not know, and the
+  // mapping it already has answers with an error rather than reading an
+  // unknown number as a success. That is why the unset value is not success.
+  OUTCOME_REFUSED = 3;
 }
 
 message ReportRequest {

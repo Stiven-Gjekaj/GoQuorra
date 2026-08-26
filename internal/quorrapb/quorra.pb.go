@@ -39,6 +39,13 @@ const (
 	Outcome_OUTCOME_UNSPECIFIED Outcome = 0
 	Outcome_OUTCOME_SUCCEEDED   Outcome = 1
 	Outcome_OUTCOME_FAILED      Outcome = 2
+	// The worker read the job and says no attempt will finish it. The server
+	// buries the job at once, whatever its attempt count.
+	//
+	// A server built before this value sees a number it does not know, and the
+	// mapping it already has answers with an error rather than reading an
+	// unknown number as a success. That is why the unset value is not success.
+	Outcome_OUTCOME_REFUSED Outcome = 3
 )
 
 // Enum value maps for Outcome.
@@ -47,11 +54,13 @@ var (
 		0: "OUTCOME_UNSPECIFIED",
 		1: "OUTCOME_SUCCEEDED",
 		2: "OUTCOME_FAILED",
+		3: "OUTCOME_REFUSED",
 	}
 	Outcome_value = map[string]int32{
 		"OUTCOME_UNSPECIFIED": 0,
 		"OUTCOME_SUCCEEDED":   1,
 		"OUTCOME_FAILED":      2,
+		"OUTCOME_REFUSED":     3,
 	}
 )
 
@@ -646,11 +655,12 @@ const file_quorra_v1_quorra_proto_rawDesc = "" +
 	"\x0eReportResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1a\n" +
 	"\battempts\x18\x02 \x01(\x05R\battempts\x121\n" +
-	"\x06run_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05runAt*M\n" +
+	"\x06run_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05runAt*b\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11OUTCOME_SUCCEEDED\x10\x01\x12\x12\n" +
-	"\x0eOUTCOME_FAILED\x10\x022\xd1\x01\n" +
+	"\x0eOUTCOME_FAILED\x10\x02\x12\x13\n" +
+	"\x0fOUTCOME_REFUSED\x10\x032\xd1\x01\n" +
 	"\fQueueService\x12:\n" +
 	"\x05Lease\x12\x17.quorra.v1.LeaseRequest\x1a\x18.quorra.v1.LeaseResponse\x12=\n" +
 	"\x06Report\x12\x18.quorra.v1.ReportRequest\x1a\x19.quorra.v1.ReportResponse\x12F\n" +
