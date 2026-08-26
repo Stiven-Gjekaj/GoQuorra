@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -241,6 +242,103 @@ func TestAFailingHandlerSendsTheJobBackAndThenBuriesIt(t *testing.T) {
 	job, _ := backing.Get(t.Context(), made.ID)
 	if job.LastError != "the host refused the connection" {
 		t.Errorf("last error = %q", job.LastError)
+	}
+}
+
+// A handler that refuses a job runs once and the job is buried.
+//
+// This is the same server and the same shape as the failing handler above,
+// which runs three times, so the run count is the whole assertion. It also
+// covers both ways of writing a refusal, because a handler author will write
+// whichever one reads better and both have to work.
+func TestARefusingHandlerRunsOnceAndBuriesTheJob(t *testing.T) {
+	wrapped := errors.New("the payload names no account")
+
+	// Each form carries the words the handler wrote, and each form writes
+	// them differently, so each states its own. A single expected string here
+	// would pass for the wrong reason on two of the three.
+	forms := map[string]struct {
+		refusal error
+		says    string
+	}{
+		"Permanent wraps it":       {worker.Permanent(wrapped), wrapped.Error()},
+		"the handler wraps it":     {fmt.Errorf("%w: %w", worker.ErrPermanent, wrapped), wrapped.Error()},
+		"wrapped the other way up": {fmt.Errorf("no account: %w", worker.ErrPermanent), "no account"},
+	}
+
+	for name, form := range forms {
+		refusal, says := form.refusal, form.says
+		t.Run(name, func(t *testing.T) {
+			backing, dial := serve(t)
+			w := newWorker(t, dial)
+
+			var runs atomic.Int64
+			w.Handle("refuses", func(context.Context, worker.Job) error {
+				runs.Add(1)
+				return refusal
+			})
+
+			made, _, err := backing.Create(t.Context(), store.NewJob{Type: "refuses"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			stop := run(t, w)
+			defer stop()
+
+			waitFor(t, "the job to be buried", func() bool {
+				job, err := backing.Get(t.Context(), made.ID)
+				return err == nil && job.Status == jobs.Dead
+			})
+
+			// MaxRetries is 2 in this server, so a plain failure here would
+			// run three times. That is what this number is measured against.
+			if got := runs.Load(); got != 1 {
+				t.Errorf("the handler ran %d times, want 1", got)
+			}
+
+			// The reason still reaches the row, and it carries the handler's
+			// own words and not only the sentinel.
+			job, _ := backing.Get(t.Context(), made.ID)
+			if !strings.Contains(job.LastError, says) {
+				t.Errorf("last error = %q, and it does not say %q", job.LastError, says)
+			}
+		})
+	}
+}
+
+// A worker keeps retrying a failure that does not say it is permanent.
+//
+// The pair of tests is the point. Without this one, a bug that made every
+// failure permanent would leave the refusal test passing and the failure test
+// above is the only thing standing between that bug and production.
+func TestAPanicIsNotTreatedAsPermanent(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	var runs atomic.Int64
+	w.Handle("panics", func(context.Context, worker.Job) error {
+		runs.Add(1)
+		panic("a nil map entry")
+	})
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "panics"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	waitFor(t, "the job to be buried", func() bool {
+		job, err := backing.Get(t.Context(), made.ID)
+		return err == nil && job.Status == jobs.Dead
+	})
+
+	// A panic on one payload says nothing about the next attempt, so it is
+	// retried like any other failure: three runs and not one.
+	if got := runs.Load(); got != 3 {
+		t.Errorf("the handler ran %d times, want 3, so a panic was read as permanent", got)
 	}
 }
 

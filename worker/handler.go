@@ -30,6 +30,8 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -73,11 +75,50 @@ func (j Job) Decode(into any) error {
 // queue. A handler that writes somewhere on the way out uses it.
 func (j Job) LastAttempt() bool { return j.Attempts > j.MaxRetries }
 
+// ErrPermanent marks a failure that no later attempt will fix.
+//
+// A handler returns an error wrapping this, and the server buries the job at
+// once whatever its attempt count. The text of the error is still kept on the
+// job, so whoever finds it in the dead letter queue reads why.
+//
+// Use it when the job itself is the problem and not the world around it: a
+// payload that names no account, a field that will not parse, an upstream
+// that answers 404 for an identifier that was never real. Do not use it for a
+// timeout, a refused connection or a rate limit, which are the failures
+// retrying exists for.
+//
+//	if errors.Is(err, sql.ErrNoRows) {
+//		return worker.Permanent(fmt.Errorf("no account %q: %w", id, err))
+//	}
+//
+// This is not a way to skip a job quietly. A refused job is dead, it is
+// counted, and it can be revived once whatever was wrong is fixed.
+var ErrPermanent = errors.New("worker: this job will never succeed")
+
+// Permanent wraps an error so that it buries the job on this attempt.
+//
+// It exists because doing this by hand is easy to get wrong in a direction
+// that says nothing: an error built with %v instead of %w does not wrap, so
+// the job is retried as though the handler had never spoken, and no test and
+// no log line reports the difference.
+//
+// Permanent(nil) returns nil, because a handler that refuses nothing has
+// finished the job.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrPermanent, err)
+}
+
 // Handler does the work of one job.
 //
 // Returning nil means the job is done. Returning an error sends the job back
 // to the queue, or to the dead letter queue when it has no attempts left, and
 // the text of the error is kept on the job.
+//
+// Returning an error that wraps ErrPermanent sends it to the dead letter
+// queue at once, whatever the attempt count.
 //
 // A handler must expect to be run more than once for the same job. GoQuorra
 // delivers at least once, not exactly once: a worker that finishes the work

@@ -330,6 +330,16 @@ func (w *Worker) run(ctx context.Context, job Job) {
 	}
 
 	if err != nil {
+		// A handler that wrapped ErrPermanent has read the job and says no
+		// attempt will finish it. The server buries it at once rather than
+		// spending the remaining attempts, and every wait between them, to
+		// reach the answer the handler already gave.
+		if errors.Is(err, ErrPermanent) {
+			log.Warn("job refused, so it will not be tried again", "error", err, "took", took)
+			w.report(ctx, job, quorrapb.Outcome_OUTCOME_REFUSED, err.Error(), nil)
+			return
+		}
+
 		log.Warn("job failed", "error", err, "took", took)
 		w.report(ctx, job, quorrapb.Outcome_OUTCOME_FAILED, err.Error(), nil)
 		return
