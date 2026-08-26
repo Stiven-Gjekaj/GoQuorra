@@ -66,6 +66,7 @@ td.act { white-space: nowrap; }
    the full text on the title, so it cannot push the buttons at the end of the
    row off the side of the table. */
 td.why { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
+td.waiting { color: var(--muted); }
 td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
 .more { padding: 12px; text-align: center; }
 </style>
@@ -97,7 +98,7 @@ td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
   <div class="scroll">
     <table>
       <thead>
-        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Created</th><th>Outcome</th><th>Actions</th></tr>
+        <tr><th>Job</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Created</th><th>Runs at</th><th>Outcome</th><th>Actions</th></tr>
       </thead>
       <tbody id="jobs"></tbody>
     </table>
@@ -225,7 +226,12 @@ function renderFilters() {
   const holder = document.getElementById("filters");
   holder.replaceChildren();
 
-  for (const [value, label] of [["", "all"]].concat(STATUSES.map((s) => [s, s]))) {
+  // ready is not a status, so it is not in STATUSES. It sits in the same row
+  // because it answers the same question a reader is asking when they press
+  // one of these: show me less than everything.
+  const choices = [["", "all"]].concat(STATUSES.map((s) => [s, s])).concat([["ready", "ready"]]);
+
+  for (const [value, label] of choices) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
@@ -237,6 +243,17 @@ function renderFilters() {
     });
     holder.appendChild(button);
   }
+}
+
+// untilText says how far off a moment is, in the shortest form that is still
+// true. A job that is ready reads as "now" rather than as a negative number.
+function untilText(moment) {
+  const seconds = Math.round((moment - new Date()) / 1000);
+  if (seconds <= 0) return "now";
+  if (seconds < 60) return "in " + seconds + "s";
+  if (seconds < 3600) return "in " + Math.round(seconds / 60) + "m";
+  if (seconds < 86400) return "in " + Math.round(seconds / 3600) + "h";
+  return "in " + Math.round(seconds / 86400) + "d";
 }
 
 // A button that acts on one job, and says what happened where the reader is
@@ -266,7 +283,7 @@ function renderJobs(list) {
   if (!list || list.length === 0) {
     const row = document.createElement("tr");
     const td = cell(row, filter ? "No " + filter + " jobs." : "No jobs yet.");
-    td.colSpan = 8;
+    td.colSpan = 9;
     td.className = "note";
     body.appendChild(row);
     return;
@@ -294,6 +311,19 @@ function renderJobs(list) {
       ? created.toLocaleTimeString()
       : created.toLocaleDateString());
     when.title = created.toLocaleString();
+
+    // When the job runs, and how far off that is.
+    //
+    // A job pending with a run_at two hours out looks exactly like one that
+    // is ready this second in every other column on this row. The relative
+    // form is what a reader wants: "in 2h" answers the question, and the
+    // moment itself hangs off the cell for whoever needs it.
+    const runs = new Date(job.run_at);
+    const runsCell = cell(row, job.status === "pending" ? untilText(runs) : "");
+    runsCell.title = runs.toLocaleString();
+    if (job.status === "pending" && runs > new Date()) {
+      runsCell.className = "waiting";
+    }
 
     // One column for what came of the job, because a job has an error or a
     // result and never both. The full text of either is too long for a
@@ -330,7 +360,16 @@ async function load() {
     return;
   }
   try {
-    const path = "/v1/jobs?limit=25" + (filter ? "&status=" + encodeURIComponent(filter) : "");
+    // ready asks a different question from a status, so it builds a
+    // different query: what the queue would hand out now, in the order it
+    // would hand it out. A list of ready jobs in submission order does not
+    // answer what runs next.
+    let path = "/v1/jobs?limit=25";
+    if (filter === "ready") {
+      path += "&due=now&order=soonest";
+    } else if (filter) {
+      path += "&status=" + encodeURIComponent(filter);
+    }
     const [queues, jobs] = await Promise.all([get("/v1/queues"), get(path)]);
     renderQueues(queues.queues || []);
     renderJobs(jobs.jobs || []);

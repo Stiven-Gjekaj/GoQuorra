@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -300,5 +301,64 @@ func TestTheDashboardDoesNotCallAResultAnError(t *testing.T) {
 	}
 	if !strings.Contains(page, "<th>Outcome</th>") {
 		t.Error("the dashboard has no Outcome column for the error or the result")
+	}
+}
+
+// The dashboard offers a way to ask what is ready, and it is not a status.
+//
+// ready answers a different question from the five statuses, so it builds a
+// different query: what the queue would hand out now, in the order it would
+// hand it out. A list of ready jobs in submission order does not say what
+// runs next, which is the only reason to ask.
+func TestTheDashboardCanAskWhatIsReady(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, `"ready"`) {
+		t.Error("the dashboard does not offer the ready filter")
+	}
+	if !strings.Contains(page, "due=now") {
+		t.Error("the ready filter does not ask the server what is due now")
+	}
+	if !strings.Contains(page, "order=soonest") {
+		t.Error("the ready filter does not ask for the order the queue works in")
+	}
+
+	// ready must not be one of the statuses. The filter row builds the
+	// buttons from that list, and a value in it would be sent as
+	// status=ready, which the server refuses.
+	if strings.Contains(page, `const STATUSES = ["pending", "leased", "succeeded", "dead", "cancelled", "ready"]`) {
+		t.Error("ready was added to the statuses, and the server refuses status=ready")
+	}
+}
+
+// Every row says when its job runs.
+//
+// A pending job with a run_at two hours out is identical to one that is ready
+// this second in every other column, so without this the page cannot answer
+// the question the ready filter exists for.
+func TestTheDashboardShowsWhenAJobRuns(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "<th>Runs at</th>") {
+		t.Error("the table has no column for when a job runs")
+	}
+	if !strings.Contains(page, "job.run_at") {
+		t.Error("nothing reads run_at, so the column would be empty")
+	}
+
+	// The column count and the empty-state row have to agree, or the empty
+	// message stops spanning the table and the layout breaks in a way that
+	// only shows when there are no jobs.
+	columns := strings.Count(page[strings.Index(page, "<thead>"):strings.Index(page, "</thead>")], "<th>")
+	if !strings.Contains(page, "td.colSpan = "+strconv.Itoa(columns)) {
+		t.Errorf("the table has %d columns and the empty row spans a different number", columns)
 	}
 }
