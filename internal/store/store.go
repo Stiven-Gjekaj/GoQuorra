@@ -195,6 +195,15 @@ type Filter struct {
 
 	// Order is the order the jobs come back in. The zero value is Newest.
 	Order Order
+
+	// DueBy keeps only the jobs that run at or before this moment. The zero
+	// value keeps every job.
+	//
+	// The moment comes from the caller and is not read here. A store that
+	// read its own clock could not be asked what the queue looked like at a
+	// stated time, and its tests would wait for a moment to arrive instead of
+	// stating it. This is the same rule jobs.Decide follows.
+	DueBy time.Time
 }
 
 // Order is the order a listing comes back in.

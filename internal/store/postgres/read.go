@@ -78,6 +78,9 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 	if f.Type != "" {
 		add("type = $%d", f.Type)
 	}
+	if !f.DueBy.IsZero() {
+		add("run_at <= $%d", f.DueBy)
+	}
 
 	if f.Before != "" {
 		if _, err := parseID(f.Before); err != nil {

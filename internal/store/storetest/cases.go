@@ -1369,6 +1369,50 @@ var cases = []testCase{
 		}
 	}},
 
+	{"the list leaves out a job that runs after the moment given", func(t *testing.T, s store.Store, clock *Clock) {
+		ready := create(t, s, store.NewJob{Type: "ready"})
+		waiting := create(t, s, store.NewJob{Type: "waiting", Delay: time.Hour})
+
+		now := clock.Now()
+		got, err := s.List(ctx(), store.Filter{Limit: 10, DueBy: now})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if diff := ids(got); !slices.Equal(diff, []string{ready.ID}) {
+			t.Errorf("due by now gave %v, want only the job that is ready", diff)
+		}
+
+		// At the moment itself and not one second before it. An inequality
+		// written the wrong way round passes every test that jumps an hour.
+		got, err = s.List(ctx(), store.Filter{Limit: 10, DueBy: now.Add(time.Hour - time.Second)})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("one second early gave %v, want only the ready job", ids(got))
+		}
+
+		got, err = s.List(ctx(), store.Filter{Limit: 10, DueBy: now.Add(time.Hour), Order: store.Soonest})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if diff := ids(got); !slices.Equal(diff, []string{ready.ID, waiting.ID}) {
+			t.Errorf("at the moment itself gave %v, want both", diff)
+		}
+
+		// The store reads no clock of its own. Moving time forward without
+		// saying so changes nothing, which is what lets a caller ask what the
+		// queue looked like at a stated moment.
+		clock.Advance(2 * time.Hour)
+		got, err = s.List(ctx(), store.Filter{Limit: 10, DueBy: now})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("the answer moved with the clock: %v", ids(got))
+		}
+	}},
+
 	// This is the rule the compound cursor exists for, and it is the one that
 	// passes for the wrong reason if it is written carelessly.
 	//
