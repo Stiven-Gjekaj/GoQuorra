@@ -505,3 +505,28 @@ func TestAMessageThatFitsIsNotTouched(t *testing.T) {
 		t.Errorf("last error = %q, want %q", stored.LastError, message)
 	}
 }
+
+// A result that is not JSON answers 400, and the answer survives a reworded
+// message.
+//
+// This layer told the two apart by searching the store's error text for the
+// words "not JSON". The sentinel is what it reads now, so the wording is free
+// to change without moving a client's answer from 400 to 500.
+func TestABadResultIsTheWorkersMistakeAndNotTheServers(t *testing.T) {
+	client, backing, _ := dial(t)
+	ctx := t.Context()
+
+	create(t, backing, ctx)
+	leased := leaseOne(t, client, ctx)
+
+	_, err := client.Report(ctx, &quorrapb.ReportRequest{
+		JobId:    leased.GetId(),
+		WorkerId: "worker-1",
+		LeaseId:  leased.GetLeaseId(),
+		Outcome:  quorrapb.Outcome_OUTCOME_SUCCEEDED,
+		Result:   []byte(`{"rows":`),
+	})
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("code = %s, want InvalidArgument. Internal here sends the reader to the server for a mistake the worker made (error: %v)", got, err)
+	}
+}

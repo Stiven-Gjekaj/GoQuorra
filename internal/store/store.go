@@ -46,6 +46,15 @@ var (
 	// state may be in the right one later. The HTTP layer answers 404 to the
 	// first and 409 to the second.
 	ErrWrongState = errors.New("store: the job is in the wrong state")
+
+	// ErrNotJSON means a worker handed back a result that is not JSON.
+	//
+	// It is a sentinel because the layer above has to tell it apart: this is
+	// the worker's mistake and answers 400, while every other failure from
+	// this package is the server's and answers 500. That layer used to decide
+	// by searching the message for the words "not JSON", so rewording this
+	// sentence would have quietly moved every one of these to a 500.
+	ErrNotJSON = errors.New("store: the result is not JSON")
 )
 
 // Job is one job, as it is stored.
@@ -164,7 +173,7 @@ type Report struct {
 // Validate refuses a report that cannot be stored.
 func (r Report) Validate() error {
 	if len(r.Result) > 0 && !json.Valid(r.Result) {
-		return errors.New("store: the result is not JSON")
+		return ErrNotJSON
 	}
 	return nil
 }

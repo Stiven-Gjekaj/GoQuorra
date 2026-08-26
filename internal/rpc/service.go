@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"log/slog"
 	"time"
 
@@ -211,7 +210,12 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 		// A result that is not JSON is the worker's mistake, and the store
 		// says so. Answering Internal to it sends the reader to the server.
 		//
-		if strings.Contains(err.Error(), "not JSON") {
+		// Told apart by a sentinel and not by matching the text of the
+		// message. This read strings.Contains(err.Error(), "not JSON"), so
+		// rewording that sentence in the store would have silently turned
+		// every one of these into a 500 and pointed the reader at the server
+		// for a mistake the worker made.
+		if errors.Is(err, store.ErrNotJSON) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		s.log.Error("cannot record a report", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)

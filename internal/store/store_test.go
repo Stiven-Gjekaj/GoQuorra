@@ -124,6 +124,29 @@ func TestTheSentinelErrorsAreDistinct(t *testing.T) {
 	}
 }
 
+// A result that is not JSON is reported through a sentinel, not through the
+// wording of a message.
+//
+// The layer above answers 400 to this and 500 to every other failure from
+// this package, and it used to decide by searching the text for "not JSON".
+// Rewording this sentence would have quietly moved every one of these to a
+// 500 and pointed the reader at the server for a mistake the worker made.
+// Nothing would have failed.
+func TestABadResultIsReportedThroughASentinel(t *testing.T) {
+	err := Report{Result: []byte(`{"rows":`)}.Validate()
+	if !errors.Is(err, ErrNotJSON) {
+		t.Fatalf("Validate gave %v, want ErrNotJSON", err)
+	}
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrWrongState) {
+		t.Error("the sentinel is not distinct from the others")
+	}
+
+	// A result that is JSON passes, so the check is not simply always true.
+	if err := (Report{Result: []byte(`{"rows":20}`)}).Validate(); err != nil {
+		t.Errorf("valid JSON was refused: %v", err)
+	}
+}
+
 // A filter that names no order asks for the newest first.
 //
 // Every caller that exists was written before there was an order to name, so
