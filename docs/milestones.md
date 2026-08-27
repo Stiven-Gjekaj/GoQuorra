@@ -209,9 +209,31 @@ handlers that can run twice.
 **What would change the answer.** Nothing about this queue. A caller whose
 side effect is a write to the same PostgreSQL database can already have
 effectively once, by doing the work and reporting in one transaction, and that
-needs an API this project does not have: a way for a handler to be handed the
-transaction. That is a real feature and it is worth building. It is not the
-same thing as exactly once, and it must not be described as though it were.
+needed an API this project did not have: a way for a handler to be handed the
+transaction. This entry called that a real feature worth building.
+
+Built on 2026-08-27, as `worker/pgtx`, because it was asked for. A handler
+there is given a `pgx.Tx`, and the outcome of the job is recorded in that same
+transaction, so the handler's writes and the record of the job commit together
+or neither does.
+
+**The queue still delivers at least once, and the package says so at the top
+of its own documentation.** The window is still there for a handler that calls
+another service, writes to another database, or sends an email. What the
+package does is make that window empty for one case, by turning two writes
+into one write. It is not exactly once and it must not be described as though
+it were.
+
+Measured against a live server. Five jobs whose handler wrote its row and then
+failed once wrote ten rows through an ordinary handler, one for the failed
+attempt and one for the successful one, and five rows through a transaction
+one. Over fifty jobs that succeeded first time, an attempt took a median of
+2.70ms through the transaction against 3.51ms through an ordinary report,
+which is the gRPC round trip the transaction path does not make. Speed is not
+the reason to use it.
+
+The advice for every other handler is unchanged: write it so that running
+twice is safe.
 
 ### An idempotency key on submission
 
