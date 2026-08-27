@@ -110,7 +110,7 @@ func TestWorkersShowsWhatTheQueueHasHeardFrom(t *testing.T) {
 
 	// An ask that finds nothing is still an ask.
 	if _, err := backing.Lease(t.Context(), store.LeaseRequest{
-		Queue: "mail", WorkerID: "mailer-3", Limit: 1, TTL: time.Minute,
+		Queue: "invoices", WorkerID: "mailer-3", Limit: 1, TTL: time.Minute,
 	}); err != nil {
 		t.Fatalf("Lease: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestWorkersShowsWhatTheQueueHasHeardFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workers: %v", err)
 	}
-	for _, want := range []string{"WORKER", "QUEUE", "IDLE", "mailer-3", "mail"} {
+	for _, want := range []string{"WORKER", "QUEUE", "IDLE", "mailer-3", "invoices"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("workers printed %q, want it to hold %q", got, want)
 		}
