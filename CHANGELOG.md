@@ -13,6 +13,56 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Seeing inside the worker protocol
+
+**Added**
+
+- **A job type dimension.** `quorra_jobs_finished_total{type,status}` and
+  `quorra_job_type_lifetime_seconds{type}`. Which queue is failing is a
+  question about how the work is arranged, and which type is failing is a
+  question about the work, which nothing here could answer.
+
+  Job type is the first label in this server that a caller fills in, so it is
+  the first that needs a bound. Fifty types keep a row of their own and
+  everything after that is counted as `other`, which undercounts nothing: a
+  sum over the label is still every job. `quorra_job_types_tracked` sitting at
+  fifty is how an operator finds out that `other` is holding more than it
+  looks.
+
+  Driven with sixty three types against a live server: fifty one rows, a
+  tracked count of fifty, thirteen under `other`, and a sum over the label of
+  ninety against sixty eight dead and twenty two succeeded.
+
+  New metrics rather than a `type` label on the counters that already exist. A
+  label added to a counter makes every panel and alert that reads it start
+  summing over a dimension it does not know about.
+- **The worker protocol is timed.** `quorra_grpc_request_duration_seconds` and
+  `quorra_grpc_streams_total`. Every job is leased and reported over gRPC and
+  that whole path was untimed, so the one number an operator had covered the
+  half of the traffic that does not run the work.
+
+  Measured on a live server: 610 `Lease` calls at `OK` and 25 at
+  `Unauthenticated`, 90 `Report` calls of which 88 answered inside 5ms, and 6
+  `Watch` streams, 5 of them refused.
+
+  Streams are counted and not timed, because a watch lives as long as the
+  worker does. A call the guard refused is timed like any other.
+- **A request identifier.** Every answer carries `X-Request-Id`, over HTTP and
+  over the worker protocol, and every line the server wrote while making that
+  answer names it. A caller that sends its own keeps it, so both sides quote
+  one string.
+
+  What a caller sends is refused rather than trimmed: over 64 characters, or
+  anything outside printable ASCII. A log line is a line, so a value with a
+  newline in it would write a line of the caller's own choosing into the log
+  of the server.
+
+**Changed**
+
+- **The lease line names the jobs it handed over.** It said how many and never
+  which, so a reader with a job that went missing had the line that accepted
+  it and the line that reported on it, and nothing in between.
+
 ### A side effect that happens once
 
 `docs/milestones.md` parked exactly once delivery and named one thing that
