@@ -139,6 +139,40 @@ func TestHistoryShowsOneLineForEachRun(t *testing.T) {
 	}
 }
 
+// A run that worked prints nothing in the error column.
+//
+// The field is omitempty, so a run that finished carries no key at all.
+// Printing the missing value with %v puts the word nil in every one of those
+// rows, which reads as an error nobody can look up. Found by running the
+// command, not by a test.
+func TestARunThatWorkedPrintsNoError(t *testing.T) {
+	flags, backing := serveWithStore(t)
+	ctx := t.Context()
+
+	printed, _ := cli(t, flags, "create", "-type", "work")
+	id := strings.TrimSpace(printed)
+
+	held, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 {
+		t.Fatalf("Lease: %v, %d jobs", err, len(held))
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: id, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeDone,
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	got, err := cli(t, flags, "history", id)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if strings.Contains(got, "nil") {
+		t.Errorf("history printed %q, and a run that worked has no error to show", got)
+	}
+}
+
 // A run whose start is not known prints a dash and not a duration.
 //
 // A job leased by a build older than the history carries no start. Measuring

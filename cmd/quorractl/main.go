@@ -321,10 +321,14 @@ func history(args []string, out io.Writer) error {
 		if worker == "" {
 			worker = "unknown"
 		}
-		fmt.Fprintf(out, "%-4d %-20s %-10v %-10s %v\n",
+		// The error is read as a string rather than printed with %v. It is
+		// omitempty, so a run that worked carries no key at all, and %v on
+		// the missing value prints the word nil in every one of those rows.
+		reason, _ := run["error"].(string)
+
+		fmt.Fprintf(out, "%-4d %-20s %-10v %-10s %s\n",
 			number(run["attempt"]), worker, run["outcome"],
-			took(run["started_at"], run["finished_at"]),
-			run["error"])
+			took(run["started_at"], run["finished_at"]), reason)
 	}
 	return nil
 }
