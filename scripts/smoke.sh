@@ -46,8 +46,19 @@ say "submitted $good"
 bad=$(submit '{"type":"fail","payload":{},"max_retries":0}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 say "submitted $bad, which always fails"
 
+# counter reads one counter off the metrics page, summed over its labels.
+#
+# It read a bare name against a bare series, and stopped working the day a
+# counter gained a label: quorra_jobs_cancelled_total is published as
+# quorra_jobs_cancelled_total{caller="ops"} and the old pattern matched
+# nothing, so this script reported that a counter which had moved to 2 was not
+# published at all. Summing is also the right answer to "did it move", because
+# the question is about the counter and not about one of its rows.
 counter() {
-	curl -fsS "$SERVER/metrics" | sed -n "s/^$1 \(.*\)$/\1/p"
+	curl -fsS "$SERVER/metrics" | awk -v name="$1" '
+		$1 == name || index($1, name "{") == 1 { total += $2; found = 1 }
+		END { if (found) print total }
+	'
 }
 
 # Check that a worker is there before waiting a minute for one.
