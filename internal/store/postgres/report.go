@@ -183,7 +183,8 @@ func (s *Store) applyDecision(
 			result = COALESCE($6, result),
 			lease_id = NULL,
 			leased_by = NULL,
-			lease_expires_at = NULL
+			lease_expires_at = NULL,
+			leased_at = NULL
 		WHERE id = $7
 		RETURNING `+columns,
 		string(decision.Status), decision.Attempts, decision.RunAt, now, lastError, kept, id,

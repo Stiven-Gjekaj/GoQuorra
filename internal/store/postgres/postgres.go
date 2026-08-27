@@ -26,7 +26,7 @@ import (
 // six queries that read a job cannot fall out of step with the scanner.
 const columns = `id, seq, type, payload, queue, priority, status, attempts,
 	max_retries, last_error, lease_id, leased_by, lease_expires_at,
-	idempotency_key, result, acted_by, acted_at, run_at, created_at, updated_at`
+	idempotency_key, result, acted_by, acted_at, leased_at, run_at, created_at, updated_at`
 
 // Store keeps jobs in PostgreSQL.
 type Store struct {
@@ -185,6 +185,7 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 			lease_id = gen_random_uuid(),
 			leased_by = $4,
 			lease_expires_at = $5,
+			leased_at = $2,
 			attempts = attempts + 1,
 			updated_at = $2
 		FROM ready

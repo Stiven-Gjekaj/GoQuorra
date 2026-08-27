@@ -30,7 +30,13 @@ func TestPostgresStore(t *testing.T) {
 		// because it also resets the identity that seq counts from, and two
 		// tests that see the same sequence numbers are easier to compare when
 		// one of them fails.
-		if _, err := pool.Exec(context.Background(), `TRUNCATE TABLE jobs RESTART IDENTITY`); err != nil {
+		//
+		// CASCADE, because a table that references jobs cannot be left
+		// behind: PostgreSQL refuses to truncate a table another one points
+		// at. Naming the side tables here instead would make this line
+		// something to remember to change, and it would be forgotten on the
+		// one after next.
+		if _, err := pool.Exec(context.Background(), `TRUNCATE TABLE jobs RESTART IDENTITY CASCADE`); err != nil {
 			t.Fatalf("cannot empty the jobs table: %v", err)
 		}
 		return postgres.NewWithPool(pool, opts)

@@ -95,6 +95,15 @@ type Job struct {
 	ActedBy string     `json:"acted_by,omitempty"`
 	ActedAt *time.Time `json:"acted_at,omitempty"`
 
+	// LeasedAt is when the worker now holding this job took it, and is nil
+	// when nobody holds it.
+	//
+	// LeaseExpiresAt says when the queue gives up on the run. This says how
+	// long the run has already been going, which is the question somebody
+	// looking for a job that is stuck actually asks. It is also what the
+	// attempt row records as the start of the run.
+	LeasedAt *time.Time `json:"leased_at,omitempty"`
+
 	RunAt     time.Time `json:"run_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

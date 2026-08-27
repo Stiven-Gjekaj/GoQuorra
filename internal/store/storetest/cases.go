@@ -679,6 +679,79 @@ var cases = []testCase{
 		}
 	}},
 
+	// A leased job says when the run began, not only when the queue gives up.
+	//
+	// lease_expires_at answers "how much longer will the queue wait". The
+	// question somebody looking for a job that is stuck asks is "how long has
+	// this been running", and nothing on the job answered it.
+	{"a leased job carries the moment the worker took it", func(t *testing.T, s store.Store, clock *Clock) {
+		create(t, s, store.NewJob{Type: "work"})
+
+		clock.Advance(time.Minute)
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1", TTL: 30 * time.Second})[0]
+
+		if held.LeasedAt == nil {
+			t.Fatal("a leased job carries no leased at")
+		}
+		requireTime(t, "leased at", *held.LeasedAt, Start.Add(time.Minute))
+
+		// It is stored and not only returned.
+		stored, err := s.Get(ctx(), held.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if stored.LeasedAt == nil {
+			t.Fatal("the stored job carries no leased at")
+		}
+
+		// And it is not the same value as the expiry, which is what a store
+		// that wrote the wrong column would give.
+		if stored.LeaseExpiresAt != nil && stored.LeasedAt.Equal(*stored.LeaseExpiresAt) {
+			t.Error("leased at and the expiry are the same moment")
+		}
+	}},
+
+	// A job nobody holds holds no start either.
+	//
+	// A stale value is worse than none: the attempt row copies it as the
+	// moment that run began, so a run would be timed from a lease that ended
+	// hours before.
+	{"every path that ends a lease clears the moment it began", func(t *testing.T, s store.Store, clock *Clock) {
+		for name, end := range map[string]func(t *testing.T, s store.Store, id, leaseID string){
+			"a worker reporting": func(t *testing.T, s store.Store, id, leaseID string) {
+				if _, err := s.Report(ctx(), store.Report{
+					JobID: id, LeaseID: leaseID, Outcome: jobs.OutcomeDone,
+				}); err != nil {
+					t.Fatalf("Report: %v", err)
+				}
+			},
+			"the lease running out": func(t *testing.T, s store.Store, id, leaseID string) {
+				if _, err := s.ReclaimExpired(ctx(), 10); err != nil {
+					t.Fatalf("ReclaimExpired: %v", err)
+				}
+			},
+			"a cancel": func(t *testing.T, s store.Store, id, leaseID string) {
+				if _, err := s.Cancel(ctx(), id, "ops"); err != nil {
+					t.Fatalf("Cancel: %v", err)
+				}
+			},
+		} {
+			made := create(t, s, store.NewJob{Type: "work"})
+			held := lease(t, s, store.LeaseRequest{WorkerID: "w1", TTL: time.Second})[0]
+			clock.Advance(2 * time.Second)
+
+			end(t, s, made.ID, held.LeaseID)
+
+			stored, err := s.Get(ctx(), made.ID)
+			if err != nil {
+				t.Fatalf("%s: Get: %v", name, err)
+			}
+			if stored.LeasedAt != nil {
+				t.Errorf("%s left leased at set to %s", name, stored.LeasedAt)
+			}
+		}
+	}},
+
 	// Who cancelled a job is part of the job, and both stores keep it the
 	// same way.
 	//

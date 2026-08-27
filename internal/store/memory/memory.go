@@ -151,6 +151,7 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 	}
 
 	expires := now.Add(req.TTL)
+	leasedAt := now
 	leased := make([]*store.Job, 0, len(ready))
 	for _, rec := range ready {
 		// One lease identifier for each job rather than one for the batch.
@@ -160,6 +161,7 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 		rec.job.LeaseID = uuid.NewString()
 		rec.job.LeasedBy = req.WorkerID
 		rec.job.LeaseExpiresAt = &expires
+		rec.job.LeasedAt = &leasedAt
 		rec.job.Attempts++
 		rec.job.UpdatedAt = now
 
@@ -268,6 +270,7 @@ func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error
 	rec.job.LeaseID = ""
 	rec.job.LeasedBy = ""
 	rec.job.LeaseExpiresAt = nil
+	rec.job.LeasedAt = nil
 	rec.job.UpdatedAt = now
 	recordAction(&rec.job, actor, now)
 
@@ -304,6 +307,7 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	rec.job.LeaseID = ""
 	rec.job.LeasedBy = ""
 	rec.job.LeaseExpiresAt = nil
+	rec.job.LeasedAt = nil
 	recordAction(&rec.job, actor, now)
 
 	return clone(&rec.job), nil
@@ -358,6 +362,7 @@ func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now tim
 	rec.job.LeaseID = ""
 	rec.job.LeasedBy = ""
 	rec.job.LeaseExpiresAt = nil
+	rec.job.LeasedAt = nil
 
 	if outcome != jobs.OutcomeDone {
 		rec.job.LastError = message
@@ -557,6 +562,10 @@ func clone(job *store.Job) *store.Job {
 	if job.ActedAt != nil {
 		at := *job.ActedAt
 		out.ActedAt = &at
+	}
+	if job.LeasedAt != nil {
+		at := *job.LeasedAt
+		out.LeasedAt = &at
 	}
 
 	return &out

@@ -177,13 +177,14 @@ func scanJob(r row) (*store.Job, int64, error) {
 		result   []byte
 		actedBy  *string
 		actedAt  *time.Time
+		leasedAt *time.Time
 	)
 
 	err := r.Scan(
 		&job.ID, &seq, &job.Type, &payload, &job.Queue, &job.Priority,
 		&status, &job.Attempts, &job.MaxRetries, &job.LastError,
 		&leaseID, &leasedBy, &expires, &key, &result,
-		&actedBy, &actedAt,
+		&actedBy, &actedAt, &leasedAt,
 		&job.RunAt, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err != nil {
@@ -212,6 +213,10 @@ func scanJob(r row) (*store.Job, int64, error) {
 	if actedAt != nil {
 		at := actedAt.UTC()
 		job.ActedAt = &at
+	}
+	if leasedAt != nil {
+		at := leasedAt.UTC()
+		job.LeasedAt = &at
 	}
 	if len(result) > 0 {
 		job.Result = json.RawMessage(result)

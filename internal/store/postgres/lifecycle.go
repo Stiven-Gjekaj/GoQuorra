@@ -189,6 +189,7 @@ func (s *Store) transition(
 			lease_id = NULL,
 			leased_by = NULL,
 			lease_expires_at = NULL,
+			leased_at = NULL,
 			acted_by = $4,
 			acted_at = $5
 		WHERE id = $3
