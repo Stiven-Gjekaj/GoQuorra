@@ -148,6 +148,16 @@ jobs:
       - name: Submit a job and wait for it
         run: bash scripts/smoke.sh
 
+      # The counters the smoke test reads, printed whether or not it passed.
+      #
+      # It failed for six arcs of work on one line saying a counter was not
+      # published, and the counter was published the whole time under a label
+      # the script could not read. A line of the page in the log turns that
+      # into a five second diagnosis.
+      - name: Show the counters
+        if: always()
+        run: curl -fsS http://localhost:8080/metrics | grep "^quorra_" || true
+
       - name: Show the logs when something fails
         if: failure()
         working-directory: deployments
