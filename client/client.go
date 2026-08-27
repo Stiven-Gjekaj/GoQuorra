@@ -243,6 +243,33 @@ func (c *Client) Get(ctx context.Context, id string) (*Job, error) {
 	return &job, nil
 }
 
+// Identity is what a key is and what it may do.
+type Identity struct {
+	// Name is what the server records against an action this key takes.
+	Name string `json:"name"`
+
+	// Scope is "read" or "write". A read key may ask questions and change
+	// nothing.
+	Scope string `json:"scope"`
+}
+
+// CanWrite reports whether this key may change a job.
+func (i Identity) CanWrite() bool { return i.Scope == "write" }
+
+// Whoami says which key this client holds.
+//
+// A key read out of an environment variable gives no hint of which key it is,
+// and one that may only read looks the same as one that may write until
+// something is refused. A producer that starts up can ask once and refuse to
+// run, rather than failing on the first submission an hour later.
+func (c *Client) Whoami(ctx context.Context) (*Identity, error) {
+	var who Identity
+	if err := c.call(ctx, http.MethodGet, "/v1/whoami", nil, &who); err != nil {
+		return nil, err
+	}
+	return &who, nil
+}
+
 // Cancel stops a job that has not finished.
 func (c *Client) Cancel(ctx context.Context, id string) (*Job, error) {
 	return c.act(ctx, id, "cancel")

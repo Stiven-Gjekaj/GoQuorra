@@ -154,6 +154,26 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// A client can ask which key it holds.
+//
+// A producer that starts up asks once and refuses to run, rather than
+// failing on the first submission an hour later with a 403 that nobody is
+// watching for.
+func TestTheClientCanAskWhichKeyItHolds(t *testing.T) {
+	c := connect(t)
+
+	who, err := c.Whoami(t.Context())
+	if err != nil {
+		t.Fatalf("Whoami: %v", err)
+	}
+	if who.Name != "test" {
+		t.Errorf("name = %q, want test", who.Name)
+	}
+	if !who.CanWrite() {
+		t.Errorf("scope = %q, and the harness key may write", who.Scope)
+	}
+}
+
 // The job a cancel returns names the key that cancelled it.
 //
 // A producer that cancels its own work reads this back to confirm that the
