@@ -264,6 +264,34 @@ func TestTheDashboardOffersEveryStatus(t *testing.T) {
 	}
 }
 
+// The page can be read past the first twenty five rows.
+//
+// A table hard capped at twenty five made finding one job among a thousand
+// impossible from the page, and the note under it told the reader to go and
+// use a different tool.
+func TestTheDashboardReadsPastTheFirstPage(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	// It follows the cursor the server hands back, and does not ask for a
+	// bigger limit instead. A reader who pressed for more twenty times would
+	// otherwise ask the server for five hundred rows in one query.
+	if !strings.Contains(page, "next_cursor") {
+		t.Error("the page never reads the cursor, so it cannot ask for a second page")
+	}
+	if !strings.Contains(page, "&before=") {
+		t.Error("the page never sends a cursor back, so every page it asks for is the first")
+	}
+
+	// The old note, which sent the reader to a different tool.
+	if strings.Contains(page, "quorractl list -all to see the rest") {
+		t.Error("the page still tells the reader to go and use another tool")
+	}
+}
+
 // Every job that has not finished can be cancelled from the page.
 //
 // Decided from what is finished rather than from a list of what can be

@@ -141,6 +141,14 @@ function say(text, bad) {
 // Which status the reader is looking at. Empty means all of them.
 let filter = "";
 
+// The pages already fetched, and the cursor for the next one.
+//
+// The rows are kept rather than the cursors. A reader who has pressed for
+// more four times is looking at a hundred rows, and the refresh has to give
+// them a hundred rows back or the page they were reading disappears under
+// them every five seconds.
+let pages = 1;
+
 async function post(path) {
   const response = await fetch(path, {
     method: "POST",
@@ -170,6 +178,48 @@ async function get(path) {
 // job type and the queue name, are chosen by whoever submits a job, so
 // anybody who could reach the submission endpoint could put a script into
 // this page and have it run with the reader's key in their browser.
+// jobsPath builds the query for one page.
+function jobsPath(cursor) {
+  let path = "/v1/jobs?limit=" + PAGE;
+  if (filter === "ready") {
+    // Pending as well as due. A finished job keeps the run_at of its last
+    // attempt, so asking only what is due lists every job that has ever run,
+    // which is the opposite of what this button says.
+    path += "&status=pending&due=now&order=soonest";
+  } else if (filter) {
+    path += "&status=" + encodeURIComponent(filter);
+  }
+  if (cursor) path += "&before=" + encodeURIComponent(cursor);
+  return path;
+}
+
+// How many rows one page holds.
+const PAGE = 25;
+
+// renderMore draws the button that fetches the next page.
+//
+// A button and not an endless scroll. A reader looking for one job among
+// thousands wants to stop, and a page that keeps growing while they read has
+// no place to stop at.
+function renderMore(shown, next) {
+  const holder = document.getElementById("more");
+  holder.replaceChildren();
+
+  if (!next) {
+    if (shown > PAGE) holder.textContent = "All " + shown + " shown.";
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Show " + PAGE + " more (" + shown + " so far)";
+  button.addEventListener("click", () => {
+    pages++;
+    load();
+  });
+  holder.appendChild(button);
+}
+
 function cell(row, text, className) {
   const td = document.createElement("td");
   td.textContent = text === null || text === undefined ? "" : String(text);
@@ -410,22 +460,26 @@ async function load() {
     // different query: what the queue would hand out now, in the order it
     // would hand it out. A list of ready jobs in submission order does not
     // answer what runs next.
-    let path = "/v1/jobs?limit=25";
-    if (filter === "ready") {
-      // Pending as well as due. A finished job keeps the run_at of its last
-      // attempt, so asking only what is due lists every job that has ever
-      // run, which is the opposite of what this button says.
-      path += "&status=pending&due=now&order=soonest";
-    } else if (filter) {
-      path += "&status=" + encodeURIComponent(filter);
-    }
-    const [queues, jobs] = await Promise.all([get("/v1/queues"), get(path)]);
+    const queues = await get("/v1/queues");
     renderQueues(queues.queues || []);
-    renderJobs(jobs.jobs || []);
-    if (jobs.next_cursor) {
-      document.getElementById("more").textContent =
-        "Showing the newest 25. Use quorractl list -all to see the rest.";
+
+    // Every page the reader has asked for, one after another, following the
+    // cursor. Asking for a bigger limit instead would work until somebody
+    // pressed for more twenty times and then asked the server for five
+    // hundred rows in one query.
+    let rows = [];
+    let cursor = "";
+    let next = "";
+    for (let page = 0; page < pages; page++) {
+      const answer = await get(jobsPath(cursor));
+      rows = rows.concat(answer.jobs || []);
+      next = answer.next_cursor || "";
+      if (!next) break;
+      cursor = next;
     }
+
+    renderJobs(rows);
+    renderMore(rows.length, next);
     say("updated " + new Date().toLocaleTimeString());
   } catch (error) {
     say(error.message, true);
