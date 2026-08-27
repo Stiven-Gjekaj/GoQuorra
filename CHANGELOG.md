@@ -13,6 +13,57 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Reach
+
+Recovering a large dead letter queue was a scripting exercise: no bulk revive,
+and a dashboard table hard capped at twenty five rows whose note told the
+reader to go and use a different tool. The two halves ship together, because
+either one alone leaves the exercise.
+
+**Added**
+
+- **Bulk cancel and bulk revive.** `POST /v1/jobs/cancel` and
+  `POST /v1/jobs/revive` take the fields the listing takes, so an operator
+  narrows a listing until it shows what they mean and sends the same
+  narrowing. `client.CancelMatching`, `client.ReviveMatching`, and
+  `quorractl cancel -all` and `revive -all` call them.
+
+  Measured against PostgreSQL: five hundred dead jobs revived in 513ms in
+  one command, against about five seconds for the same five hundred one
+  request each.
+
+  The limit is required and there is no default, because a default would make
+  the most dangerous request in this API the shortest one to write. A bulk
+  action with no filter at all is refused by the tool for the same reason.
+- **Bulk submit.** `POST /v1/jobs/bulk`, `client.SubmitMany` and
+  `quorractl create -file`, which reads one JSON object per line. Five
+  hundred jobs in 523ms.
+
+  Each job is answered for on its own, and one bad row does not lose the
+  others. Jobs are independent, so one transaction for the batch is the wrong
+  shape.
+- **The dashboard reads past the first page.** A button that follows the
+  cursor. Every page the reader has asked for is fetched again on each
+  refresh, so the rows they were reading do not disappear under them every
+  five seconds.
+- **One job can be opened in the dashboard**, with its payload, the facts a
+  row has no room for, and every finished run of it. A search box takes an
+  identifier, which is the path an operator holding one from a log line
+  takes.
+
+**Fixed**
+
+- **The dashboard polled for ever.** `docs/milestones.md` recorded three
+  faults here and left all three: a wrong key made two failing requests every
+  five seconds for as long as the tab was open, a tab left in the background
+  polled until it was closed, and a server that had gone away was asked at the
+  same rate for ever.
+
+  The wait doubles on a failure to a ceiling of a minute, six failures in a
+  row stop it, and a hidden tab is asked for nothing. Measured over the
+  browser: with a wrong key, two requests in twenty one and a half seconds
+  rather than eight. Hidden for thirteen seconds, none at all.
+
 ### The schema learns three things
 
 The jobs table held one row per job and nothing else. That is three tables
