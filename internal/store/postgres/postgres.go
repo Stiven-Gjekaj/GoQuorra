@@ -199,6 +199,13 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 	}
 	stored.After = append([]string(nil), n.After...)
 
+	// Inside the transaction, so it is delivered when the job commits and not
+	// before. A listener told about a job that was then rolled back would go
+	// and find nothing.
+	if readyNow(string(stored.Status), stored.Queue, stored.RunAt, s.opts.Now()) {
+		hint(ctx, tx, s.opts.Log, stored.Queue)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, false, fmt.Errorf("postgres: cannot commit: %w", err)
 	}

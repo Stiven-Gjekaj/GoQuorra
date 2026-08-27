@@ -534,6 +534,21 @@ type Store interface {
 	// same as a job that is not there, which is ErrNotFound.
 	Attempts(ctx context.Context, jobID string) ([]Attempt, error)
 
+	// Watch reports queues that may have work, until the context ends.
+	//
+	// A hint and never a promise. Every queue name sent means the queue may
+	// have work, and the caller answers by leasing, which is the call that
+	// decides. A hint that is lost costs latency and nothing else, because
+	// every caller still polls.
+	//
+	// It is the store's method because only the store knows when a job
+	// becomes ready, and because the two stores learn it differently: the
+	// memory one is told by its own writes, and the PostgreSQL one listens
+	// on a connection so that a write by another server reaches this one.
+	//
+	// The channel is closed when the context ends.
+	Watch(ctx context.Context) (<-chan string, error)
+
 	// CreateSchedule stores a repeat schedule.
 	//
 	// A name that is taken is refused rather than replacing what is there. A
@@ -595,6 +610,19 @@ type Options struct {
 	// Jitter draws a number between 0 and 1 for the backoff. A test replaces
 	// it with a constant and then states the wait it expects.
 	Jitter func() float64
+
+	// Log reports something that went wrong and that the store cannot return.
+	//
+	// A function and not a logger, the same way Now is a function and not a
+	// clock. This package holds no logging library, and a store that took one
+	// would make every caller of this package take it too.
+	//
+	// It is reached from one place: a hint that a queue has work and could
+	// not be sent. That failure cannot be returned, because the write it
+	// followed has already happened and failing a submission over a hint
+	// would trade correctness for latency in the wrong direction. Dropping it
+	// in silence is the other option and is worse.
+	Log func(message string, err error)
 }
 
 // WithDefaults fills in what the caller left out, so that a zero Options is
@@ -608,6 +636,9 @@ func (o Options) WithDefaults() Options {
 	}
 	if o.Jitter == nil {
 		o.Jitter = defaultJitter
+	}
+	if o.Log == nil {
+		o.Log = func(string, error) {}
 	}
 	return o
 }

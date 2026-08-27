@@ -47,6 +47,10 @@ type Store struct {
 	// to be unique.
 	schedules map[string]*store.Schedule
 
+	// watchers are the channels waiting to be told that a queue may have
+	// work.
+	watchers []chan string
+
 	next uint64
 }
 
@@ -132,6 +136,10 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 
 	s.next++
 	s.records[job.ID] = &record{job: *job, seq: s.next}
+
+	if readyNow(string(job.Status), job.Queue, job.RunAt, s.opts.Now()) {
+		s.hint(job.Queue)
+	}
 
 	return clone(job), true, nil
 }
@@ -416,6 +424,9 @@ func (s *Store) reviveOne(rec *record, actor string, now time.Time) bool {
 	rec.job.Status = back
 	rec.job.Attempts = 0
 	rec.job.RunAt = now
+	if back == jobs.Pending {
+		s.hint(rec.job.Queue)
+	}
 	rec.job.UpdatedAt = now
 	rec.job.LeaseID = ""
 	rec.job.LeasedBy = ""
@@ -588,6 +599,13 @@ func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now tim
 		rec.job.LastError = message
 	}
 
+	// A retry that is ready this instant. A backoff puts run_at in the
+	// future, and a job waiting one out is deliberately not urgent, so the
+	// poll is what finds it.
+	if readyNow(string(rec.job.Status), rec.job.Queue, rec.job.RunAt, now) {
+		s.hint(rec.job.Queue)
+	}
+
 	s.settleAfter(rec.job.ID, now)
 }
 
@@ -633,6 +651,7 @@ func (s *Store) settleAfter(parentID string, now time.Time) {
 			// Ready now and not at the time it was submitted. A job held for
 			// an hour by its parent is not an hour late.
 			rec.job.RunAt = now
+			s.hint(rec.job.Queue)
 		} else {
 			rec.job.LastError = afterMessage(rec.job.After, s.records)
 		}

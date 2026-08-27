@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -676,6 +677,116 @@ var cases = []testCase{
 		// Text that is not an identifier at all is also a missing job.
 		if _, err := s.Cancel(ctx(), "not-a-uuid", ""); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("Cancel of a malformed identifier gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	// A submission tells a watcher that a queue may have work.
+	//
+	// A hint and never a promise: a worker still polls, so one that is lost
+	// costs latency and nothing else. That is what makes this safe to add to
+	// a protocol whose correctness already worked without it.
+	{"a job that is ready now tells a watcher", func(t *testing.T, s store.Store, clock *Clock) {
+		watching, cancel := context.WithCancel(ctx())
+		defer cancel()
+
+		hints, err := s.Watch(watching)
+		if err != nil {
+			t.Fatalf("Watch: %v", err)
+		}
+
+		create(t, s, store.NewJob{Type: "work", Queue: "mail"})
+
+		select {
+		case queue := <-hints:
+			if queue != "mail" {
+				t.Errorf("the hint names %q, want the queue the job went into", queue)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a job was submitted and no hint arrived")
+		}
+	}},
+
+	// A job that is not ready yet tells nobody.
+	//
+	// A job with a delay, or one waiting out a backoff, is deliberately not
+	// urgent. A hint for it would wake every worker to find nothing.
+	{"a job that is not ready yet tells nobody", func(t *testing.T, s store.Store, clock *Clock) {
+		watching, cancel := context.WithCancel(ctx())
+		defer cancel()
+
+		hints, err := s.Watch(watching)
+		if err != nil {
+			t.Fatalf("Watch: %v", err)
+		}
+
+		create(t, s, store.NewJob{Type: "work", Queue: "mail", Delay: time.Hour})
+
+		select {
+		case queue := <-hints:
+			t.Errorf("a delayed job hinted about %q", queue)
+		case <-time.After(300 * time.Millisecond):
+			// Nothing, which is the answer.
+		}
+	}},
+
+	// Reviving a job tells a watcher, because the job is ready at once.
+	{"reviving a job tells a watcher", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work", Queue: "mail"})
+		if _, err := s.Cancel(ctx(), made.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		watching, cancel := context.WithCancel(ctx())
+		defer cancel()
+
+		hints, err := s.Watch(watching)
+		if err != nil {
+			t.Fatalf("Watch: %v", err)
+		}
+
+		if _, err := s.Revive(ctx(), made.ID, "ops"); err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+
+		select {
+		case queue := <-hints:
+			if queue != "mail" {
+				t.Errorf("the hint names %q", queue)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a job was revived and no hint arrived")
+		}
+	}},
+
+	// The channel closes when the caller stops watching.
+	//
+	// A watcher that ended and left a channel open is a goroutine and a
+	// database connection that nothing will ever close.
+	{"a watcher that stops is closed", func(t *testing.T, s store.Store, clock *Clock) {
+		watching, cancel := context.WithCancel(ctx())
+
+		hints, err := s.Watch(watching)
+		if err != nil {
+			t.Fatalf("Watch: %v", err)
+		}
+		cancel()
+
+		select {
+		case _, open := <-hints:
+			if open {
+				// A hint that was already in flight. The next read is the
+				// close.
+				select {
+				case _, open := <-hints:
+					if open {
+						t.Error("the channel is still open after the watcher stopped")
+					}
+				case <-time.After(5 * time.Second):
+					t.Error("the channel was not closed")
+				}
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("the channel was not closed when the watcher stopped")
 		}
 	}},
 

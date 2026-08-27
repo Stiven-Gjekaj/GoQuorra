@@ -376,13 +376,18 @@ func (s *Store) transitionIn(
 	// What was waiting for this job, in the same transaction. A cancel stops
 	// them and a revive can release them, and either one committing without
 	// the job that caused it would leave the two disagreeing.
-	if err := settleAfter(ctx, tx, id, now); err != nil {
+	if err := settleAfter(ctx, tx, id, now, s.opts.Log); err != nil {
 		return nil, err
 	}
 
 	job.After, err = afterOf(ctx, tx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// A revived job that is ready now.
+	if readyNow(string(job.Status), job.Queue, job.RunAt, now) {
+		hint(ctx, tx, s.opts.Log, job.Queue)
 	}
 	return job, nil
 }

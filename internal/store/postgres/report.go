@@ -215,8 +215,15 @@ func (s *Store) applyDecision(
 		return nil, fmt.Errorf("postgres: cannot write the attempt: %w", err)
 	}
 
-	if err := settleAfter(ctx, tx, end.id, now); err != nil {
+	if err := settleAfter(ctx, tx, end.id, now, s.opts.Log); err != nil {
 		return nil, err
+	}
+
+	// A retry that is ready this instant. A backoff puts run_at in the
+	// future, and a job waiting one out is deliberately not urgent, so the
+	// poll is what finds it.
+	if readyNow(string(job.Status), job.Queue, job.RunAt, now) {
+		hint(ctx, tx, s.opts.Log, job.Queue)
 	}
 
 	return job, nil
@@ -232,7 +239,16 @@ func (s *Store) applyDecision(
 // It runs in the caller's transaction, so a job that succeeds and the jobs it
 // releases commit together. A release that could commit without the success
 // that caused it would hand out work for a job that had not finished.
-func settleAfter(ctx context.Context, tx pgx.Tx, parentID string, now time.Time) error {
+func settleAfter(ctx context.Context, tx pgx.Tx, parentID string, now time.Time, log func(string, error)) error {
+	var released []string
+	defer func() {
+		// The hints go out after the jobs are written and inside the same
+		// transaction, so a listener hears about them when they commit.
+		for _, queue := range released {
+			hint(ctx, tx, log, queue)
+		}
+	}()
+
 	// Only the jobs that are waiting, and only the ones waiting for this one.
 	// The index on after_id is what makes this a lookup rather than a scan.
 	rows, err := tx.Query(ctx, `
@@ -270,12 +286,15 @@ func settleAfter(ctx context.Context, tx pgx.Tx, parentID string, now time.Time)
 		if wanted == jobs.Pending {
 			// Ready now and not at the time it was submitted. A job held for
 			// an hour by its parent is not an hour late.
-			if _, err := tx.Exec(ctx,
-				`UPDATE jobs SET status = 'pending', run_at = $1, updated_at = $1 WHERE id = $2`,
+			var queue string
+			if err := tx.QueryRow(ctx,
+				`UPDATE jobs SET status = 'pending', run_at = $1, updated_at = $1 WHERE id = $2
+					RETURNING queue`,
 				now, id,
-			); err != nil {
+			).Scan(&queue); err != nil {
 				return fmt.Errorf("postgres: cannot release the waiting job: %w", err)
 			}
+			released = append(released, queue)
 		} else {
 			if _, err := tx.Exec(ctx,
 				`UPDATE jobs SET status = 'cancelled', last_error = $1, updated_at = $2 WHERE id = $3`,
@@ -288,7 +307,7 @@ func settleAfter(ctx context.Context, tx pgx.Tx, parentID string, now time.Time)
 		// The jobs waiting for this one, if it was itself a parent. A chain of
 		// three where the first dies has to stop both of the others, and only
 		// the second is reached by the query above.
-		if err := settleAfter(ctx, tx, id, now); err != nil {
+		if err := settleAfter(ctx, tx, id, now, log); err != nil {
 			return err
 		}
 	}
