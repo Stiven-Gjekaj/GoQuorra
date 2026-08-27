@@ -98,6 +98,8 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /v1/jobs", a.guard(auth.Read, http.HandlerFunc(a.listJobs)))
 	mux.Handle("GET /v1/jobs/{id}", a.guard(auth.Read, http.HandlerFunc(a.getJob)))
 	mux.Handle("GET /v1/jobs/{id}/attempts", a.guard(auth.Read, http.HandlerFunc(a.jobAttempts)))
+	mux.Handle("POST /v1/jobs/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelMatching)))
+	mux.Handle("POST /v1/jobs/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveMatching)))
 	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelJob)))
 	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveJob)))
 	mux.Handle("GET /v1/queues", a.guard(auth.Read, http.HandlerFunc(a.queueStats)))

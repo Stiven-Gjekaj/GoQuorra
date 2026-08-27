@@ -48,6 +48,16 @@ func serve(t *testing.T) (http.Handler, store.Store) {
 	}).Handler(), backing
 }
 
+// metricsPage reads the page a Prometheus server would scrape.
+//
+// Through the handler rather than through the registry, because the handler
+// is what gets scraped, and a counter that is raised and not registered reads
+// the same either way only in the second one.
+func metricsPage(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	return call(t, handler, "GET", "/metrics", "", nil).Body.String()
+}
+
 func call(t *testing.T, handler http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -433,6 +443,108 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 	if got := statusOf(t, handler, id); got != "cancelled" {
 		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+// A dead letter queue is cleared in one request.
+func TestJobsAreRevivedInOneRequest(t *testing.T) {
+	handler, backing := serve(t)
+	ctx := t.Context()
+
+	// Three jobs the store has buried, and one that is waiting.
+	var buried []string
+	for i := 0; i < 3; i++ {
+		id := submit(t, handler, `{"type":"charge","max_retries":0}`)
+		held, err := backing.Lease(ctx, store.LeaseRequest{
+			Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+		})
+		if err != nil || len(held) != 1 {
+			t.Fatalf("Lease: %v, %d jobs", err, len(held))
+		}
+		if _, err := backing.Report(ctx, store.Report{
+			JobID: id, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeFailed, Error: "no",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+		buried = append(buried, id)
+	}
+	waiting := submit(t, handler, `{"type":"charge"}`)
+
+	got := withKey(t, handler, "POST", "/v1/jobs/revive", `{"status":"dead","limit":100}`)
+	if got.Code != http.StatusOK {
+		t.Fatalf("revive = %d, body %s", got.Code, got.Body)
+	}
+
+	var answer struct {
+		Moved int `json:"moved"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if answer.Moved != 3 {
+		t.Fatalf("the revive moved %d jobs, want 3: %s", answer.Moved, got.Body)
+	}
+
+	for _, id := range buried {
+		if status := statusOf(t, handler, id); status != "pending" {
+			t.Errorf("a revived job is %q, want pending", status)
+		}
+	}
+	if status := statusOf(t, handler, waiting); status != "pending" {
+		t.Errorf("the waiting job is %q, and the filter named only the dead ones", status)
+	}
+}
+
+// The limit is required, and the message says what to add.
+//
+// A default would make the most dangerous request in this API the shortest
+// one to write.
+func TestABulkRequestWithNoLimitIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	for name, body := range map[string]string{
+		"no limit at all": `{"status":"dead"}`,
+		"a limit of zero": `{"status":"dead","limit":0}`,
+		"a limit past the most one request may move": `{"status":"dead","limit":100000}`,
+	} {
+		got := withKey(t, handler, "POST", "/v1/jobs/cancel", body)
+		if got.Code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400, body %s", name, got.Code, got.Body)
+		}
+		if !strings.Contains(got.Body.String(), "limit is required") {
+			t.Errorf("%s: the answer does not say what to add: %s", name, got.Body)
+		}
+	}
+}
+
+// A bulk action is counted once for each job it moved.
+//
+// The counters answer how many jobs an operator stopped. A batch of four
+// hundred counted as one would make the number useless the day it matters.
+func TestABulkActionIsCountedForEachJob(t *testing.T) {
+	handler, _ := serve(t)
+
+	for i := 0; i < 3; i++ {
+		submit(t, handler, `{"type":"work"}`)
+	}
+	withKey(t, handler, "POST", "/v1/jobs/cancel", `{"status":"pending","limit":100}`)
+
+	page := metricsPage(t, handler)
+	if !strings.Contains(page, `quorra_jobs_cancelled_total{caller="test"} 3`) {
+		t.Errorf("the counter does not hold 3 cancellations: %s", page)
+	}
+}
+
+// A bulk route needs write, and a bad status is named.
+func TestABulkRequestWithABadStatusIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "POST", "/v1/jobs/cancel", `{"status":"finished","limit":10}`)
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("a bad status = %d, want 400, body %s", got.Code, got.Body)
+	}
+	if !strings.Contains(got.Body.String(), "finished") {
+		t.Errorf("the answer does not name the status: %s", got.Body)
 	}
 }
 

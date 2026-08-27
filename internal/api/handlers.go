@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,6 +211,104 @@ func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
+
+// bulkRequest is the body of POST /v1/jobs/cancel and POST /v1/jobs/revive.
+//
+// The same fields the listing takes, so an operator narrows a listing until
+// it shows what they mean and then sends the same narrowing here. A bulk
+// action whose filter did not match the listing would be one nobody could
+// check before running.
+type bulkRequest struct {
+	Queue  string `json:"queue"`
+	Status string `json:"status"`
+	Type   string `json:"type"`
+	Worker string `json:"worker"`
+
+	// Limit is required and has no default. A default would make the most
+	// dangerous request in the API the shortest one to write.
+	Limit int `json:"limit"`
+}
+
+// cancelMatching handles POST /v1/jobs/cancel.
+func (a *API) cancelMatching(w http.ResponseWriter, r *http.Request) {
+	a.bulk(w, r, "cancelled", a.opts.Store.CancelMatching, a.opts.Metrics.JobCancelled)
+}
+
+// reviveMatching handles POST /v1/jobs/revive.
+func (a *API) reviveMatching(w http.ResponseWriter, r *http.Request) {
+	a.bulk(w, r, "revived", a.opts.Store.ReviveMatching, a.opts.Metrics.JobRevived)
+}
+
+// bulk runs one bulk action.
+//
+// A POST to a verb under the collection, matching the verb under one job. The
+// two paths differ in what they name and in nothing else.
+func (a *API) bulk(
+	w http.ResponseWriter,
+	r *http.Request,
+	done string,
+	act func(context.Context, store.Filter, string) (int, error),
+	count func(string),
+) {
+	body := http.MaxBytesReader(w, r.Body, a.opts.MaxBodyBytes)
+
+	var req bulkRequest
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		a.fail(w, http.StatusBadRequest, "the request body is not the JSON this endpoint expects: "+err.Error())
+		return
+	}
+
+	// Required, and named as required. A caller that forgets it is told what
+	// to add rather than being given a default nobody chose for an action
+	// that moves every job it can find.
+	if req.Limit < 1 || req.Limit > bulkMost {
+		a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"limit is required, and must be between 1 and %d. It bounds how many jobs this moves.", bulkMost))
+		return
+	}
+
+	filter := store.Filter{
+		Queue:  req.Queue,
+		Type:   req.Type,
+		Worker: req.Worker,
+		Limit:  req.Limit,
+	}
+	if req.Status != "" {
+		status, err := jobs.ParseStatus(req.Status)
+		if err != nil {
+			a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+				"%q is not a status. It must be one of %s", req.Status, strings.Join(statusNames(), ", ")))
+			return
+		}
+		filter.Status = status
+	}
+
+	caller := callerOf(r.Context())
+	moved, err := act(r.Context(), filter, caller.Name)
+	if err != nil {
+		a.failWith(w, err, "cannot act on the jobs")
+		return
+	}
+
+	// One count for each job, not one for the request. The counters answer
+	// how many jobs an operator stopped, and a batch of four hundred that
+	// counted as one would make the number useless the day it matters.
+	for i := 0; i < moved; i++ {
+		count(caller.Name)
+	}
+	a.log.Info("jobs "+done+" in one request", "count", moved, "by", caller.Name)
+
+	a.send(w, http.StatusOK, map[string]any{"moved": moved})
+}
+
+// bulkMost bounds one bulk request.
+//
+// The store bounds nothing on its own: it does what the filter says. This is
+// where the bound belongs, because it is a limit on what one request may do
+// and not on what the queue can hold.
+const bulkMost = 10000
 
 // listJobs handles GET /v1/jobs.
 //
