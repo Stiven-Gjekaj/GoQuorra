@@ -13,6 +13,22 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Towards a release
+
+**Fixed**
+
+- **A number the column could not hold was the server's fault.** Priority and
+  max retries are a Go int against INTEGER columns, so a value between the two
+  sizes passed the validator and was refused by PostgreSQL with a message that
+  did not read as the client's mistake. The API answered 500. It answers 400
+  now and names the field and the range.
+- **The two stores disagreed about the same submission.** The in-memory store
+  has no such column, so it stored what PostgreSQL refused. Measured before
+  the fix: priority 3000000000 gave 500 against PostgreSQL and 201 against
+  memory, while all sixty five contract rules passed. The suite now holds a
+  rule that both stores refuse it, and refuse it with a message that says
+  which package refused it.
+
 ### Saying no, and finding what is stuck
 
 Two things a person running this hits on the first bad day: a handler with no
