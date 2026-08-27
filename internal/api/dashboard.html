@@ -160,7 +160,9 @@ keyInput.value = store.getItem("quorra.key") || "";
 document.getElementById("keyform").addEventListener("submit", (event) => {
   event.preventDefault();
   store.setItem("quorra.key", keyInput.value);
-  load();
+  // Through restart and not load, because a reader correcting a key is
+  // saying that the reason for the failures before it is gone.
+  restart();
 });
 
 function say(text, bad) {
@@ -245,7 +247,7 @@ function renderMore(shown, next) {
   button.textContent = "Show " + PAGE + " more (" + shown + " so far)";
   button.addEventListener("click", () => {
     pages++;
-    load();
+    restart();
   });
   holder.appendChild(button);
 }
@@ -635,10 +637,14 @@ function pre(value) {
   return block;
 }
 
+// load draws the page once, and reports whether it worked.
+//
+// It answers rather than throwing, because the caller is a timer and the
+// decision it has to make is how long to wait before asking again.
 async function load() {
   if (!store.getItem("quorra.key")) {
     say("enter the API key", true);
-    return;
+    return false;
   }
   try {
     // ready asks a different question from a status, so it builds a
@@ -672,14 +678,85 @@ async function load() {
     if (opened) await openJob(opened);
 
     say("updated " + new Date().toLocaleTimeString());
+    return true;
   } catch (error) {
     say(error.message, true);
+    return false;
   }
 }
 
+// The request lifecycle.
+//
+// The page used to refresh on a fixed five second interval and nothing else,
+// which meant a wrong key made two failing requests every five seconds for as
+// long as the tab was open, a tab left in the background polled until it was
+// closed, and a server that had gone away was asked again at exactly the same
+// rate for ever. docs/milestones.md recorded all three and left them.
+//
+// Three rules replace it.
+const BASE = 5000;   // How often a healthy page asks.
+const CEILING = 60000; // The longest it ever waits.
+const GIVE_UP = 6;   // Failures in a row before it stops asking.
+
+let wait = BASE;
+let failures = 0;
+let timer = null;
+let stopped = false;
+
+function schedule() {
+  if (timer) clearTimeout(timer);
+  if (stopped) return;
+
+  // A hidden tab is asked for nothing. The visibility handler starts it
+  // again, so a reader who comes back gets a refresh at once rather than
+  // waiting out whatever the backoff had grown to.
+  if (document.hidden) return;
+
+  timer = setTimeout(tick, wait);
+}
+
+async function tick() {
+  const ok = await load();
+  if (ok) {
+    failures = 0;
+    wait = BASE;
+  } else {
+    failures++;
+    if (failures >= GIVE_UP) {
+      stopped = true;
+      say("stopped after " + failures + " failures. Press Use to try again.", true);
+      return;
+    }
+    // Doubling, up to a ceiling. A server that has gone away is asked less
+    // and less rather than at the same rate for ever, and a page that comes
+    // back is at most a minute behind.
+    wait = Math.min(wait * 2, CEILING);
+  }
+  schedule();
+}
+
+// A reader coming back to the tab gets an answer at once.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (timer) clearTimeout(timer);
+    return;
+  }
+  restart();
+});
+
+// restart clears the backoff and asks now. The key form calls it too: a
+// reader who has just corrected a key is saying that the reason for the
+// failures is gone.
+function restart() {
+  stopped = false;
+  failures = 0;
+  wait = BASE;
+  if (timer) clearTimeout(timer);
+  tick();
+}
+
 renderFilters();
-load();
-setInterval(load, 5000);
+restart();
 </script>
 </body>
 </html>

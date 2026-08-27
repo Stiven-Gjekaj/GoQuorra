@@ -264,6 +264,49 @@ func TestTheDashboardOffersEveryStatus(t *testing.T) {
 	}
 }
 
+// The page stops asking when nobody is watching, and slows down when the
+// server is not answering.
+//
+// docs/milestones.md recorded three faults here and left all three: a wrong
+// key made two failing requests every five seconds for as long as the tab was
+// open, a tab left in the background polled until it was closed, and a server
+// that had gone away was asked again at the same rate for ever.
+func TestTheDashboardHasARequestLifecycle(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	// The shape that had none of the three.
+	if strings.Contains(page, "setInterval(") {
+		t.Error("the page polls on a fixed interval, which has no backoff and no pause")
+	}
+
+	for what, marker := range map[string]string{
+		"a backoff":                 "CEILING",
+		"a stop after failures":     "GIVE_UP",
+		"a pause when hidden":       "document.hidden",
+		"a restart when it is seen": "visibilitychange",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("the page has no %s", what)
+		}
+	}
+
+	// The backoff has to grow and be bounded. One without a ceiling leaves a
+	// page an hour behind after a long outage.
+	if !strings.Contains(page, "Math.min(wait * 2, CEILING)") {
+		t.Error("the wait does not double up to a ceiling")
+	}
+
+	// Correcting the key clears the backoff. A reader who has just fixed the
+	// reason for the failures should not wait out the punishment for them.
+	if !strings.Contains(page, "restart()") {
+		t.Error("nothing clears the backoff, so a corrected key waits out the wait")
+	}
+}
+
 // One job can be opened, with its payload and what it did.
 //
 // The payload is the one field a listing can never show, and it is the thing
