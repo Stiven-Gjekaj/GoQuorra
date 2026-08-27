@@ -301,6 +301,71 @@ The producer could already ask for this with `max_retries: 0`, and that is the
 wrong actor at the wrong moment: the producer does not know which failures are
 permanent, and the handler is the only thing that does.
 
+### What a job did, run by run
+
+The jobs table holds one row for each job, so a job that failed four times and
+then worked carried one error, from whichever attempt wrote last, and no
+record that the other three happened.
+
+One row is written for each finished run.
+
+```
+$ quorractl history 7b8602a0-8007-406c-a060-0161355465ca
+RUN  WORKER               OUTCOME    TOOK       ERROR
+1    mailer-3             failed     4ms        this handler always fails, on purpose
+2    mailer-3             failed     3ms        this handler always fails, on purpose
+3    mailer-3             failed     2ms        this handler always fails, on purpose
+```
+
+A lease that ran out is a finished run too, and is the one nobody reported.
+
+```
+RUN  WORKER               OUTCOME    TOOK       ERROR
+1    mailer-3             expired    34.216s    the lease held by mailer-3 ran out before it reported
+```
+
+That number is measured: a worker holding a job was killed with `SIGKILL`, the
+lease was thirty seconds and the reclaim sweep runs every ten.
+
+The row is written where the job is retired, so a worker reporting and a lease
+running out write the same history through one path, and it commits in the
+same transaction as the job.
+Nothing is written when a run starts: a running attempt is already fully
+visible on the job, which names the worker holding it and says when the lease
+began, and an insert on the lease path would be a second write on the busiest
+statement in the system to record what the first one already said.
+
+A revived job keeps what it did before, and holds two runs numbered 1.
+Reviving sets the attempt count back to zero on purpose, so the order of the
+list is what says which run came first.
+
+### Is anything out there
+
+`leased_by` names the worker holding a job and is cleared when the job ends,
+so a fleet with nothing to do left no trace anywhere.
+An empty queue and a fleet that has stopped looked the same from outside, and
+only one of those two is fine.
+
+```
+$ quorractl workers
+WORKER                   QUEUE            IDLE         FIRST SEEN
+mailer-3                 default          0s           12:16:55
+```
+
+A row is written where a worker asks for work, and whether or not any job
+comes back.
+The ask that finds nothing is the ask that matters.
+
+There is one row for each worker and queue.
+A worker asks about one queue at a time, so a row for the worker alone would
+hold whichever queue it asked about last and change on the next ask, which
+reads like a worker moving between queues.
+
+Workers nobody has seen for `QUORRA_WORKER_RETENTION` are removed, a day by
+default.
+A worker identifier is usually the name of a container, so a deployment
+retires every row in that table and writes a new set.
+
 ### Finding the job that is stuck
 
 A job in `pending` with a `run_at` two hours out looks exactly like one that
@@ -597,6 +662,7 @@ key that names the team.
 ```
 
 `type` is required. Everything else has a default.
+`after` names jobs this one waits for, and every one has to already exist.
 `max_retries` of `0` means no retries, and is not the same as leaving it out.
 A field the server does not know is refused rather than ignored, so
 `maxRetries` gets an error instead of quietly doing nothing.
@@ -615,6 +681,8 @@ before.
 | `POST /v1/jobs/{id}/revive` | Puts a dead or cancelled job back with a fresh set of attempts. `409` for any other state. |
 | `GET /v1/queues` | A count for each queue and status. |
 | `GET /v1/whoami` | The name and the scope of the key that asked. Needs `read`, because a key that changes nothing still has to be able to ask what it is. |
+| `GET /v1/jobs/{id}/attempts` | What the job did, one row for each finished run. `200` with an empty list for a job that has not run, and `404` only when the job is not there. |
+| `GET /v1/workers` | The workers the queue has heard from, most recently first, with how long each has been quiet. |
 | `GET /healthz` | `200` while the process is running. Public. |
 | `GET /readyz` | `200` while the store can be reached. Public. |
 | `GET /metrics` | Prometheus. Public. |
