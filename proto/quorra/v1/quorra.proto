@@ -43,6 +43,20 @@ service QueueService {
   // whose lease already ran out and was reclaimed, fails this call with
   // FAILED_PRECONDITION, and that is how a worker learns to stop.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Watch tells a worker when there may be work, so that it can ask at once
+  // rather than waiting out its poll.
+  //
+  // It is a hint and never a promise. Every message says a queue may have
+  // work, and the worker answers by calling Lease, which is the call that
+  // decides. A message that is lost costs latency and nothing else, because
+  // the worker still polls: that is what makes this safe to add to a
+  // protocol whose correctness already worked without it.
+  //
+  // The previous version of this project declared Lease as a server stream,
+  // which looked like a push and was not: it sent whatever was ready and
+  // closed. This is a stream that stays open and carries no jobs.
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
 }
 
 // Job is one piece of work.
@@ -152,4 +166,31 @@ message ReportResponse {
   // run_at is when a retried job comes back. It holds the backoff the server
   // applied, so a worker can log it.
   google.protobuf.Timestamp run_at = 3;
+}
+
+// WatchRequest asks to be told when a queue may have work.
+message WatchRequest {
+  // worker_id names the worker, for the server log. It grants nothing: the
+  // key in the call metadata is what says a caller may watch.
+  string worker_id = 1;
+
+  // queues are the queues to be told about. Empty is refused rather than
+  // read as "all of them": a worker that watched every queue would be woken
+  // by work it cannot take.
+  repeated string queues = 2;
+}
+
+// WatchResponse says that a queue may have work.
+//
+// It carries no job. Handing a job down this stream would make it a second
+// way to lease one, with its own rules about leases and its own way to go
+// wrong, and Lease is the call that already does it.
+message WatchResponse {
+  // queue is the queue that may have work.
+  string queue = 1;
+
+  // reason says what made the server send this, for a log line. It is not
+  // something to branch on: a worker that treated one reason differently
+  // from another would depend on a detail of when the server notices things.
+  string reason = 2;
 }

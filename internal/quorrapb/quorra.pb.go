@@ -611,6 +611,125 @@ func (x *ReportResponse) GetRunAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// WatchRequest asks to be told when a queue may have work.
+type WatchRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// worker_id names the worker, for the server log. It grants nothing: the
+	// key in the call metadata is what says a caller may watch.
+	WorkerId string `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// queues are the queues to be told about. Empty is refused rather than
+	// read as "all of them": a worker that watched every queue would be woken
+	// by work it cannot take.
+	Queues        []string `protobuf:"bytes,2,rep,name=queues,proto3" json:"queues,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchRequest) Reset() {
+	*x = WatchRequest{}
+	mi := &file_quorra_v1_quorra_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchRequest) ProtoMessage() {}
+
+func (x *WatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_quorra_v1_quorra_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
+func (*WatchRequest) Descriptor() ([]byte, []int) {
+	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *WatchRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WatchRequest) GetQueues() []string {
+	if x != nil {
+		return x.Queues
+	}
+	return nil
+}
+
+// WatchResponse says that a queue may have work.
+//
+// It carries no job. Handing a job down this stream would make it a second
+// way to lease one, with its own rules about leases and its own way to go
+// wrong, and Lease is the call that already does it.
+type WatchResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// queue is the queue that may have work.
+	Queue string `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
+	// reason says what made the server send this, for a log line. It is not
+	// something to branch on: a worker that treated one reason differently
+	// from another would depend on a detail of when the server notices things.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchResponse) Reset() {
+	*x = WatchResponse{}
+	mi := &file_quorra_v1_quorra_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchResponse) ProtoMessage() {}
+
+func (x *WatchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_quorra_v1_quorra_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
+func (*WatchResponse) Descriptor() ([]byte, []int) {
+	return file_quorra_v1_quorra_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *WatchResponse) GetQueue() string {
+	if x != nil {
+		return x.Queue
+	}
+	return ""
+}
+
+func (x *WatchResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 var File_quorra_v1_quorra_proto protoreflect.FileDescriptor
 
 const file_quorra_v1_quorra_proto_rawDesc = "" +
@@ -655,16 +774,23 @@ const file_quorra_v1_quorra_proto_rawDesc = "" +
 	"\x0eReportResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1a\n" +
 	"\battempts\x18\x02 \x01(\x05R\battempts\x121\n" +
-	"\x06run_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05runAt*b\n" +
+	"\x06run_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05runAt\"C\n" +
+	"\fWatchRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x16\n" +
+	"\x06queues\x18\x02 \x03(\tR\x06queues\"=\n" +
+	"\rWatchResponse\x12\x14\n" +
+	"\x05queue\x18\x01 \x01(\tR\x05queue\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason*b\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11OUTCOME_SUCCEEDED\x10\x01\x12\x12\n" +
 	"\x0eOUTCOME_FAILED\x10\x02\x12\x13\n" +
-	"\x0fOUTCOME_REFUSED\x10\x032\xd1\x01\n" +
+	"\x0fOUTCOME_REFUSED\x10\x032\x8f\x02\n" +
 	"\fQueueService\x12:\n" +
 	"\x05Lease\x12\x17.quorra.v1.LeaseRequest\x1a\x18.quorra.v1.LeaseResponse\x12=\n" +
 	"\x06Report\x12\x18.quorra.v1.ReportRequest\x1a\x19.quorra.v1.ReportResponse\x12F\n" +
-	"\tHeartbeat\x12\x1b.quorra.v1.HeartbeatRequest\x1a\x1c.quorra.v1.HeartbeatResponseB>Z<github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb;quorrapbb\x06proto3"
+	"\tHeartbeat\x12\x1b.quorra.v1.HeartbeatRequest\x1a\x1c.quorra.v1.HeartbeatResponse\x12<\n" +
+	"\x05Watch\x12\x17.quorra.v1.WatchRequest\x1a\x18.quorra.v1.WatchResponse0\x01B>Z<github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb;quorrapbb\x06proto3"
 
 var (
 	file_quorra_v1_quorra_proto_rawDescOnce sync.Once
@@ -679,7 +805,7 @@ func file_quorra_v1_quorra_proto_rawDescGZIP() []byte {
 }
 
 var file_quorra_v1_quorra_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_quorra_v1_quorra_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_quorra_v1_quorra_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_quorra_v1_quorra_proto_goTypes = []any{
 	(Outcome)(0),                  // 0: quorra.v1.Outcome
 	(*Job)(nil),                   // 1: quorra.v1.Job
@@ -689,27 +815,31 @@ var file_quorra_v1_quorra_proto_goTypes = []any{
 	(*HeartbeatRequest)(nil),      // 5: quorra.v1.HeartbeatRequest
 	(*HeartbeatResponse)(nil),     // 6: quorra.v1.HeartbeatResponse
 	(*ReportResponse)(nil),        // 7: quorra.v1.ReportResponse
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 9: google.protobuf.Duration
+	(*WatchRequest)(nil),          // 8: quorra.v1.WatchRequest
+	(*WatchResponse)(nil),         // 9: quorra.v1.WatchResponse
+	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 11: google.protobuf.Duration
 }
 var file_quorra_v1_quorra_proto_depIdxs = []int32{
-	8,  // 0: quorra.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
-	8,  // 1: quorra.v1.Job.run_at:type_name -> google.protobuf.Timestamp
-	8,  // 2: quorra.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	9,  // 3: quorra.v1.LeaseRequest.lease_ttl:type_name -> google.protobuf.Duration
+	10, // 0: quorra.v1.Job.lease_expires_at:type_name -> google.protobuf.Timestamp
+	10, // 1: quorra.v1.Job.run_at:type_name -> google.protobuf.Timestamp
+	10, // 2: quorra.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	11, // 3: quorra.v1.LeaseRequest.lease_ttl:type_name -> google.protobuf.Duration
 	1,  // 4: quorra.v1.LeaseResponse.jobs:type_name -> quorra.v1.Job
 	0,  // 5: quorra.v1.ReportRequest.outcome:type_name -> quorra.v1.Outcome
-	9,  // 6: quorra.v1.HeartbeatRequest.extend_by:type_name -> google.protobuf.Duration
-	8,  // 7: quorra.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
-	8,  // 8: quorra.v1.ReportResponse.run_at:type_name -> google.protobuf.Timestamp
+	11, // 6: quorra.v1.HeartbeatRequest.extend_by:type_name -> google.protobuf.Duration
+	10, // 7: quorra.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	10, // 8: quorra.v1.ReportResponse.run_at:type_name -> google.protobuf.Timestamp
 	2,  // 9: quorra.v1.QueueService.Lease:input_type -> quorra.v1.LeaseRequest
 	4,  // 10: quorra.v1.QueueService.Report:input_type -> quorra.v1.ReportRequest
 	5,  // 11: quorra.v1.QueueService.Heartbeat:input_type -> quorra.v1.HeartbeatRequest
-	3,  // 12: quorra.v1.QueueService.Lease:output_type -> quorra.v1.LeaseResponse
-	7,  // 13: quorra.v1.QueueService.Report:output_type -> quorra.v1.ReportResponse
-	6,  // 14: quorra.v1.QueueService.Heartbeat:output_type -> quorra.v1.HeartbeatResponse
-	12, // [12:15] is the sub-list for method output_type
-	9,  // [9:12] is the sub-list for method input_type
+	8,  // 12: quorra.v1.QueueService.Watch:input_type -> quorra.v1.WatchRequest
+	3,  // 13: quorra.v1.QueueService.Lease:output_type -> quorra.v1.LeaseResponse
+	7,  // 14: quorra.v1.QueueService.Report:output_type -> quorra.v1.ReportResponse
+	6,  // 15: quorra.v1.QueueService.Heartbeat:output_type -> quorra.v1.HeartbeatResponse
+	9,  // 16: quorra.v1.QueueService.Watch:output_type -> quorra.v1.WatchResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -726,7 +856,7 @@ func file_quorra_v1_quorra_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_quorra_v1_quorra_proto_rawDesc), len(file_quorra_v1_quorra_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

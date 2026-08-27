@@ -29,6 +29,7 @@ const (
 	QueueService_Lease_FullMethodName     = "/quorra.v1.QueueService/Lease"
 	QueueService_Report_FullMethodName    = "/quorra.v1.QueueService/Report"
 	QueueService_Heartbeat_FullMethodName = "/quorra.v1.QueueService/Heartbeat"
+	QueueService_Watch_FullMethodName     = "/quorra.v1.QueueService/Watch"
 )
 
 // QueueServiceClient is the client API for QueueService service.
@@ -63,6 +64,19 @@ type QueueServiceClient interface {
 	// whose lease already ran out and was reclaimed, fails this call with
 	// FAILED_PRECONDITION, and that is how a worker learns to stop.
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	// Watch tells a worker when there may be work, so that it can ask at once
+	// rather than waiting out its poll.
+	//
+	// It is a hint and never a promise. Every message says a queue may have
+	// work, and the worker answers by calling Lease, which is the call that
+	// decides. A message that is lost costs latency and nothing else, because
+	// the worker still polls: that is what makes this safe to add to a
+	// protocol whose correctness already worked without it.
+	//
+	// The previous version of this project declared Lease as a server stream,
+	// which looked like a push and was not: it sent whatever was ready and
+	// closed. This is a stream that stays open and carries no jobs.
+	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error)
 }
 
 type queueServiceClient struct {
@@ -103,6 +117,25 @@ func (c *queueServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest
 	return out, nil
 }
 
+func (c *queueServiceClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &QueueService_ServiceDesc.Streams[0], QueueService_Watch_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchRequest, WatchResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type QueueService_WatchClient = grpc.ServerStreamingClient[WatchResponse]
+
 // QueueServiceServer is the server API for QueueService service.
 // All implementations must embed UnimplementedQueueServiceServer
 // for forward compatibility.
@@ -135,6 +168,19 @@ type QueueServiceServer interface {
 	// whose lease already ran out and was reclaimed, fails this call with
 	// FAILED_PRECONDITION, and that is how a worker learns to stop.
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	// Watch tells a worker when there may be work, so that it can ask at once
+	// rather than waiting out its poll.
+	//
+	// It is a hint and never a promise. Every message says a queue may have
+	// work, and the worker answers by calling Lease, which is the call that
+	// decides. A message that is lost costs latency and nothing else, because
+	// the worker still polls: that is what makes this safe to add to a
+	// protocol whose correctness already worked without it.
+	//
+	// The previous version of this project declared Lease as a server stream,
+	// which looked like a push and was not: it sent whatever was ready and
+	// closed. This is a stream that stays open and carries no jobs.
+	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error
 	mustEmbedUnimplementedQueueServiceServer()
 }
 
@@ -153,6 +199,9 @@ func (UnimplementedQueueServiceServer) Report(context.Context, *ReportRequest) (
 }
 func (UnimplementedQueueServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedQueueServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method Watch not implemented")
 }
 func (UnimplementedQueueServiceServer) mustEmbedUnimplementedQueueServiceServer() {}
 func (UnimplementedQueueServiceServer) testEmbeddedByValue()                      {}
@@ -229,6 +278,17 @@ func _QueueService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QueueService_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(QueueServiceServer).Watch(m, &grpc.GenericServerStream[WatchRequest, WatchResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type QueueService_WatchServer = grpc.ServerStreamingServer[WatchResponse]
+
 // QueueService_ServiceDesc is the grpc.ServiceDesc for QueueService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -249,6 +309,12 @@ var QueueService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QueueService_Heartbeat_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Watch",
+			Handler:       _QueueService_Watch_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "quorra/v1/quorra.proto",
 }
