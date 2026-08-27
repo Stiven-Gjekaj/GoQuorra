@@ -213,7 +213,8 @@ func TestAReadKeyCannotChangeAJob(t *testing.T) {
 
 	// And the same key reads everything it should.
 	for _, path := range []string{
-		"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/jobs/" + created.ID + "/attempts", "/v1/queues",
+		"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/jobs/" + created.ID + "/attempts",
+		"/v1/queues", "/v1/workers",
 	} {
 		got := call(t, handler, "GET", path, "", map[string]string{"X-API-Key": readSecret})
 		if got.Code != http.StatusOK {
@@ -432,6 +433,57 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 	if got := statusOf(t, handler, id); got != "cancelled" {
 		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+// The queue says whether anything is out there.
+//
+// Every other question this API answers is about the jobs. A queue with a
+// thousand waiting jobs and no worker looks exactly like a queue that is
+// busy, and the second one is fine.
+func TestTheWorkersAreListedOverHTTP(t *testing.T) {
+	handler, backing := serve(t)
+	ctx := t.Context()
+
+	// Nothing has asked yet.
+	empty := withKey(t, handler, "GET", "/v1/workers", "")
+	if empty.Code != http.StatusOK {
+		t.Fatalf("workers = %d, body %s", empty.Code, empty.Body)
+	}
+	if !strings.Contains(empty.Body.String(), `"workers":[]`) {
+		t.Errorf("the answer is %s, want an empty list rather than null", empty.Body)
+	}
+
+	// An ask that finds nothing still counts, which is the whole point.
+	if _, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "idle-1", Limit: 1, TTL: time.Minute,
+	}); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
+	got := withKey(t, handler, "GET", "/v1/workers", "")
+	var answer struct {
+		Workers []struct {
+			ID          string  `json:"id"`
+			Queue       string  `json:"queue"`
+			IdleSeconds float64 `json:"idle_seconds"`
+		} `json:"workers"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if len(answer.Workers) != 1 {
+		t.Fatalf("the answer holds %d workers: %s", len(answer.Workers), got.Body)
+	}
+	if answer.Workers[0].ID != "idle-1" || answer.Workers[0].Queue != "default" {
+		t.Errorf("the worker is %+v", answer.Workers[0])
+	}
+
+	// How long it has been quiet is worked out on the server. A caller a
+	// second out of step with this clock reads a fleet that is fine as one
+	// that stopped.
+	if answer.Workers[0].IdleSeconds != 0 {
+		t.Errorf("idle seconds = %v, want 0 against the frozen clock", answer.Workers[0].IdleSeconds)
 	}
 }
 

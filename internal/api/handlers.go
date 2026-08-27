@@ -315,6 +315,37 @@ func (a *API) queueStats(w http.ResponseWriter, r *http.Request) {
 	a.send(w, http.StatusOK, map[string]any{"queues": stats})
 }
 
+// workers handles GET /v1/workers.
+//
+// It answers whether anything is out there. Every other question this API
+// answers is about the jobs, and a queue with a thousand waiting jobs and no
+// worker looks exactly like a queue that is simply busy.
+//
+// Each row carries how long the worker has been quiet, worked out here rather
+// than left to the caller. The caller would need the server's clock to do it,
+// and a caller a second out of step reads a fleet that is fine as one that
+// stopped.
+func (a *API) workers(w http.ResponseWriter, r *http.Request) {
+	seen, err := a.opts.Store.Workers(r.Context())
+	if err != nil {
+		a.failWith(w, err, "cannot list the workers")
+		return
+	}
+
+	now := a.opts.Now()
+	rows := make([]map[string]any, 0, len(seen))
+	for _, one := range seen {
+		rows = append(rows, map[string]any{
+			"id":            one.ID,
+			"queue":         one.Queue,
+			"first_seen_at": one.FirstSeenAt,
+			"last_seen_at":  one.LastSeenAt,
+			"idle_seconds":  one.Idle(now).Seconds(),
+		})
+	}
+	a.send(w, http.StatusOK, map[string]any{"workers": rows})
+}
+
 func (a *API) alive(w http.ResponseWriter, _ *http.Request) {
 	a.send(w, http.StatusOK, map[string]string{"status": "ok"})
 }
