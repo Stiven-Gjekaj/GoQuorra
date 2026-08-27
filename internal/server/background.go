@@ -65,6 +65,7 @@ func sweep(
 	every time.Duration,
 	batch int,
 	retention map[jobs.Status]time.Duration,
+	workerRetention time.Duration,
 ) {
 	wanted := make(map[jobs.Status]time.Duration, len(retention))
 	for status, keep := range retention {
@@ -72,8 +73,8 @@ func sweep(
 			wanted[status] = keep
 		}
 	}
-	if len(wanted) == 0 {
-		log.Debug("no retention is set, so no job is ever removed")
+	if len(wanted) == 0 && workerRetention <= 0 {
+		log.Debug("no retention is set, so nothing is ever removed")
 		return
 	}
 
@@ -105,6 +106,28 @@ func sweep(
 				// operator asking where a job went should find the answer in
 				// the log rather than by reading the source.
 				log.Info("removed finished jobs", "status", status, "count", removed, "older_than", keep)
+			}
+		}
+
+		// The workers a deployment left behind, in the same loop rather than
+		// a fourth one. It runs on the same tick, deletes in the same
+		// bounded way, and a second ticker for it would be a second thing
+		// that can stop.
+		if workerRetention > 0 {
+			gone, err := s.DeleteStaleWorkers(ctx, time.Now().Add(-workerRetention), batch)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Error("cannot remove stale workers", "error", err)
+				continue
+			}
+			if gone > 0 {
+				// At debug and not info. A deployment retires a whole fleet
+				// at once, so this line would be the loudest thing in the log
+				// on every release, and unlike a removed job nobody goes
+				// looking for where a worker name went.
+				log.Debug("removed workers nobody has seen", "count", gone, "older_than", workerRetention)
 			}
 		}
 	}

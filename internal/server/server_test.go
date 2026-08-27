@@ -361,6 +361,62 @@ func TestFinishedJobsAreRemovedOnceTheyAreOldEnough(t *testing.T) {
 	}
 }
 
+// A worker nobody has seen is removed, in the same sweep as the jobs.
+//
+// A worker identifier is usually the name of a container, so a deployment
+// retires every row in that table and writes a new set. Without this the
+// table grows once for each worker on each release, for ever, and nothing
+// anywhere reports it.
+func TestWorkersNobodyHasSeenAreRemoved(t *testing.T) {
+	cfg := &config.Server{
+		HTTPAddr: "127.0.0.1:0", GRPCAddr: "127.0.0.1:0",
+		Backend: "memory", Keys: testKeys(t, key),
+		Policy:        jobs.Policy{MaxRetries: 1, Base: time.Millisecond, Max: time.Millisecond},
+		ReclaimEvery:  time.Hour,
+		ReclaimBatch:  100,
+		StatsEvery:    time.Hour,
+		ShutdownGrace: 5 * time.Second,
+		MaxBodyBytes:  1 << 16,
+
+		// No job retention at all, so this proves the worker sweep runs on
+		// its own rather than riding on the job one.
+		RetentionEvery:  20 * time.Millisecond,
+		RetentionBatch:  100,
+		WorkerRetention: time.Millisecond,
+	}
+
+	backing := memory.New(store.Options{Policy: cfg.Policy})
+	s := server.New(cfg, backing, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = s.Run(ctx) }()
+	t.Cleanup(func() { cancel(); time.Sleep(50 * time.Millisecond) })
+
+	select {
+	case <-s.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server did not start")
+	}
+
+	// An ask that finds nothing is still an ask, and is what puts the worker
+	// in the table.
+	if _, err := backing.Lease(context.Background(), store.LeaseRequest{
+		Queue: "default", WorkerID: "the-old-pod", Limit: 1, TTL: time.Minute,
+	}); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
+	seen, err := backing.Workers(context.Background())
+	if err != nil || len(seen) != 1 {
+		t.Fatalf("Workers: %v, %d rows", err, len(seen))
+	}
+
+	waitFor(t, "the worker nobody has seen to be removed", func() bool {
+		left, err := backing.Workers(context.Background())
+		return err == nil && len(left) == 0
+	})
+}
+
 // With no retention set, nothing is ever removed. This is the default, and
 // the sweep has to be a loop that does not run rather than one that runs and
 // finds nothing.
@@ -372,9 +428,19 @@ func TestNothingIsRemovedWhenNoRetentionIsSet(t *testing.T) {
 		t.Fatalf("Cancel: %v", err)
 	}
 
+	// And the worker table is left alone too, which is the same default.
+	if _, err := backing.Lease(context.Background(), store.LeaseRequest{
+		Queue: "default", WorkerID: "still-here", Limit: 1, TTL: time.Minute,
+	}); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
 	time.Sleep(150 * time.Millisecond)
 	if _, err := backing.Get(context.Background(), id); err != nil {
 		t.Errorf("a job was removed with no retention set: %v", err)
+	}
+	if seen, err := backing.Workers(context.Background()); err != nil || len(seen) != 1 {
+		t.Errorf("a worker was removed with no retention set: %v, %d rows", err, len(seen))
 	}
 }
 

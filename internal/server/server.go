@@ -139,7 +139,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		defer loops.Done()
 		sweep(background, s.store, s.metrics, s.log,
-			s.cfg.RetentionEvery, s.cfg.RetentionBatch, s.cfg.Retention)
+			s.cfg.RetentionEvery, s.cfg.RetentionBatch, s.cfg.Retention, s.cfg.WorkerRetention)
 	}()
 
 	// A listener that dies is reported through this channel rather than

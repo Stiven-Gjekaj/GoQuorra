@@ -71,6 +71,20 @@ type Server struct {
 	RetentionEvery time.Duration
 	RetentionBatch int
 
+	// WorkerRetention says how long to keep a worker that has stopped asking
+	// for work.
+	//
+	// Unlike the job retention it has a default, because this table is not
+	// something an operator chose to fill. A worker identifier is usually the
+	// name of a container, so a deployment retires every row in it and writes
+	// a new set, and a deployment holds no opinion about how long the old
+	// names are worth keeping. A day is long enough to answer "what was
+	// running yesterday" and short enough that a week of releases does not
+	// build up.
+	//
+	// Zero keeps every worker the queue has ever heard from.
+	WorkerRetention time.Duration
+
 	ShutdownGrace time.Duration
 	MaxBodyBytes  int64
 }
@@ -123,6 +137,8 @@ func LoadServer(getenv Getenv) (*Server, error) {
 		RetentionEvery: l.duration("QUORRA_RETENTION_EVERY", time.Hour),
 		RetentionBatch: l.number("QUORRA_RETENTION_BATCH", 1000),
 
+		WorkerRetention: l.duration("QUORRA_WORKER_RETENTION", 24*time.Hour),
+
 		ShutdownGrace: l.duration("QUORRA_SHUTDOWN_GRACE", 15*time.Second),
 		MaxBodyBytes:  int64(l.number("QUORRA_MAX_BODY_BYTES", 1<<20)),
 	}
@@ -159,6 +175,11 @@ func (c *Server) validate() error {
 	}
 	if c.RetentionEvery <= 0 {
 		problems = append(problems, fmt.Errorf("config: QUORRA_RETENTION_EVERY is %s, and a ticker cannot run on it", c.RetentionEvery))
+	}
+	if c.WorkerRetention < 0 {
+		problems = append(problems, fmt.Errorf(
+			"config: QUORRA_WORKER_RETENTION is %s, and a worker cannot be kept for less than no time",
+			c.WorkerRetention))
 	}
 	if c.RetentionBatch <= 0 {
 		problems = append(problems, fmt.Errorf("config: QUORRA_RETENTION_BATCH is %d, so the sweep would remove nothing", c.RetentionBatch))
