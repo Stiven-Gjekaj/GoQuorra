@@ -11,7 +11,21 @@ project aims to follow semantic versioning.
 A commit carries no version prefix and changes no version.
 A version moves only when something is released.
 
-## Unreleased
+## 1.0.0 - 2026-08-27
+
+The first release. Everything below it happened before there was a version to
+put it under, which is why one version holds a rebuild and seven arcs of work.
+
+**What the number promises.** The JSON the HTTP API speaks, the protocol
+buffer definitions the worker protocol is built from, and the exported names
+in `client`, `worker` and `worker/pgtx` are the surface a caller depends on.
+A change that breaks any of them moves the major number.
+
+**What it does not promise.** Everything under `internal/` is free to change,
+including the database schema, which is reached through migrations and not by
+reading tables from outside. The delivery guarantee is unchanged and is not a
+version question: this queue delivers at least once, and a handler has to be
+safe to run twice.
 
 ### Seeing inside the worker protocol
 
