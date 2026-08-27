@@ -1223,6 +1223,12 @@ export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra_
 make test-postgres
 ```
 
+A database of its own, and `quorra_test` rather than the `quorra` the compose
+stack uses.
+The suite empties every table between cases, so a server pointed at the same
+database loses its jobs, and its lease sweep lands in the middle of a case
+about a lease.
+
 `make test-postgres` sets `QUORRA_TEST_REQUIRE_POSTGRES`, which turns a skip
 into a failure.
 CI sets it too, and then counts the cases that ran and prints the number.
