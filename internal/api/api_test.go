@@ -433,6 +433,52 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 }
 
+// The name of the key that cancelled a job comes back on the job.
+//
+// Read from the answer and not from a log line, because this is what the
+// dashboard and quorractl show, and what somebody asks the queue six months
+// later when they want to know who stopped a run.
+func TestACancelRecordsTheKeyThatAskedForIt(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	got := withKey(t, handler, "POST", "/v1/jobs/"+id+"/cancel", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, body %s", got.Code, got.Body)
+	}
+
+	var job struct {
+		ActedBy string `json:"acted_by"`
+		ActedAt string `json:"acted_at"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &job); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if job.ActedBy != "test" {
+		t.Errorf("acted by = %q, want test, the name of the key the harness holds", job.ActedBy)
+	}
+	if job.ActedAt == "" {
+		t.Error("acted at is missing, so the name has no moment beside it")
+	}
+}
+
+// A job nobody has acted on carries neither field.
+//
+// Both are omitempty, so a fresh job answers without them rather than with a
+// name that is the empty string, which reads as a caller called nothing.
+func TestAFreshJobCarriesNoAction(t *testing.T) {
+	handler, _ := serve(t)
+
+	id := submit(t, handler, `{"type":"work"}`)
+	got := withKey(t, handler, "GET", "/v1/jobs/"+id, "")
+
+	for _, field := range []string{"acted_by", "acted_at"} {
+		if strings.Contains(got.Body.String(), field) {
+			t.Errorf("a job nobody touched carries %s: %s", field, got.Body)
+		}
+	}
+}
+
 func TestAJobIsRevivedOverHTTP(t *testing.T) {
 	handler, _ := serve(t)
 

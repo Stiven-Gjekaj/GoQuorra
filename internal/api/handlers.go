@@ -139,28 +139,36 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 // A POST to a verb under the job, rather than a PATCH of its status. The
 // status is not a field a client may set: there is no request that legally
 // moves a job to succeeded, and an endpoint shaped like a field invites one.
+//
+// The name of the key that asked goes to the store and to the log line. The
+// counter says how many jobs were cancelled, and on a queue that two teams
+// share the next question is always which team.
 func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
-	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"), "")
+	caller := callerOf(r.Context())
+
+	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
 		a.failWith(w, err, "cannot cancel the job")
 		return
 	}
 
 	a.opts.Metrics.JobCancelled()
-	a.log.Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	a.log.Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
 
 // reviveJob handles POST /v1/jobs/{id}/revive.
 func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
-	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"), "")
+	caller := callerOf(r.Context())
+
+	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
 		a.failWith(w, err, "cannot revive the job")
 		return
 	}
 
 	a.opts.Metrics.JobRevived()
-	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue)
+	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
 
