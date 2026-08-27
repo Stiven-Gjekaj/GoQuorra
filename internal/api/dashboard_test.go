@@ -264,6 +264,60 @@ func TestTheDashboardOffersEveryStatus(t *testing.T) {
 	}
 }
 
+// One job can be opened, with its payload and what it did.
+//
+// The payload is the one field a listing can never show, and it is the thing
+// a person opening a job came for.
+func TestTheDashboardOpensOneJob(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "/attempts") {
+		t.Error("the panel never asks what the job did")
+	}
+	if !strings.Contains(page, "job.payload") {
+		t.Error("the panel never shows the payload, which is what it exists for")
+	}
+
+	// The payload comes from whoever submitted the job, so it is the value on
+	// this page most worth being careful with. textContent and never
+	// innerHTML.
+	if strings.Contains(page, "innerHTML") {
+		t.Error("the page assigns markup, and the payload is chosen by whoever submits a job")
+	}
+
+	// A job identifier must not reach the address bar. It would be kept in
+	// browser history and sent on in the Referer of anything the page fetched
+	// after it.
+	for _, forbidden := range []string{"history.pushState", "location.hash ="} {
+		if strings.Contains(page, forbidden) {
+			t.Errorf("the page puts state in the address with %s", forbidden)
+		}
+	}
+}
+
+// A job can be found by its identifier.
+//
+// Paging to a job among thousands is not finding it, and an operator holding
+// an identifier from a log line has no other way in.
+func TestTheDashboardFindsAJobByIdentifier(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, `id="findform"`) {
+		t.Error("the page has no way to look a job up")
+	}
+	if !strings.Contains(page, "openJob(") {
+		t.Error("nothing opens a job, so the search box would go nowhere")
+	}
+}
+
 // The page can be read past the first twenty five rows.
 //
 // A table hard capped at twenty five made finding one job among a thousand

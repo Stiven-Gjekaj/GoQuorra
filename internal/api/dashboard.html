@@ -73,7 +73,25 @@ td.act { white-space: nowrap; }
 td.why { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
 td.waiting { color: var(--muted); }
 td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
+button.open {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  padding: 2px 6px; background: none; border: 0; color: var(--leased);
+  cursor: pointer; text-decoration: underline;
+}
 .more { padding: 12px; text-align: center; }
+#detail {
+  margin-top: 24px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 16px;
+}
+#detail h3 { margin-top: 0; }
+#detail pre {
+  background: var(--ground); border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px; overflow-x: auto; font-size: 13px; margin: 0 0 12px 0;
+}
+#detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 14px 0; }
+#detail dt { color: var(--dim); font-size: 13px; }
+#detail dd { margin: 0; font-size: 13px; }
+.close { float: right; }
 </style>
 </head>
 <body>
@@ -99,6 +117,11 @@ td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
   <div class="cards" id="queues"></div>
 
   <h3>Jobs</h3>
+  <form id="findform">
+    <label for="find" class="tag">Find</label>
+    <input id="find" type="search" size="40" placeholder="a job identifier">
+    <button type="submit">Open</button>
+  </form>
   <div class="filters" id="filters"></div>
   <div class="scroll">
     <table>
@@ -109,6 +132,13 @@ td.act button { font-size: 12px; padding: 3px 9px; margin-right: 5px; }
     </table>
     <div class="more" id="more"></div>
   </div>
+
+  <!-- Hidden until a job is opened. A panel and not a second page, because
+       the reader came from a row and wants to go back to it. -->
+  <section id="detail" hidden>
+    <h3 id="detailtitle"></h3>
+    <div id="detailbody"></div>
+  </section>
 </main>
 
 <script nonce="{{.Nonce}}">
@@ -352,11 +382,18 @@ function renderJobs(list) {
   for (const job of list) {
     const row = document.createElement("tr");
 
+    // A button and not a link. A link would need an address, and this page
+    // has one address: putting a job identifier in it would put that
+    // identifier in the browser history and in the Referer of anything the
+    // page later fetched.
     const first = cell(row, "");
-    const id = document.createElement("code");
-    id.textContent = String(job.id).slice(0, 8);
-    id.title = job.id;
-    first.appendChild(id);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "open";
+    open.textContent = String(job.id).slice(0, 8);
+    open.title = job.id;
+    open.addEventListener("click", () => openJob(job.id));
+    first.appendChild(open);
 
     cell(row, job.type);
     cell(row, job.queue);
@@ -450,6 +487,154 @@ function renderJobs(list) {
   }
 }
 
+// Which job the panel is showing. Empty means it is closed.
+let opened = "";
+
+document.getElementById("findform").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const wanted = document.getElementById("find").value.trim();
+  if (wanted) openJob(wanted);
+});
+
+// openJob draws the panel for one job.
+//
+// Two requests: the job and what it did. The history is its own route on the
+// server for the same reason it is a second request here, and joining them
+// would put the history of every job into every listing.
+async function openJob(id) {
+  opened = id;
+  const title = document.getElementById("detailtitle");
+  const body = document.getElementById("detailbody");
+  const panel = document.getElementById("detail");
+
+  panel.hidden = false;
+  title.replaceChildren();
+  body.replaceChildren();
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "close";
+  close.textContent = "Close";
+  close.addEventListener("click", () => {
+    opened = "";
+    panel.hidden = true;
+  });
+  title.appendChild(close);
+  title.appendChild(document.createTextNode("Job " + id));
+
+  let job, history;
+  try {
+    [job, history] = await Promise.all([
+      get("/v1/jobs/" + encodeURIComponent(id)),
+      get("/v1/jobs/" + encodeURIComponent(id) + "/attempts"),
+    ]);
+  } catch (error) {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = error.message;
+    body.appendChild(note);
+    return;
+  }
+
+  const facts = document.createElement("dl");
+  const fact = (name, value) => {
+    if (value === undefined || value === null || value === "") return;
+    const dt = document.createElement("dt");
+    dt.textContent = name;
+    const dd = document.createElement("dd");
+    dd.textContent = String(value);
+    facts.appendChild(dt);
+    facts.appendChild(dd);
+  };
+  fact("Type", job.type);
+  fact("Queue", job.queue);
+  fact("Status", job.status);
+  fact("Attempts", job.attempts + " of " + (job.max_retries + 1));
+  fact("Priority", job.priority);
+  fact("Created", new Date(job.created_at).toLocaleString());
+  fact("Runs at", new Date(job.run_at).toLocaleString());
+  fact("Held by", job.leased_by);
+  fact("Held since", job.leased_at ? new Date(job.leased_at).toLocaleString() : "");
+  fact("Waits for", (job.after || []).join(", "));
+  fact("Acted on by", job.acted_by);
+  fact("Idempotency key", job.idempotency_key);
+  fact("Last error", job.last_error);
+  body.appendChild(facts);
+
+  // The payload, which is the thing a person opening a job came for and the
+  // one field the listing can never show.
+  body.appendChild(heading("Payload"));
+  body.appendChild(pre(job.payload));
+  if (job.result !== undefined) {
+    body.appendChild(heading("Result"));
+    body.appendChild(pre(job.result));
+  }
+
+  body.appendChild(heading("What it did"));
+  const runs = history.attempts || [];
+  if (!runs.length) {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = "This job has not finished a run.";
+    body.appendChild(note);
+    return;
+  }
+
+  const table = document.createElement("table");
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const name of ["Run", "Worker", "Outcome", "Took", "Error"]) {
+    const th = document.createElement("th");
+    th.textContent = name;
+    headRow.appendChild(th);
+  }
+  head.appendChild(headRow);
+  table.appendChild(head);
+
+  const rows = document.createElement("tbody");
+  for (const run of runs) {
+    const row = document.createElement("tr");
+    cell(row, run.attempt);
+    cell(row, run.worker || "unknown");
+    cell(row, run.outcome, run.outcome === "done" ? "succeeded" : "dead");
+    cell(row, tookText(run));
+    const why = cell(row, run.error || "");
+    why.className = "why";
+    why.title = run.error || "";
+    rows.appendChild(row);
+  }
+  table.appendChild(rows);
+  body.appendChild(table);
+}
+
+// tookText gives how long a run lasted, or a dash when that is not known.
+//
+// A job leased by a build older than the history has no recorded start.
+// Measuring from the zero time would give every one of those rows the same
+// wrong answer, in decades, and it would look like a real number.
+function tookText(run) {
+  if (!run.started_at || !run.finished_at) return "-";
+  const ms = new Date(run.finished_at) - new Date(run.started_at);
+  if (ms < 1000) return ms + "ms";
+  return (ms / 1000).toFixed(3) + "s";
+}
+
+function heading(text) {
+  const h = document.createElement("h4");
+  h.textContent = text;
+  return h;
+}
+
+// pre renders a JSON value, formatted, as text and never as markup.
+//
+// The payload is chosen by whoever submits the job, so this is the value most
+// worth being careful with on the whole page.
+function pre(value) {
+  const block = document.createElement("pre");
+  block.textContent = JSON.stringify(value, null, 2);
+  return block;
+}
+
 async function load() {
   if (!store.getItem("quorra.key")) {
     say("enter the API key", true);
@@ -480,6 +665,12 @@ async function load() {
 
     renderJobs(rows);
     renderMore(rows.length, next);
+
+    // The open panel is drawn again with the rest. A job somebody is
+    // watching because it is stuck is the job whose status they are waiting
+    // to see change.
+    if (opened) await openJob(opened);
+
     say("updated " + new Date().toLocaleTimeString());
   } catch (error) {
     say(error.message, true);
