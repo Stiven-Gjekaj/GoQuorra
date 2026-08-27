@@ -971,7 +971,12 @@ outage worse.
 | `quorra_jobs_removed_total{status}` | counter | Jobs taken out by the retention sweep |
 | `quorra_queue_length{queue,status}` | gauge | Jobs in each queue, refreshed on a timer |
 | `quorra_job_lifetime_seconds{queue,status}` | histogram | Acceptance to final state, so the waiting and the retries are in it |
+| `quorra_jobs_finished_total{type,status}` | counter | Jobs that reached a final state, by job type |
+| `quorra_job_type_lifetime_seconds{type}` | histogram | The same measurement as the lifetime above, by job type |
+| `quorra_job_types_tracked` | gauge | Job types with a row of their own |
 | `quorra_http_request_duration_seconds` | histogram | Labelled by route pattern, not by path |
+| `quorra_grpc_request_duration_seconds{method,code}` | histogram | Calls on the worker protocol that answer once |
+| `quorra_grpc_streams_total{method,code}` | counter | Streams on the worker protocol that ended |
 
 `quorra_jobs_refused_total` is a part of `quorra_jobs_dead_total` and not a
 number beside it, so the two divide.
@@ -998,6 +1003,94 @@ configuration and not from a request, so it has as many values as the
 deployment has keys.
 A key that did not name itself is counted as `unknown`, because an empty
 label value reads as a fault in the exporter.
+
+### The job type label has a bound, and the others do not need one
+
+Which queue is failing is a question about how the work is arranged.
+Which type is failing is a question about the work.
+`quorra_jobs_finished_total` answers the second one.
+
+Job type is the first label here that a caller fills in.
+Every distinct value is a time series the metrics store keeps for as long as
+its retention says, so a caller that puts an identifier in a job type takes
+down the metrics store, and every dashboard with it, without meaning to.
+
+So fifty types keep a row of their own and everything after that is counted as
+`other`.
+Nothing is dropped and nothing undercounts: a sum over the label is still
+every job.
+Driven against a live server with sixty three types, the counter held fifty
+one rows, `quorra_job_types_tracked` read 50, `other` held 13, and the sum
+over the label was 90 against 68 dead and 22 succeeded.
+
+`quorra_job_types_tracked` sitting at fifty is how an operator finds out that
+`other` is holding more than it looks.
+
+A type that already has a row keeps it.
+Folding one into `other` partway through a day stops a series for no reason a
+reader of the dashboard can see.
+
+### The worker protocol is timed
+
+Every job is leased and reported over gRPC, and that whole path was untimed
+until `quorra_grpc_request_duration_seconds`.
+The HTTP histogram beside it has been published since the first release, so
+the one number an operator had covered the half of the traffic that does not
+run the work.
+
+Streams are counted rather than timed.
+A watch lives as long as the worker does, so the time it was open says how
+long the worker ran and not how fast this server is, and hours in the same
+histogram as a lease leaves the quantiles meaning nothing.
+
+A call the guard refused is timed like any other, because a refusal that took
+a second is worth seeing.
+Measured on a live server: 610 `Lease` calls at `OK` and 25 at
+`Unauthenticated`, 90 `Report` calls of which 88 answered inside 5ms, and 6
+`Watch` streams, 5 of them refused.
+
+---
+
+## Finding one request in the log
+
+Every answer carries an `X-Request-Id` header, and every line the server wrote
+while making that answer names it.
+
+```
+$ curl -si -X POST localhost:8080/v1/jobs -H 'X-API-Key: ...' -d '{"type":"echo"}'
+HTTP/1.1 201 Created
+X-Request-Id: 9acf4dc0-b82a-4995-a07d-2b3314b2847e
+```
+
+```
+{"msg":"job accepted","request":"9acf4dc0-...","job":"54bea554-...","type":"echo"}
+```
+
+A caller that sends its own identifier keeps it, so both sides quote one
+string.
+The same header works on the worker protocol, where it travels as gRPC
+metadata.
+
+What a caller sends is refused rather than trimmed: anything longer than 64
+characters, and anything outside printable ASCII.
+A log line is a line, so a value with a newline in it would write a line of
+the caller's own choosing into the log of the server.
+An identifier the server rewrote is worse than a fresh one, because it no
+longer matches what the caller kept and the caller does not know it changed.
+
+The job identifier is what joins one request to the next.
+The line that accepted a job names it, the line that leased it names it, and
+the line that reported on it names it:
+
+```
+{"msg":"job accepted","request":"trace-from-the-caller-1","job":"a7d0a242-..."}
+{"msg":"leased jobs","request":"c1a33fea-...","worker":"mailer-3","count":2,"jobs":["a7d0a242-...","54bea554-..."]}
+{"msg":"recorded a report","request":"ddcc6411-...","job":"54bea554-...","outcome":"done"}
+```
+
+The lease line said how many and never which until this release, so a reader
+with a job that went missing had the line that accepted it and the line that
+reported on it, and nothing in between.
 
 ---
 
