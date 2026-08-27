@@ -30,8 +30,8 @@ type Metrics struct {
 	dead      prometheus.Counter
 	refused   prometheus.Counter
 	reclaimed prometheus.Counter
-	cancelled prometheus.Counter
-	revived   prometheus.Counter
+	cancelled *prometheus.CounterVec
+	revived   *prometheus.CounterVec
 
 	removed     *prometheus.CounterVec
 	queueLength *prometheus.GaugeVec
@@ -97,14 +97,19 @@ func New() *Metrics {
 		// because both are a person acting. A rise in either says something
 		// about the operators rather than about the work, and mixing them
 		// into the job counters would hide that.
-		cancelled: prometheus.NewCounter(prometheus.CounterOpts{
+		//
+		// Labelled by the key that asked. The names come from the server
+		// configuration and not from a request, so the label has as many
+		// values as the deployment has keys, which is a number somebody
+		// chose. A label a caller fills in is the one that needs a bound.
+		cancelled: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "quorra_jobs_cancelled_total",
-			Help: "Jobs stopped by a person.",
-		}),
-		revived: prometheus.NewCounter(prometheus.CounterOpts{
+			Help: "Jobs stopped by a person, by the key that asked.",
+		}, []string{"caller"}),
+		revived: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "quorra_jobs_revived_total",
-			Help: "Jobs put back in the queue by a person.",
-		}),
+			Help: "Jobs put back in the queue by a person, by the key that asked.",
+		}, []string{"caller"}),
 
 		removed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "quorra_jobs_removed_total",
@@ -206,10 +211,22 @@ func (m *Metrics) JobFinished(job *store.Job, outcome jobs.Outcome, now time.Tim
 }
 
 // JobCancelled records a job stopped by a person.
-func (m *Metrics) JobCancelled() { m.cancelled.Inc() }
+func (m *Metrics) JobCancelled(caller string) { m.cancelled.WithLabelValues(callerName(caller)).Inc() }
 
 // JobRevived records a job put back in the queue by a person.
-func (m *Metrics) JobRevived() { m.revived.Inc() }
+func (m *Metrics) JobRevived(caller string) { m.revived.WithLabelValues(callerName(caller)).Inc() }
+
+// callerName gives a label value for a caller that did not name itself.
+//
+// An empty label value is legal and reads as a mistake in the exporter. A
+// word says that the queue knows there was a caller and does not know which
+// one, which is the true answer.
+func callerName(caller string) string {
+	if caller == "" {
+		return "unknown"
+	}
+	return caller
+}
 
 // JobsRemoved records jobs taken out by the retention sweep.
 //

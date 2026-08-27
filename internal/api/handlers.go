@@ -152,7 +152,7 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.opts.Metrics.JobCancelled()
+	a.opts.Metrics.JobCancelled(caller.Name)
 	a.log.Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
@@ -167,7 +167,7 @@ func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.opts.Metrics.JobRevived()
+	a.opts.Metrics.JobRevived(caller.Name)
 	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }

@@ -187,6 +187,45 @@ func TestCountersIgnoreNothingAndNegatives(t *testing.T) {
 	}
 }
 
+// A cancellation is counted against the key that asked for it.
+//
+// One number for the whole deployment says that somebody cancelled forty
+// jobs this morning. It does not say which team, and on a queue two teams
+// share that is the only part worth acting on.
+func TestCancellationsAreCountedByCaller(t *testing.T) {
+	m := New()
+
+	m.JobCancelled("ops")
+	m.JobCancelled("ops")
+	m.JobCancelled("billing")
+	m.JobRevived("ops")
+
+	page := gather(t, m)
+	for _, want := range []string{
+		`quorra_jobs_cancelled_total{caller="ops"} 2`,
+		`quorra_jobs_cancelled_total{caller="billing"} 1`,
+		`quorra_jobs_revived_total{caller="ops"} 1`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not hold %q", want)
+		}
+	}
+}
+
+// A caller with no name is counted as unknown and not as the empty string.
+//
+// An empty label value reads as a fault in the exporter. A word says that
+// the queue knows there was a caller and does not know which one.
+func TestACallerWithNoNameIsCountedAsUnknown(t *testing.T) {
+	m := New()
+	m.JobCancelled("")
+
+	page := gather(t, m)
+	if !strings.Contains(page, `quorra_jobs_cancelled_total{caller="unknown"} 1`) {
+		t.Errorf("the page does not name the unknown caller: %s", page)
+	}
+}
+
 func TestTheMetricsPageNamesEveryCounter(t *testing.T) {
 	m := New()
 
