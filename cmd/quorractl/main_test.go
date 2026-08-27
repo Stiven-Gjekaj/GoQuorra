@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
@@ -23,6 +25,16 @@ const key = "a-key-that-somebody-chose"
 // test author believed the API answers. This is the same handler the binary
 // talks to, so a route renamed on one side fails here.
 func serve(t *testing.T) []string {
+	t.Helper()
+	flags, _ := serveWithStore(t)
+	return flags
+}
+
+// serveWithStore also hands back the store behind the server.
+//
+// Leasing and reporting are the gRPC side, and this tool speaks only HTTP.
+// A test about what a job did has to make something happen to the job first.
+func serveWithStore(t *testing.T) ([]string, *memory.Store) {
 	t.Helper()
 
 	backing := memory.New(store.Options{})
@@ -38,7 +50,7 @@ func serve(t *testing.T) []string {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return []string{"-server", server.URL, "-key", key}
+	return []string{"-server", server.URL, "-key", key}, backing
 }
 
 // runCLI runs one command and gives back what it printed.
@@ -79,6 +91,74 @@ func TestCreateThenGet(t *testing.T) {
 		if !strings.Contains(shown, want) {
 			t.Errorf("get does not show %q:\n%s", want, shown)
 		}
+	}
+}
+
+// history shows one line for each run of a job.
+//
+// A table and not the JSON get prints. The question it answers is which
+// worker kept failing and whether it was getting slower, and that is read
+// down a column.
+func TestHistoryShowsOneLineForEachRun(t *testing.T) {
+	flags, backing := serveWithStore(t)
+	ctx := t.Context()
+
+	printed, _ := cli(t, flags, "create", "-type", "work")
+	id := strings.TrimSpace(printed)
+
+	// A job that has not run says so rather than printing an empty table.
+	nothing, err := cli(t, flags, "history", id)
+	if err != nil {
+		t.Fatalf("history of a job that has not run: %v", err)
+	}
+	if !strings.Contains(nothing, "has not finished a run") {
+		t.Errorf("history printed %q", nothing)
+	}
+
+	held, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "mailer-3", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 {
+		t.Fatalf("Lease: %v, %d jobs", err, len(held))
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: id, LeaseID: held[0].LeaseID,
+		Outcome: jobs.OutcomeFailed, Error: "upstream said no",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	got, err := cli(t, flags, "history", id)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	for _, want := range []string{"RUN", "WORKER", "mailer-3", "failed", "upstream said no"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("history printed %q, want it to hold %q", got, want)
+		}
+	}
+}
+
+// A run whose start is not known prints a dash and not a duration.
+//
+// A job leased by a build older than the history carries no start. Measuring
+// from the zero time would give every one of those rows the same wrong
+// answer, in years, and it would look like a real number.
+func TestARunWithNoKnownStartPrintsADash(t *testing.T) {
+	if got := took(nil, "2026-01-01T00:00:00Z"); got != "-" {
+		t.Errorf("a run with no start printed %q, want a dash", got)
+	}
+	if got := took("", "2026-01-01T00:00:00Z"); got != "-" {
+		t.Errorf("a run with an empty start printed %q, want a dash", got)
+	}
+	if got := took("2026-01-01T00:00:00Z", nil); got != "-" {
+		t.Errorf("a run with no end printed %q, want a dash", got)
+	}
+
+	// A run with both prints the difference, so the dash is not simply
+	// always the answer.
+	if got := took("2026-01-01T00:00:00Z", "2026-01-01T00:00:02Z"); got != "2s" {
+		t.Errorf("a two second run printed %q", got)
 	}
 }
 

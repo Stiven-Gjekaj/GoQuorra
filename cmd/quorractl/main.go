@@ -32,6 +32,7 @@ Commands:
   get       Show one job
   list      Show jobs, newest first, with optional filters
   queues    Count the jobs in each queue
+  history   Show what a job did, run by run
   cancel    Stop a job that has not finished
   revive    Put a dead or cancelled job back in the queue
   whoami    Show the name and the scope of the key in use
@@ -70,6 +71,8 @@ func run(args []string, out io.Writer) error {
 		return list(args[1:], out)
 	case "queues":
 		return queues(args[1:], out)
+	case "history":
+		return history(args[1:], out)
 	case "cancel":
 		return act(args[1:], out, "cancel", "cancelled")
 	case "revive":
@@ -281,6 +284,79 @@ func get(args []string, out io.Writer) error {
 		return err
 	}
 	return print(out, answer)
+}
+
+// history shows what a job did, run by run.
+//
+// A table and not the JSON that get prints. The question this answers is
+// "which worker kept failing, and was it getting slower", and that is read
+// down a column rather than out of a nested document.
+func history(args []string, out io.Writer) error {
+	set := flag.NewFlagSet("history", flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+	if set.NArg() != 1 {
+		set.Usage()
+		return errors.New("give exactly one job identifier")
+	}
+
+	id := set.Arg(0)
+	answer, err := c.send(context.Background(), http.MethodGet, "/v1/jobs/"+id+"/attempts", nil)
+	if err != nil {
+		return err
+	}
+
+	rows, _ := answer["attempts"].([]any)
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "This job has not finished a run.")
+		return nil
+	}
+
+	fmt.Fprintf(out, "%-4s %-20s %-10s %-10s %s\n", "RUN", "WORKER", "OUTCOME", "TOOK", "ERROR")
+	for _, row := range rows {
+		run, _ := row.(map[string]any)
+		worker, _ := run["worker"].(string)
+		if worker == "" {
+			worker = "unknown"
+		}
+		fmt.Fprintf(out, "%-4d %-20s %-10v %-10s %v\n",
+			number(run["attempt"]), worker, run["outcome"],
+			took(run["started_at"], run["finished_at"]),
+			run["error"])
+	}
+	return nil
+}
+
+// took gives how long a run lasted, or a dash when that is not known.
+//
+// A job leased by a build older than the history has no recorded start. A
+// dash says so. Printing a duration measured from the zero time would give
+// every one of those rows the same wrong answer, in years.
+func took(started, finished any) string {
+	from, ok := moment(started)
+	if !ok {
+		return "-"
+	}
+	to, ok := moment(finished)
+	if !ok {
+		return "-"
+	}
+	return to.Sub(from).Round(time.Millisecond).String()
+}
+
+// moment reads a time out of a decoded JSON document.
+func moment(value any) (time.Time, bool) {
+	text, ok := value.(string)
+	if !ok || text == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 // whoami says which key this shell holds.
