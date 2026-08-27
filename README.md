@@ -554,6 +554,38 @@ A dead one is evidence.
 
 ---
 
+### The dashboard
+
+At `/`, and it asks for the API key rather than carrying one.
+The key stays in the tab and is never written into the page or into a query
+string.
+
+| To do this | Press |
+| ---------- | ----- |
+| See only one status | A status button, including `blocked` and `ready` |
+| See past the first twenty five rows | `Show 25 more` |
+| Open one job, with its payload and every run of it | The identifier in its row |
+| Find a job from an identifier in a log line | The `Find` box |
+| Stop or revive a job | The buttons in its row |
+
+Opening a job is the only place the payload is shown.
+A listing cannot carry it: the payload of one job can be larger than a page of
+rows, and every row would have to carry one.
+
+The page asks the server every five seconds while it is being watched.
+A failure doubles the wait to a ceiling of a minute, six failures in a row
+stop it, and a tab that is hidden is asked for nothing.
+Correcting the key clears the wait and refreshes at once.
+Measured over the browser: with a wrong key, two requests in twenty one and a
+half seconds rather than eight.
+
+A job identifier never reaches the address bar.
+It would be kept in browser history and sent on in the `Referer` of anything
+the page fetched afterwards, which is the reason the key is not in a query
+string either.
+
+---
+
 ## Writing a worker
 
 A real worker is your program.
