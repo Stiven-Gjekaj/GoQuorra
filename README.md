@@ -744,6 +744,54 @@ belongs and return a reference to it.
 and `fail`. `fail` exists so that the retry schedule and the dead letter queue
 can be watched happening.
 
+### A side effect that happens once
+
+GoQuorra delivers at least once.
+A handler can finish its work and lose power before it reports, and the job is
+then given to another worker.
+That window is between the side effect and the acknowledgement of it, and no
+protocol removes it.
+
+For one case it can be made empty.
+A handler whose side effect is a write to the same PostgreSQL database the
+queue is in can do that write and record the outcome of the job in one
+transaction, so the two commit together or neither does.
+
+[`worker/pgtx`](worker/pgtx) is that API.
+
+```go
+runner, err := pgtx.New(pool)
+if err != nil {
+	return err
+}
+
+w.HandleResult("charge", runner.Handle(
+	func(ctx context.Context, tx pgx.Tx, job worker.Job) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO charges (job_id, amount) VALUES ($1, $2)`, job.ID, 1250)
+		return err
+	}))
+```
+
+The pool has to be the one the queue is in.
+A pool pointed at another database compiles, runs, and gives exactly the at
+least once behaviour this package exists to improve on, with no sign that it
+had.
+
+**It is not exactly once, and it must not be described as one.**
+A handler that calls another service, writes to another database, or sends an
+email has the same window it always had, and has to be written to survive
+running twice.
+
+Measured against a live server.
+Five jobs whose handler wrote its row and then failed once wrote ten rows
+through an ordinary handler, one for the failed attempt and one for the
+successful one, and five rows through a transaction one.
+
+It is its own package because a handler here takes a `pgx.Tx`.
+A consumer that only submits and runs jobs should not start compiling a
+database driver to do it.
+
 ---
 
 ## Submitting work
