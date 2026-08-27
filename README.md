@@ -715,15 +715,30 @@ Set them in `QUORRA_API_KEYS`, as a comma separated list of
 export QUORRA_API_KEYS="ops:write:$(openssl rand -hex 32),reports:read:$(openssl rand -hex 32)"
 ```
 
-The scope is `read` or `write`.
-A `read` key asks questions and changes nothing.
-A `write` key does both, because there is no action that writes without
-reading first.
+The scope is `read`, `write`, `worker` or `all`, or several joined by a plus.
+
+| Scope | May |
+| ----- | --- |
+| `read` | Ask questions and change nothing |
+| `write` | Everything `read` may, and submit, cancel and revive |
+| `worker` | Lease a job and report on it, over gRPC, and nothing else |
+| `all` | All three |
+
+`worker` is not more than `write` and it is not less.
+It is a different door.
+A key an operator keeps in a shell profile must not be able to lease the queue
+empty, and a worker must not be able to cancel anything, so the two do not
+contain each other.
+
 A key that may only read gets `403` from a route that changes a job, and not
 `401`: the key is real and the server knows whose it is, and `401` would send
 somebody to check a key that is working correctly.
+The worker protocol answers the same way, as `PermissionDenied` rather than
+`Unauthenticated`.
 
-`QUORRA_API_KEY` still works and means one key named `default` that may write.
+`QUORRA_API_KEY` still works and means one key named `default` that may do
+everything, because a deployment that sets one key is saying it does not want
+to divide anything yet.
 
 The name is what the server records against a cancel or a revive.
 Names tell services apart, not people.

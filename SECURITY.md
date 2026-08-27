@@ -47,15 +47,24 @@ A lookup compares every key rather than stopping at the first match, so the
 time it takes does not say which key was presented or how many exist.
 
 **A worker is trusted with the jobs it is given, and with nothing else.**
-The gRPC port has no authentication of its own today.
-A process that can reach it can lease jobs from any queue and report on the
-ones it holds.
-It cannot submit work, and it cannot report on a job it does not hold: a
-report carries a lease identifier, and the server refuses one that does not
-match, including an empty one.
-Do not expose the gRPC port outside the network the workers run in.
-[docs/milestones.md](docs/milestones.md) records what authenticating a worker
-would need.
+The gRPC port takes a key in the call metadata, and refuses every call
+without one.
+The key has to hold the `worker` scope, which no `read` or `write` key holds:
+a key an operator uses cannot lease the queue empty, and a worker cannot
+cancel anything.
+
+A worker still cannot submit work, and cannot report on a job it does not
+hold: a report carries a lease identifier, and the server refuses one that
+does not match, including an empty one.
+
+The transport is not authenticated.
+A key in the metadata is a bearer token, so anything that can read the
+connection can replay it.
+Run the gRPC port inside a network you control, or put TLS in front of it.
+Mutual TLS is not built, and
+[docs/milestones.md](docs/milestones.md) records what it would need that a
+key does not: a story for a worker whose certificate expires while it holds
+jobs.
 
 **A payload is stored as it arrives.**
 It is JSON in a column, readable by anybody with a database connection.
@@ -69,6 +78,8 @@ Do not put a secret in a payload.
   another key's name.
 - A way for a worker to report on a job it was not given, or to be given a job
   that another worker holds.
+- A way to lease a job with a key that does not hold the `worker` scope, or to
+  lease one with no key at all.
 - Anything that makes the dashboard run script from the content of a job. The
   job type and the queue name are chosen by whoever submits, and both are
   shown on that page.
@@ -86,7 +97,8 @@ Do not put a secret in a payload.
   decision, not a defect.
 - That a `write` key may cancel or revive a job in any queue. Scopes divide
   reading from writing and do not divide the queues.
-- That the gRPC port is unauthenticated. Named above.
+- That the gRPC port carries a bearer token over a connection you have not
+  put TLS in front of. Named above.
 - A denial of service that needs a `write` key. Somebody holding one can fill
   the queue, and that is what the key is for.
 - Findings from an automated scanner with no working demonstration.
