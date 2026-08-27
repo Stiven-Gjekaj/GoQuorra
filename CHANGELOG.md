@@ -71,6 +71,11 @@ safe to run twice.
   newline in it would write a line of the caller's own choosing into the log
   of the server.
 
+- **The smoke test could not read a counter that has labels.** It matched a
+  bare name against a bare series, so the day `quorra_jobs_cancelled_total`
+  gained a `caller` label it reported that a counter which had moved to 2 was
+  not published at all. The stack job in CI failed on that line for six
+  arcs of work, and the local checks never ran the script.
 - **A refused request leaves a line.** Info for a 4xx and Warn for a 5xx,
   naming the request, the route and the code. Refusals only: a queue answering
   normally is the normal case, and a line for each would bury the ones that
