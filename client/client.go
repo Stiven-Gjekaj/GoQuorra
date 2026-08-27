@@ -147,6 +147,13 @@ type Job struct {
 
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
+	// ActedBy and ActedAt name the key that last cancelled or revived the
+	// job, and when. Both are absent on a job nobody has acted on, and only
+	// cancel and revive set them: the queue leasing, retrying or burying a
+	// job is not a person acting.
+	ActedBy string     `json:"acted_by,omitempty"`
+	ActedAt *time.Time `json:"acted_at,omitempty"`
+
 	RunAt     time.Time `json:"run_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

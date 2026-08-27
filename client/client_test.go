@@ -154,6 +154,39 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// The job a cancel returns names the key that cancelled it.
+//
+// A producer that cancels its own work reads this back to confirm that the
+// action went down under the key it meant to use, rather than under one an
+// environment variable supplied.
+func TestACancelledJobNamesTheKeyThatStoppedIt(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	made, _ := c.Submit(ctx, client.NewJob{Type: "work"})
+	stopped, err := c.Cancel(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	if stopped.ActedBy != "test" {
+		t.Errorf("acted by = %q, want test, the name of the key the harness holds", stopped.ActedBy)
+	}
+	if stopped.ActedAt == nil {
+		t.Fatal("acted at is nil, so the name has no moment beside it")
+	}
+
+	// A job nobody has acted on carries neither.
+	fresh, _ := c.Submit(ctx, client.NewJob{Type: "work"})
+	read, err := c.Get(ctx, fresh.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if read.ActedBy != "" || read.ActedAt != nil {
+		t.Errorf("a fresh job claims %q acted on it at %v", read.ActedBy, read.ActedAt)
+	}
+}
+
 // A key sent twice gives back the first job. This is the reason the field
 // exists, and a producer that retries is the caller who needs it.
 func TestAKeyMakesASubmissionSafeToRepeat(t *testing.T) {
