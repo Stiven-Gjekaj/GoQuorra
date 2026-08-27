@@ -100,6 +100,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelJob)))
 	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveJob)))
 	mux.Handle("GET /v1/queues", a.guard(auth.Read, http.HandlerFunc(a.queueStats)))
+	mux.Handle("GET /v1/whoami", a.guard(auth.Read, http.HandlerFunc(a.whoami)))
 
 	return a.observe(mux)
 }

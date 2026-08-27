@@ -108,6 +108,23 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// whoami handles GET /v1/whoami.
+//
+// It answers the name and the scope of the key that asked, and nothing about
+// any other key. A caller holding a secret out of a configuration file has no
+// other way to find out which of several it holds, or whether it may write,
+// short of trying something that changes a job and reading the refusal.
+//
+// It needs only read, because a key that cannot change anything still has to
+// be able to ask what it is.
+func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
+	caller := callerOf(r.Context())
+	a.send(w, http.StatusOK, map[string]any{
+		"name":  caller.Name,
+		"scope": caller.Scope.String(),
+	})
+}
+
 func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 	job, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
 	if err != nil {

@@ -220,6 +220,41 @@ func TestAReadKeyCannotChangeAJob(t *testing.T) {
 	}
 }
 
+// A caller can ask which key it holds and what that key may do.
+//
+// Somebody holding a secret out of a configuration file has no other way to
+// find out which of several it is, or whether it may write, short of trying
+// something that changes a job and reading the refusal.
+func TestACallerCanAskWhichKeyItHolds(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "GET", "/v1/whoami", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET /v1/whoami = %d, body %s", got.Code, got.Body)
+	}
+
+	var who struct {
+		Name  string `json:"name"`
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &who); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if who.Name != "test" || who.Scope != "write" {
+		t.Errorf("the answer is %+v, want the test key", who)
+	}
+
+	// It says nothing about any other key, and never a secret.
+	if strings.Contains(got.Body.String(), key) {
+		t.Errorf("the answer carries the secret: %s", got.Body)
+	}
+
+	// And it needs a key like every other guarded route.
+	if anon := call(t, handler, "GET", "/v1/whoami", "", nil); anon.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v1/whoami with no key = %d, want 401", anon.Code)
+	}
+}
+
 // The health routes must not need a key. One that did would have to carry a
 // key in every load balancer and every container definition.
 func TestTheHealthRoutesArePublic(t *testing.T) {
