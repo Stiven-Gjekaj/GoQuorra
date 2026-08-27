@@ -368,6 +368,45 @@ puts the name and the moment on the cell.
 with, so an operator with two keys in a shell profile finds out at once that
 the action went down under the wrong one.
 
+### Running a job after another job
+
+A job may name jobs it waits for.
+It runs when every one of them has succeeded.
+
+```sh
+extract=$(quorractl create -type extract)
+load=$(quorractl create -type load -after "$extract" | head -1)
+quorractl create -type report -after "$load"
+```
+
+Three things had to be decided before a row could be written, and they are
+worth reading before using this.
+
+**A job that will never succeed cancels what waits for it**, and the reason
+names the job that stopped it.
+`cancelled` and not `dead`: `dead` means the job used every attempt it had,
+and a waiting job used none.
+A person who fixes the parent revives the child, which is a path they already
+know.
+Reviving the parent does not release the children on its own, because
+cancelled is a state a person leaves.
+
+**A cycle is impossible rather than refused.**
+A job may only wait for a job that already exists, because a caller has to
+name an identifier, and a job cannot be created before itself.
+There is no cycle check anywhere, and there is none to forget.
+
+**A revived job goes back to waiting when it still waits.**
+Sending it to `pending` would run it before the job it was submitted to
+follow, which is the one thing this exists to stop.
+A job whose parent is still dead cannot be revived until that parent is, and
+the refusal names it.
+
+The list is bounded at sixty four.
+Every job in it is read when the job is submitted and again whenever one of
+them ends, so an unbounded list is an unbounded amount of work on a path a
+caller controls.
+
 ### Submitting the same job twice
 
 A client that sends a job and does not see the answer cannot tell whether the
