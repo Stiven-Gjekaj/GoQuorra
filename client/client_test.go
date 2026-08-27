@@ -167,6 +167,55 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// A dead letter queue is cleared in one call.
+func TestAClientClearsADeadLetterQueueInOneCall(t *testing.T) {
+	c, backing := connectWithStore(t)
+	ctx := t.Context()
+
+	none := 0
+	for i := 0; i < 3; i++ {
+		made, err := c.Submit(ctx, client.NewJob{Type: "charge", MaxRetries: &none})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		held, err := backing.Lease(ctx, store.LeaseRequest{
+			Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+		})
+		if err != nil || len(held) != 1 {
+			t.Fatalf("Lease: %v, %d jobs", err, len(held))
+		}
+		if _, err := backing.Report(ctx, store.Report{
+			JobID: made.ID, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeFailed, Error: "no",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+	}
+
+	moved, err := c.ReviveMatching(ctx, client.Many{Status: "dead", Limit: 100})
+	if err != nil {
+		t.Fatalf("ReviveMatching: %v", err)
+	}
+	if moved != 3 {
+		t.Errorf("the revive moved %d jobs, want 3", moved)
+	}
+}
+
+// A bulk call with no limit is refused here rather than at the server.
+//
+// A mistake reported next to the call that made it is one somebody can fix.
+// Sending it and reading a 400 back tells them the same thing a round trip
+// later, and only if they are watching.
+func TestABulkCallNeedsALimit(t *testing.T) {
+	c := connect(t)
+
+	if _, err := c.CancelMatching(t.Context(), client.Many{Status: "dead"}); err == nil {
+		t.Error("a bulk call with no limit was sent")
+	}
+	if _, err := c.ReviveMatching(t.Context(), client.Many{Status: "dead", Limit: -1}); err == nil {
+		t.Error("a bulk call with a negative limit was sent")
+	}
+}
+
 // A producer can submit a job that follows another.
 //
 // The pipeline case: extract, then load, and the load must not run on a half

@@ -396,6 +396,61 @@ func (c *Client) Revive(ctx context.Context, id string) (*Job, error) {
 	return c.act(ctx, id, "revive")
 }
 
+// Many names the jobs a bulk action applies to.
+//
+// The same fields Filter takes, so a caller narrows a listing until it shows
+// what they mean and then sends the same narrowing here.
+type Many struct {
+	Queue  string
+	Status string
+	Type   string
+	Worker string
+
+	// Limit is required and bounds how many jobs the action moves. There is
+	// no default: a default would make the most dangerous call in this
+	// package the shortest one to write.
+	Limit int
+}
+
+// CancelMatching stops every job that Many names, and reports how many.
+//
+// A job it names that has already finished is skipped rather than refused. A
+// bulk action against a moving queue will always race something.
+func (c *Client) CancelMatching(ctx context.Context, m Many) (int, error) {
+	return c.actOnMany(ctx, "cancel", m)
+}
+
+// ReviveMatching puts back every job that Many names, and reports how many.
+//
+// The reason this exists. Recovering a dead letter queue after fixing what
+// broke is otherwise a loop that leaves the queue half done if it stops.
+func (c *Client) ReviveMatching(ctx context.Context, m Many) (int, error) {
+	return c.actOnMany(ctx, "revive", m)
+}
+
+func (c *Client) actOnMany(ctx context.Context, verb string, m Many) (int, error) {
+	if m.Limit < 1 {
+		return 0, errors.New("quorra: a bulk action needs a limit, which bounds how many jobs it moves")
+	}
+
+	body := map[string]any{"limit": m.Limit}
+	for name, value := range map[string]string{
+		"queue": m.Queue, "status": m.Status, "type": m.Type, "worker": m.Worker,
+	} {
+		if value != "" {
+			body[name] = value
+		}
+	}
+
+	var answer struct {
+		Moved int `json:"moved"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/v1/jobs/"+verb, body, &answer); err != nil {
+		return 0, err
+	}
+	return answer.Moved, nil
+}
+
 func (c *Client) act(ctx context.Context, id, verb string) (*Job, error) {
 	var job Job
 	if err := c.call(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/"+verb, nil, &job); err != nil {
