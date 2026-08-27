@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/pgtest"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/rpc"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
@@ -69,23 +69,12 @@ type rig struct {
 func harness(t *testing.T) rig {
 	t.Helper()
 
-	url := os.Getenv("QUORRA_TEST_DATABASE_URL")
-	if url == "" {
-		if os.Getenv("QUORRA_TEST_REQUIRE_POSTGRES") != "" {
-			t.Fatal("QUORRA_TEST_REQUIRE_POSTGRES is set and QUORRA_TEST_DATABASE_URL is not")
-		}
-		t.Skip("set QUORRA_TEST_DATABASE_URL to run these")
-	}
-
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("cannot reach the database: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := pgtest.Pool(t)
 
 	// The table a handler writes to, which stands for whatever a real one
-	// would write.
+	// would write. Made before the reset below, so that it is emptied along
+	// with everything else.
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS pgtx_side_effect (
 			job_id UUID PRIMARY KEY,
@@ -93,12 +82,7 @@ func harness(t *testing.T) rig {
 		)`); err != nil {
 		t.Fatalf("cannot make the side effect table: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `TRUNCATE pgtx_side_effect`); err != nil {
-		t.Fatalf("cannot empty the side effect table: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `TRUNCATE jobs RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("cannot empty the jobs table: %v", err)
-	}
+	pgtest.Reset(t, pool)
 
 	backing := postgres.NewWithPool(pool, store.Options{
 		Policy: jobs.Policy{MaxRetries: 2, Base: time.Millisecond, Max: time.Millisecond},
