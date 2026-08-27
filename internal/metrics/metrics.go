@@ -38,6 +38,11 @@ type Metrics struct {
 	queueLength *prometheus.GaugeVec
 	lifetime    *prometheus.HistogramVec
 	httpLatency *prometheus.HistogramVec
+
+	finished     *prometheus.CounterVec
+	typeLifetime *prometheus.HistogramVec
+	typesTracked prometheus.Gauge
+	types        *bounded
 }
 
 // New builds a set of metrics on a registry of its own.
@@ -149,12 +154,44 @@ func New() *Metrics {
 			Help:    "Time taken to answer an HTTP request.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route", "method", "code"}),
+
+		// By job type, which is the dimension the other counters do not
+		// have. Which queue is failing is a question about how the work is
+		// arranged, and which type is failing is a question about the work.
+		//
+		// A new counter rather than a type label on quorra_jobs_dead_total
+		// and the rest, for the reason written beside the refusal counter
+		// above: a label added to a counter makes every panel and alert that
+		// already reads it start summing over a dimension it does not know
+		// about.
+		finished: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "quorra_jobs_finished_total",
+			Help: "Jobs that reached a final state, by job type and status. A job that is retried is counted once, when it stops.",
+		}, []string{"type", "status"}),
+
+		// The same measurement as quorra_job_lifetime_seconds along a
+		// different axis, and not a second measurement. Queue, status and
+		// type on one histogram would multiply into a number of series
+		// nobody asked for, so the two axes are published apart and each one
+		// is a question somebody actually has.
+		typeLifetime: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "quorra_job_type_lifetime_seconds",
+			Help:    "Time from a job being accepted to it reaching a final state, by job type.",
+			Buckets: []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800, 7200},
+		}, []string{"type"}),
+
+		typesTracked: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "quorra_job_types_tracked",
+			Help: "Job types with a label value of their own. At the bound, every further type is counted as other.",
+		}),
 	}
+	m.types = newBounded(MostJobTypes, m.typesTracked)
 
 	registry.MustRegister(
 		m.created, m.leased, m.succeeded, m.retried, m.dead, m.refused, m.reclaimed,
 		m.cancelled, m.revived, m.fired, m.removed,
 		m.queueLength, m.lifetime, m.httpLatency,
+		m.finished, m.typeLifetime, m.typesTracked,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -219,8 +256,12 @@ func (m *Metrics) JobFinished(job *store.Job, outcome jobs.Outcome, now time.Tim
 		return
 	}
 
-	m.lifetime.WithLabelValues(job.Queue, job.Status.String()).
-		Observe(now.Sub(job.CreatedAt).Seconds())
+	lived := now.Sub(job.CreatedAt).Seconds()
+	m.lifetime.WithLabelValues(job.Queue, job.Status.String()).Observe(lived)
+
+	kind := m.types.label(job.Type)
+	m.finished.WithLabelValues(kind, job.Status.String()).Inc()
+	m.typeLifetime.WithLabelValues(kind).Observe(lived)
 }
 
 // JobCancelled records a job stopped by a person.

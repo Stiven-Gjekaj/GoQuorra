@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,16 @@ var now = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 func job(status jobs.Status, queue string, created time.Time) *store.Job {
 	return &store.Job{Status: status, Queue: queue, CreatedAt: created}
+}
+
+// typed is a job that succeeded, for the tests about the job type label.
+func typed(kind string) *store.Job {
+	return &store.Job{
+		Status:    jobs.Succeeded,
+		Queue:     "default",
+		Type:      kind,
+		CreatedAt: now.Add(-time.Second),
+	}
 }
 
 // Two sets of metrics can exist at once.
@@ -272,4 +283,89 @@ func gather(t *testing.T, m *Metrics) string {
 		t.Fatalf("the metrics page answered %d", recorder.Code)
 	}
 	return recorder.Body.String()
+}
+
+// A job type gets its own row until the bound, and then shares one.
+//
+// The type of a job is chosen by whoever submits it, so this is the first
+// label in the package that a caller fills in. Without a bound, a caller that
+// puts an identifier in a job type takes down the metrics store.
+func TestAJobTypeKeepsItsOwnRowUntilTheBound(t *testing.T) {
+	m := New()
+
+	for i := 0; i < MostJobTypes; i++ {
+		m.JobFinished(typed(fmt.Sprintf("type-%d", i)), jobs.OutcomeDone, now)
+	}
+	m.JobFinished(typed("one-too-many"), jobs.OutcomeDone, now)
+	m.JobFinished(typed("another-too-many"), jobs.OutcomeDone, now)
+
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("type-0", "succeeded")); got != 1 {
+		t.Errorf("the first type counts %v, want its own row", got)
+	}
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("one-too-many", "succeeded")); got != 0 {
+		t.Errorf("a type past the bound has a row of its own, counting %v", got)
+	}
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("other", "succeeded")); got != 2 {
+		t.Errorf("other counts %v, want both of the types past the bound", got)
+	}
+	if got := testutil.ToFloat64(m.typesTracked); got != MostJobTypes {
+		t.Errorf("quorra_job_types_tracked says %v, want the bound", got)
+	}
+}
+
+// A type that already has a row keeps it after the bound is reached.
+//
+// Folding a type that has its own series into "other" partway through a day
+// stops that series for no reason a reader of the dashboard can see.
+func TestATypeThatHasARowKeepsIt(t *testing.T) {
+	m := New()
+
+	m.JobFinished(typed("charge"), jobs.OutcomeDone, now)
+	for i := 0; i < MostJobTypes*2; i++ {
+		m.JobFinished(typed(fmt.Sprintf("filler-%d", i)), jobs.OutcomeDone, now)
+	}
+	m.JobFinished(typed("charge"), jobs.OutcomeDone, now)
+
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("charge", "succeeded")); got != 2 {
+		t.Errorf("charge counts %v, want both of its jobs", got)
+	}
+}
+
+// A job with no type is counted as unknown and not as an empty label.
+//
+// An empty label value is legal and reads as a mistake in the exporter.
+func TestAJobWithNoTypeIsCountedAsUnknown(t *testing.T) {
+	m := New()
+
+	m.JobFinished(typed(""), jobs.OutcomeDone, now)
+
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("unknown", "succeeded")); got != 1 {
+		t.Errorf("a job with no type counts %v under unknown", got)
+	}
+	if got := testutil.ToFloat64(m.typesTracked); got != 0 {
+		t.Errorf("an empty type took one of the %d places", MostJobTypes)
+	}
+}
+
+// A retried job is counted once, when it stops.
+//
+// quorra_jobs_finished_total answers which type is failing, and a type whose
+// jobs each retry twice before succeeding would otherwise read as three times
+// the work.
+func TestAFinishedJobIsCountedOnceAndARetryIsNotCounted(t *testing.T) {
+	m := New()
+
+	m.JobFinished(typed("charge"), jobs.OutcomeFailed, now)
+	m.JobFinished(typed("charge"), jobs.OutcomeFailed, now)
+
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("charge", "pending")); got != 0 {
+		t.Errorf("a retry was counted as finished, %v times", got)
+	}
+
+	dead := &store.Job{Status: jobs.Dead, Queue: "default", Type: "charge", CreatedAt: now.Add(-time.Minute)}
+	m.JobFinished(dead, jobs.OutcomeFailed, now)
+
+	if got := testutil.ToFloat64(m.finished.WithLabelValues("charge", "dead")); got != 1 {
+		t.Errorf("the job that stopped counts %v, want one", got)
+	}
 }
