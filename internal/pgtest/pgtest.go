@@ -15,6 +15,19 @@
 // a flag on the go test command: a flag helps only the command that carries
 // it, and CI runs go test directly, as does anybody who takes the URL out of
 // the Makefile and runs a package by hand.
+//
+// # The database named here is emptied
+//
+// Reset truncates every table in the public schema, and the suites call it
+// between cases. So QUORRA_TEST_DATABASE_URL must name a database nothing
+// else is using. The lock holds the suites apart from each other and can do
+// nothing about a server: a quorra-server pointed at the same database goes
+// on reclaiming expired leases while the tests run, and its sweep lands in
+// the middle of a case about a lease.
+//
+// That is not a worry either. It happened twice in one afternoon, once with
+// leftover workers taking the jobs a test had just made, and once with a
+// reclaimer moving a job a test was watching.
 package pgtest
 
 import (
