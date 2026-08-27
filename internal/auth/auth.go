@@ -21,47 +21,107 @@ import (
 )
 
 // Scope is what a key may do.
-type Scope int
+//
+// A set of bits and not a number on a line. The first version was ordered,
+// read below write, and the comparison was a greater than. That works while
+// every permission is more of the same thing, and it stops working the moment
+// one of them is a different thing: leasing work off the queue is not more
+// than changing a job, it is a different door, and a key for an operator's
+// shell must not open it.
+type Scope uint8
 
 const (
-	// Read allows every route that only reads. It is the smaller of the two,
-	// so it is the zero value: a key built without a scope can look and
-	// cannot touch.
-	Read Scope = iota
+	// Read allows every route that only reads.
+	Read Scope = 1 << iota
 
-	// Write allows everything Read allows, and everything that changes a job.
-	Write
+	// Change allows everything that changes a job over HTTP: submitting,
+	// cancelling and reviving.
+	Change
+
+	// Work allows leasing a job and reporting on it, which is the worker
+	// protocol and nothing else.
+	//
+	// Separate from Change on purpose. A key that an operator keeps in a
+	// shell profile to cancel a job must not be able to lease the queue
+	// empty, and a worker must not be able to cancel anything.
+	Work
 )
 
-// ParseScope reads a scope from configuration.
-func ParseScope(text string) (Scope, error) {
-	switch strings.ToLower(strings.TrimSpace(text)) {
-	case "read":
-		return Read, nil
-	case "write":
-		return Write, nil
-	default:
-		return Read, fmt.Errorf("auth: %q is not a scope, and it must be read or write", text)
-	}
-}
-
-func (s Scope) String() string {
-	switch s {
-	case Read:
-		return "read"
-	case Write:
-		return "write"
-	default:
-		return fmt.Sprintf("Scope(%d)", int(s))
-	}
-}
-
-// Allows says whether this scope covers the one asked for.
+// Write is what a key marked "write" holds: reading and changing.
 //
-// Write covers Read. A caller who may change a job may also look at one, and
-// a deployment that had to hand out two keys for that would end up handing
-// out the larger one twice.
-func (s Scope) Allows(wanted Scope) bool { return s >= wanted }
+// A caller who may change a job may also look at one, and a deployment that
+// had to hand out two keys for that would end up handing out the larger one
+// twice. It does not include Work, which is the whole point of the split.
+const Write = Read | Change
+
+// Worker is what a key marked "worker" holds.
+//
+// Work alone. A worker is given jobs and reports on them, and it has no
+// reason to read the listing or to cancel anything.
+const Worker = Work
+
+// Everything is every permission there is.
+//
+// The short form of the configuration grants it, because a deployment that
+// sets one key is saying it does not want to divide anything yet.
+const Everything = Read | Change | Work
+
+// ParseScope reads a scope from configuration.
+//
+// A name, or several joined by a plus. "write+worker" is the one that comes
+// up: a small deployment that wants one key for its tools and its workers
+// without giving that key to a third thing.
+func ParseScope(text string) (Scope, error) {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return 0, fmt.Errorf("auth: a key needs a scope, and it must be read, write, worker or all")
+	}
+
+	var scope Scope
+	for _, part := range strings.Split(text, "+") {
+		switch strings.TrimSpace(part) {
+		case "read":
+			scope |= Read
+		case "write":
+			scope |= Write
+		case "worker":
+			scope |= Worker
+		case "all":
+			scope |= Everything
+		default:
+			return 0, fmt.Errorf(
+				"auth: %q is not a scope, and it must be read, write, worker or all, or several joined by a plus", text)
+		}
+	}
+	return scope, nil
+}
+
+// String names the scope the way configuration writes it.
+func (s Scope) String() string {
+	if s == Everything {
+		return "all"
+	}
+
+	var parts []string
+	if s&Change != 0 {
+		parts = append(parts, "write")
+	} else if s&Read != 0 {
+		parts = append(parts, "read")
+	}
+	if s&Work != 0 {
+		parts = append(parts, "worker")
+	}
+	if len(parts) == 0 {
+		return "nothing"
+	}
+	return strings.Join(parts, "+")
+}
+
+// Allows says whether this key holds every permission asked for.
+//
+// Every one and not any one. A route that needed two would otherwise be open
+// to a key that held either.
+func (s Scope) Allows(wanted Scope) bool { return wanted != 0 && s&wanted == wanted }
 
 // Key is one caller.
 type Key struct {
@@ -84,6 +144,9 @@ func NewKey(name string, scope Scope, secret string) (Key, error) {
 	}
 	if strings.ContainsAny(name, ":,") {
 		return Key{}, fmt.Errorf("auth: the key name %q holds a colon or a comma, which separate the fields", name)
+	}
+	if scope == 0 {
+		return Key{}, fmt.Errorf("auth: the key %q has no scope, so it could do nothing", name)
 	}
 	if secret == "" {
 		return Key{}, fmt.Errorf("auth: the key %q has no secret", name)

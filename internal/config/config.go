@@ -293,14 +293,20 @@ func (l *loader) required(key string) string {
 // keys reads a set of named keys, and falls back to the single key that came
 // before them.
 //
-// The old variable still works and means one key named "default" that may
-// write. A deployment upgrading into this change should not have to edit its
-// configuration to keep running, and a deployment that never wants more than
-// one key should not have to learn a format to say so.
+// The old variable still works and means one key named "default" that may do
+// everything: read, change a job, and lease one. A deployment upgrading into
+// this change should not have to edit its configuration to keep running, and
+// a deployment that sets one key is saying it does not want to divide
+// anything yet.
 //
 // The many key form is name:scope:secret, separated by commas:
 //
-//	QUORRA_API_KEYS=ops:write:<secret>,dashboard:read:<secret>
+//	QUORRA_API_KEYS=ops:write:<secret>,dashboard:read:<secret>,fleet:worker:<secret>
+//
+// The scope is read, write, worker or all, or several joined by a plus. A
+// worker key leases jobs and reports on them and does nothing else: an
+// operator's key must not be able to lease the queue empty, and a worker must
+// not be able to cancel anything.
 //
 // A secret holding a comma or a colon cannot be written this way, and the
 // error says so rather than silently taking the part before the separator.
@@ -313,7 +319,7 @@ func (l *loader) keys(many, one string) *auth.Set {
 				"config: %s or %s must be set. Generate a secret rather than typing one: openssl rand -hex 32", many, one))
 			return nil
 		}
-		key, err := auth.NewKey("default", auth.Write, single)
+		key, err := auth.NewKey("default", auth.Everything, single)
 		if err != nil {
 			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", one, err))
 			return nil

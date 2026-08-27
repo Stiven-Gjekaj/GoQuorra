@@ -73,14 +73,77 @@ func TestWriteCoversRead(t *testing.T) {
 	}
 }
 
-// The smaller scope is the zero value.
+// The zero scope allows nothing at all.
 //
-// A key built by a future caller that forgets to set the scope can look and
-// cannot touch. The other way round, a forgotten field hands out everything.
-func TestTheZeroScopeIsTheSmallerOne(t *testing.T) {
+// It used to be Read, because the scopes were an ordered number and the
+// smallest one had to be the zero value. A set of bits does better: a key
+// built by a caller that forgets the field can do nothing, rather than being
+// able to read every job in the queue.
+func TestTheZeroScopeAllowsNothing(t *testing.T) {
 	var scope Scope
-	if scope != Read {
-		t.Errorf("the zero scope is %s, want read", scope)
+
+	for _, wanted := range []Scope{Read, Change, Work, Write, Worker, Everything} {
+		if scope.Allows(wanted) {
+			t.Errorf("the zero scope allows %s", wanted)
+		}
+	}
+
+	// And a key that could do nothing is refused where it is built, rather
+	// than being one that silently answers no to everything.
+	if _, err := NewKey("nothing", 0, secret); err == nil {
+		t.Error("a key with no scope was built")
+	}
+}
+
+// The three permissions are three doors and not one line.
+//
+// The first version was ordered, read below write, and the comparison was a
+// greater than. Leasing work off the queue is not more than changing a job:
+// a key an operator keeps in a shell profile must not be able to lease the
+// queue empty, and a worker must not be able to cancel anything.
+func TestWorkIsNotSomethingAWriteKeyHolds(t *testing.T) {
+	if Write.Allows(Work) {
+		t.Error("a write key can lease jobs, so an operator's key can drain the queue")
+	}
+	if Worker.Allows(Change) {
+		t.Error("a worker key can change a job")
+	}
+	if Worker.Allows(Read) {
+		t.Error("a worker key can read the listing")
+	}
+
+	// And the combinations do what their names say.
+	if !Write.Allows(Read) {
+		t.Error("a write key cannot read, and a deployment would hand out two")
+	}
+	if !Everything.Allows(Read) || !Everything.Allows(Change) || !Everything.Allows(Work) {
+		t.Error("the everything scope is missing one of the three")
+	}
+}
+
+// A scope survives being written down and read back.
+func TestAScopeSurvivesBeingWrittenDownAndReadBack(t *testing.T) {
+	for _, want := range []Scope{Read, Write, Worker, Everything, Write | Worker} {
+		got, err := ParseScope(want.String())
+		if err != nil {
+			t.Fatalf("ParseScope(%q): %v", want.String(), err)
+		}
+		if got != want {
+			t.Errorf("%s came back as %s", want, got)
+		}
+	}
+
+	// Several joined by a plus, which is the form a small deployment writes.
+	got, err := ParseScope("write+worker")
+	if err != nil || got != Write|Worker {
+		t.Errorf(`ParseScope("write+worker") = %s, %v`, got, err)
+	}
+
+	// A name the package does not know is refused rather than read as read.
+	for _, text := range []string{"", "admin", "read+admin", "readwrite"} {
+		if _, err := ParseScope(text); err == nil {
+			t.Errorf("ParseScope(%q) was accepted", text)
+		}
 	}
 }
 

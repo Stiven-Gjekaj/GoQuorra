@@ -133,8 +133,13 @@ func TestTheSingleKeyVariableStillWorks(t *testing.T) {
 	if got.Name != "default" {
 		t.Errorf("the key is named %q, want default", got.Name)
 	}
-	if got.Scope != auth.Write {
-		t.Errorf("the key has scope %s, want write, or an upgrade loses the ability to submit", got.Scope)
+	// Everything, so that a deployment upgrading into the split does not lose
+	// anything it could do before. It could submit, and its workers could
+	// lease, and both of those still work from this one key.
+	for _, wanted := range []auth.Scope{auth.Read, auth.Write, auth.Worker} {
+		if !got.Scope.Allows(wanted) {
+			t.Errorf("the key may not %s, and an upgrade loses what it could do before", wanted)
+		}
 	}
 }
 
