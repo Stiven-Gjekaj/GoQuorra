@@ -150,6 +150,11 @@ type Worker struct {
 	conn   *grpc.ClientConn
 	client quorrapb.QueueServiceClient
 
+	// hints carries a note that a queue may have work, one channel per
+	// queue. Built once at start up and never written after, so it needs no
+	// lock: the watch goroutine sends and the poll goroutines receive.
+	hints map[string]chan struct{}
+
 	mu       sync.RWMutex
 	handlers map[string]ResultFunc
 
@@ -186,12 +191,20 @@ func New(cfg Config) (*Worker, error) {
 		return nil, fmt.Errorf("worker: cannot reach %s: %w", cfg.ServerAddr, err)
 	}
 
+	// One buffered slot for each queue. A hint says the queue may have work,
+	// and a second before the first is read says nothing new.
+	hints := make(map[string]chan struct{}, len(cfg.Queues))
+	for _, queue := range cfg.Queues {
+		hints[queue] = make(chan struct{}, 1)
+	}
+
 	return &Worker{
 		cfg:      cfg,
 		log:      cfg.Logger.With("worker", cfg.ID),
 		conn:     conn,
 		client:   quorrapb.NewQueueServiceClient(conn),
 		handlers: make(map[string]ResultFunc),
+		hints:    hints,
 	}, nil
 }
 
@@ -245,6 +258,15 @@ func (w *Worker) Run(ctx context.Context) error {
 		"lease", w.cfg.LeaseTTL)
 
 	var pollers sync.WaitGroup
+
+	// One stream for every queue this worker serves, beside the polls rather
+	// than instead of them. The polls are what make this correct.
+	pollers.Add(1)
+	go func() {
+		defer pollers.Done()
+		w.watch(ctx)
+	}()
+
 	for _, queue := range w.cfg.Queues {
 		pollers.Add(1)
 		go func(queue string) {
@@ -306,10 +328,98 @@ func (w *Worker) poll(ctx context.Context, queue string) {
 			continue
 		}
 
+		// Whichever comes first: a hint that the queue has work, or the
+		// poll. The poll is what makes this correct, and the hint is what
+		// makes it quick.
+		//
+		// A hint that is lost costs one poll interval. That is the whole
+		// reason the hint is allowed to be lost, and why nothing here treats
+		// a missing one as a fault.
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.hintFor(queue):
+			log.Debug("told that this queue may have work")
 		case <-time.After(w.cfg.PollEvery):
+		}
+	}
+}
+
+// hintFor gives the channel that carries hints for one queue.
+//
+// A channel per queue, filled by one watch stream. The alternative was a
+// stream per queue, which is one connection per queue per worker and buys
+// nothing: the server sends the queue name, so one stream can serve them all.
+//
+// A queue the worker does not serve gives a nil channel, and a receive on nil
+// blocks for ever, which is right: the poll beside it is what wakes the loop.
+func (w *Worker) hintFor(queue string) chan struct{} {
+	return w.hints[queue]
+}
+
+// watch holds the stream that carries hints, and opens it again when it ends.
+//
+// It is a hint and never a promise, so every failure here is at debug and
+// nothing stops. A worker whose watch never connects polls exactly as it did
+// before this existed.
+func (w *Worker) watch(ctx context.Context) {
+	wait := time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		err := w.watchOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			w.log.Debug("the watch for work ended, and the worker is polling", "error", err)
+		}
+
+		// A backoff, up to the poll interval. There is no point retrying a
+		// watch more often than the poll it exists to shorten.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		if wait < w.cfg.PollEvery {
+			wait *= 2
+		}
+	}
+}
+
+// watchOnce holds one stream open until it ends.
+func (w *Worker) watchOnce(ctx context.Context) error {
+	stream, err := w.client.Watch(ctx, &quorrapb.WatchRequest{
+		WorkerId: w.cfg.ID,
+		Queues:   w.cfg.Queues,
+	})
+	if err != nil {
+		return err
+	}
+
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+
+		// Dropped rather than blocked on when the channel is full. The queue
+		// already has a hint waiting, and a second one says nothing new.
+		to := w.hintFor(event.GetQueue())
+		if to == nil {
+			// A queue this worker does not serve. The server filters, so
+			// this only happens to a worker whose configuration changed
+			// under a stream it had already opened.
+			continue
+		}
+		select {
+		case to <- struct{}{}:
+		default:
+			// Already one waiting. A second says nothing new.
 		}
 	}
 }

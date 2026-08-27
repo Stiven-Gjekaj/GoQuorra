@@ -139,6 +139,70 @@ func TestOnlyAWorkerKeyMayLease(t *testing.T) {
 	}
 }
 
+// Watching needs at least one queue, and not more than the bound.
+//
+// Empty is refused rather than read as "all of them": a worker that watched
+// every queue would be woken by work it cannot take, and a caller that meant
+// to name one and sent none should hear about it.
+func TestWatchingNeedsQueuesAndIsBounded(t *testing.T) {
+	c := guarded(t)
+
+	var many []string
+	for i := 0; i < rpc.MostWatchedQueues+1; i++ {
+		many = append(many, "queue-"+string(rune('a'+i)))
+	}
+
+	cases := map[string][]string{
+		"no queues at all":  nil,
+		"only empty names":  {"", "  "},
+		"more than allowed": many,
+	}
+	for name, queues := range cases {
+		// A deadline, because the answer to this is a refusal and the
+		// failure is a stream that stays open. Without one, a build that
+		// stopped refusing would hang the suite rather than fail it.
+		ctx, stop := context.WithTimeout(withSecret(fleetSecret), 3*time.Second)
+
+		stream, err := c.Watch(ctx, &quorrapb.WatchRequest{WorkerId: "w1", Queues: queues})
+		if err == nil {
+			_, err = stream.Recv()
+		}
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("watching with %s gave %v, want InvalidArgument", name, err)
+		}
+		stop()
+	}
+}
+
+// Watching is guarded like every other call on this protocol.
+//
+// It is the streaming one, and a guard on the unary calls alone is a door
+// beside an open window.
+func TestWatchingIsGuarded(t *testing.T) {
+	c := guarded(t)
+
+	stream, err := c.Watch(context.Background(), &quorrapb.WatchRequest{
+		WorkerId: "w1", Queues: []string{"default"},
+	})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Errorf("watching with no key gave %v, want Unauthenticated", err)
+	}
+
+	// An operator's key is refused too, for the same reason it cannot lease.
+	stream, err = c.Watch(withSecret(operatorSecret), &quorrapb.WatchRequest{
+		WorkerId: "w1", Queues: []string{"default"},
+	})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("watching with an operator key gave %v, want PermissionDenied", err)
+	}
+}
+
 // Every call is guarded, and not only the first one somebody thought of.
 func TestEveryCallOnTheWorkerProtocolIsGuarded(t *testing.T) {
 	c := guarded(t)

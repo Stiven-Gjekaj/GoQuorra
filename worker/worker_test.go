@@ -121,6 +121,56 @@ func waitFor(t *testing.T, why string, check func() bool) {
 	t.Fatalf("timed out waiting for %s", why)
 }
 
+// A job reaches a worker without waiting out its poll.
+//
+// The poll here is deliberately long. If the job only arrived when the poll
+// came round, this test would take that long or time out, so the measurement
+// is the test rather than a number beside it.
+func TestAJobReachesAWorkerWithoutWaitingOutThePoll(t *testing.T) {
+	backing, dial := serve(t)
+
+	w, err := worker.New(worker.Config{
+		ID:            "watching",
+		ServerAddr:    "passthrough:///bufnet",
+		Queues:        []string{"default"},
+		MaxJobs:       5,
+		LeaseTTL:      30 * time.Second,
+		PollEvery:     30 * time.Second,
+		ShutdownGrace: 5 * time.Second,
+		APIKey:        workerKey,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialOptions:   dial,
+	})
+	if err != nil {
+		t.Fatalf("worker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	ran := make(chan struct{}, 1)
+	w.Handle("quick", func(context.Context, worker.Job) error {
+		ran <- struct{}{}
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = w.Run(ctx) }()
+
+	// The first poll goes out at once and finds nothing, and the worker then
+	// waits thirty seconds. Give it long enough to get there.
+	time.Sleep(500 * time.Millisecond)
+
+	if _, _, err := backing.Create(context.Background(), store.NewJob{Type: "quick"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job waited out the poll, so nothing told the worker about it")
+	}
+}
+
 func TestAHandlerRunsTheJobItIsRegisteredFor(t *testing.T) {
 	backing, dial := serve(t)
 	w := newWorker(t, dial)
