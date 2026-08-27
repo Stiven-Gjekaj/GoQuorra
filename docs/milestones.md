@@ -257,14 +257,23 @@ run twice.
 Every file in `migrations/` is applied in name order, and each is written to
 be safe to apply twice. There is no table recording what has run.
 
-That works while every change is additive, which all four are so far. The
-first change that is not, a column being dropped or a type being altered,
-needs a real migration tool, because "safe to apply twice" stops being
-achievable by writing IF NOT EXISTS.
+This entry said that works while every change is additive, and named the first
+change that is not as the trigger. That wording was looser than the scheme
+needs, and `migrations/0002_cancel.sql` already showed it: that file drops a
+check constraint and writes it again, which is not additive, and it is fine
+because both statements are safe to apply twice.
 
-**What would change the answer.** The first destructive change. Do not reach
-for a tool before then: the list is three functions and a test, and a
-migration framework is a dependency, a state table and a failure mode.
+The property the scheme depends on is repeatability, not additivity. So the
+real trigger is a change that cannot be made repeatable: a column dropped
+while live code still reads it, or a backfill that does something different
+the second time. There are ten files now, six of them added after this entry
+was written, and none of them reaches that line: they add tables and columns
+and touch no existing value.
+
+**What would change the answer.** The first change that cannot be written to
+be safe to apply twice. Do not reach for a tool before then: the list is three
+functions and a test, and a migration framework is a dependency, a state table
+and a failure mode.
 
 ### A cursor on a time alone is wrong, and passes a careless test
 
@@ -390,7 +399,13 @@ serve the punishment for them.
 The request was made, and the entry that recorded the cost is what made it
 easy to say yes to.
 
-### Why the state machine has four states and not six
+### Why `processing` and `failed` are not states
+
+This entry was headed "why the state machine has four states and not six",
+which was true when it was written and is not now: `cancelled` and `blocked`
+arrived afterwards and there are six. The count was never the point, and a
+heading that carries one goes stale every time a state is added. The reasoning
+is about two particular names.
 
 `processing` and `failed` were both documented and neither was ever written by
 any code.
