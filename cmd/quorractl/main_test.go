@@ -94,6 +94,56 @@ func TestCreateThenGet(t *testing.T) {
 	}
 }
 
+// A job can be submitted to follow another.
+func TestCreateCanNameTheJobsToWaitFor(t *testing.T) {
+	flags, backing := serveWithStore(t)
+	ctx := t.Context()
+
+	printed, _ := cli(t, flags, "create", "-type", "extract")
+	first := strings.TrimSpace(printed)
+
+	second, err := cli(t, flags, "create", "-type", "load", "-after", first)
+	if err != nil {
+		t.Fatalf("create with -after: %v", err)
+	}
+	if !strings.Contains(second, "waits for") {
+		t.Errorf("create printed %q, and it does not say the job is waiting", second)
+	}
+
+	// The identifier is still alone on the first line, because a shell reads
+	// it with a pipe.
+	id := strings.TrimSpace(strings.Split(second, "\n")[0])
+	stored, err := backing.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("the first line is not a job identifier: %v", err)
+	}
+	if stored.Status != jobs.Blocked {
+		t.Errorf("the job is %q, want blocked", stored.Status)
+	}
+}
+
+// A list with empty pieces sends no empty identifier.
+//
+// A trailing comma, or a shell that expanded an empty variable, would send
+// one, and the server answers that no such job exists, which reads as a
+// mistake somebody made rather than one they did not.
+func TestAnAfterListIgnoresTheEmptyPieces(t *testing.T) {
+	cases := map[string]int{
+		"":            0,
+		",":           0,
+		"  ":          0,
+		"a":           1,
+		"a,":          1,
+		"a, b":        2,
+		" a , b , ,c": 3,
+	}
+	for text, want := range cases {
+		if got := identifiers(text); len(got) != want {
+			t.Errorf("identifiers(%q) = %v, want %d of them", text, got, want)
+		}
+	}
+}
+
 // workers shows what the queue has heard from.
 //
 // The answer to "is anything out there", which no other command gives.

@@ -234,6 +234,7 @@ func create(args []string, out io.Writer) error {
 	priority := set.Int("priority", 0, "higher runs first")
 	delay := set.Int("delay", 0, "seconds to wait before the job is ready")
 	retries := set.Int("retries", -1, "retries after the first attempt, or -1 for the server default")
+	after := set.String("after", "", "run only after these jobs succeed, as a comma separated list of identifiers")
 
 	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
@@ -261,6 +262,9 @@ func create(args []string, out io.Writer) error {
 	if *retries >= 0 {
 		request["max_retries"] = *retries
 	}
+	if waits := identifiers(*after); len(waits) > 0 {
+		request["after"] = waits
+	}
 
 	answer, err := c.send(context.Background(), http.MethodPost, "/v1/jobs", request)
 	if err != nil {
@@ -268,7 +272,30 @@ func create(args []string, out io.Writer) error {
 	}
 
 	fmt.Fprintf(out, "%v\n", answer["id"])
+
+	// A job that is waiting says so on a second line. The identifier stays
+	// alone on the first, because a shell reads it with a pipe and a line
+	// that grew a second word would break every one of those.
+	if status, _ := answer["status"].(string); status == "blocked" {
+		fmt.Fprintf(out, "It waits for %d job(s) and is not queued yet.\n", len(identifiers(*after)))
+	}
 	return nil
+}
+
+// identifiers splits a comma separated list and drops the empty pieces.
+//
+// A trailing comma, or a shell that expanded an empty variable, would
+// otherwise send an empty identifier, and the server answers that no such job
+// exists, which reads as a mistake somebody made rather than one they did
+// not.
+func identifiers(text string) []string {
+	var out []string
+	for _, piece := range strings.Split(text, ",") {
+		if trimmed := strings.TrimSpace(piece); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func get(args []string, out io.Writer) error {
@@ -431,7 +458,7 @@ func list(args []string, out io.Writer) error {
 	c := common(set)
 	limit := set.Int("limit", 20, "how many jobs to show at once")
 	queue := set.String("queue", "", "only this queue")
-	status := set.String("status", "", "only this status: pending, leased, succeeded, dead or cancelled")
+	status := set.String("status", "", "only this status: blocked, pending, leased, succeeded, dead or cancelled")
 	jobType := set.String("type", "", "only this job type")
 	worker := set.String("worker", "", "only the jobs this worker is holding")
 	ready := set.Bool("ready", false, "only the jobs the queue would hand out now")
