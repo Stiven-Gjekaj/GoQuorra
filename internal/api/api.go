@@ -181,7 +181,28 @@ func (a *API) observe(next http.Handler) http.Handler {
 			if route == "" {
 				route = "unmatched"
 			}
-			a.opts.Metrics.HTTPRequest(route, r.Method, statusText(rec.status), time.Since(started))
+			took := time.Since(started)
+			a.opts.Metrics.HTTPRequest(route, r.Method, statusText(rec.status), took)
+
+			// A line for every answer that refused, and none for the rest.
+			//
+			// Without this the identifier on a refusal finds nothing: the
+			// only line the server wrote for a 404 was no line at all, and a
+			// caller told to quote an identifier had nothing to quote it
+			// against. That was found by reading a refusal out of quorractl
+			// and searching the log of the server for what it printed.
+			//
+			// Refusals only, because a queue answering normally is the
+			// normal case and a line for each would bury the ones that
+			// matter. A queue refusing constantly is itself worth seeing.
+			if rec.status >= 400 {
+				level := slog.LevelInfo
+				if rec.status >= 500 {
+					level = slog.LevelWarn
+				}
+				a.logOf(r.Context()).Log(r.Context(), level, "request refused",
+					"method", r.Method, "route", route, "code", rec.status, "took", took)
+			}
 		}()
 
 		next.ServeHTTP(rec, r)

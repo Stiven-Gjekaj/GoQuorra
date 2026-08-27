@@ -230,13 +230,29 @@ func (c *client) send(ctx context.Context, method, path string, body any) (map[s
 	}
 
 	if response.StatusCode >= 400 {
-		if message, found := answer["error"].(string); found {
-			return nil, fmt.Errorf("the server refused this: %s", message)
+		// The identifier of the request goes on the end. It is the one
+		// string that finds every line the server wrote while it was
+		// refusing, so a person who has to ask somebody else to look has it
+		// in front of them already.
+		named := ""
+		if id := response.Header.Get("X-Request-Id"); id != "" && len(id) <= mostRequestID {
+			named = " (request " + id + ")"
 		}
-		return nil, fmt.Errorf("the server answered %s", response.Status)
+
+		if message, found := answer["error"].(string); found {
+			return nil, fmt.Errorf("the server refused this: %s%s", message, named)
+		}
+		return nil, fmt.Errorf("the server answered %s%s", response.Status, named)
 	}
 	return answer, nil
 }
+
+// mostRequestID is the longest identifier that goes in a message.
+//
+// The same bound the server puts on what a caller may send, so a value this
+// refuses is one the server would have refused as well. A page of identifier
+// in a terminal buries the sentence that says what went wrong.
+const mostRequestID = 64
 
 func create(args []string, out io.Writer) error {
 	set := flag.NewFlagSet("create", flag.ContinueOnError)

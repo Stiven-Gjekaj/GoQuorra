@@ -31,6 +31,13 @@ var frozen = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 func serve(t *testing.T) (http.Handler, store.Store) {
 	t.Helper()
+	handler, backing, _ := serveWithLog(t)
+	return handler, backing
+}
+
+// serveWithLog also hands back what the server wrote.
+func serveWithLog(t *testing.T) (http.Handler, store.Store, *strings.Builder) {
+	t.Helper()
 
 	backing := memory.New(store.Options{
 		Policy: jobs.Policy{MaxRetries: 2, Base: time.Second, Max: time.Minute},
@@ -38,15 +45,16 @@ func serve(t *testing.T) (http.Handler, store.Store) {
 	})
 	t.Cleanup(func() { _ = backing.Close() })
 
+	written := &strings.Builder{}
 	return api.New(api.Options{
 		Store:            backing,
 		Metrics:          metrics.New(),
-		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:              slog.New(slog.NewTextHandler(written, nil)),
 		Keys:             testKeys(t, key),
 		MaxBodyBytes:     1 << 16,
 		DashboardEnabled: true,
 		Now:              func() time.Time { return frozen },
-	}).Handler(), backing
+	}).Handler(), backing, written
 }
 
 // metricsPage reads the page a Prometheus server would scrape.
@@ -1557,5 +1565,50 @@ func TestAnIdentifierThatCouldWriteALogLineIsRefused(t *testing.T) {
 	}
 	if got == "" {
 		t.Error("a request with an unusable identifier got none at all")
+	}
+}
+
+// A refusal leaves a line naming the request it refused.
+//
+// Without it the identifier on a refusal finds nothing, and a caller told to
+// quote an identifier has nothing to quote it against. That was found by
+// reading a refusal out of quorractl and searching the log of the server for
+// what it had printed.
+func TestARefusalLeavesALineNamingTheRequest(t *testing.T) {
+	handler, _, written := serveWithLog(t)
+
+	answer := call(t, handler, "GET", "/v1/jobs/8f14e45f-ceea-467a-9c37-8e8f8f8f8f8f", "", map[string]string{
+		"X-API-Key": key,
+	})
+	if answer.Code != http.StatusNotFound {
+		t.Fatalf("the request answered %d, want 404", answer.Code)
+	}
+
+	id := answer.Header().Get(reqid.Header)
+	if id == "" {
+		t.Fatal("the refusal carries no identifier")
+	}
+	if !strings.Contains(written.String(), id) {
+		t.Errorf("nothing in the log names request %s:\n%s", id, written.String())
+	}
+	if !strings.Contains(written.String(), "request refused") {
+		t.Errorf("the refusal wrote no line:\n%s", written.String())
+	}
+}
+
+// An answer that worked leaves no line.
+//
+// A queue answering normally is the normal case, and a line for each would
+// bury the ones that matter.
+func TestAnAnswerThatWorkedLeavesNoLine(t *testing.T) {
+	handler, _, written := serveWithLog(t)
+
+	answer := call(t, handler, "GET", "/v1/queues", "", map[string]string{"X-API-Key": key})
+	if answer.Code != http.StatusOK {
+		t.Fatalf("the request answered %d, want 200", answer.Code)
+	}
+
+	if strings.Contains(written.String(), "request refused") {
+		t.Errorf("an answer that worked was logged as a refusal:\n%s", written.String())
 	}
 }
