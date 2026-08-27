@@ -61,9 +61,15 @@ func New(cfg *config.Server, s store.Store, log *slog.Logger) *Server {
 	// all before this: a process that could reach it could lease from any
 	// queue.
 	guard := rpc.NewGuard(cfg.Keys)
+
+	// The guard first and the observer second, so that a call refused for a
+	// missing key is timed like any other. A refusal that took a second is
+	// something an operator wants to see, and an interceptor that only runs
+	// after the guard would never report one.
+	observe := rpc.NewObserver(m)
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(guard.Unary()),
-		grpc.StreamInterceptor(guard.Stream()),
+		grpc.ChainUnaryInterceptor(observe.Unary(), guard.Unary()),
+		grpc.ChainStreamInterceptor(observe.Stream(), guard.Stream()),
 	)
 	quorrapb.RegisterQueueServiceServer(grpcServer,
 		rpc.New(s, m, log, rpc.DefaultLimits(), time.Now))

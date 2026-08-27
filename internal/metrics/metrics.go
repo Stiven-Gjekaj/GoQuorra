@@ -39,6 +39,9 @@ type Metrics struct {
 	lifetime    *prometheus.HistogramVec
 	httpLatency *prometheus.HistogramVec
 
+	grpcLatency *prometheus.HistogramVec
+	grpcStreams *prometheus.CounterVec
+
 	finished     *prometheus.CounterVec
 	typeLifetime *prometheus.HistogramVec
 	typesTracked prometheus.Gauge
@@ -155,6 +158,24 @@ func New() *Metrics {
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route", "method", "code"}),
 
+		// The worker protocol, which carries every lease and every report
+		// and was entirely untimed. The HTTP histogram beside it has been
+		// published since the first release, so the one number an operator
+		// had was for the half of the traffic that does not run the work.
+		//
+		// Both labels are bounded by the protocol file: the methods are the
+		// ones the service defines and the codes are the ones gRPC has.
+		grpcLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "quorra_grpc_request_duration_seconds",
+			Help:    "Time taken to answer a call on the worker protocol. Streams are counted in quorra_grpc_streams_total instead.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"method", "code"}),
+
+		grpcStreams: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "quorra_grpc_streams_total",
+			Help: "Streams on the worker protocol that ended, by how they ended.",
+		}, []string{"method", "code"}),
+
 		// By job type, which is the dimension the other counters do not
 		// have. Which queue is failing is a question about how the work is
 		// arranged, and which type is failing is a question about the work.
@@ -192,6 +213,7 @@ func New() *Metrics {
 		m.cancelled, m.revived, m.fired, m.removed,
 		m.queueLength, m.lifetime, m.httpLatency,
 		m.finished, m.typeLifetime, m.typesTracked,
+		m.grpcLatency, m.grpcStreams,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -294,6 +316,21 @@ func (m *Metrics) JobsRemoved(status jobs.Status, n int) {
 	if n > 0 {
 		m.removed.WithLabelValues(status.String()).Add(float64(n))
 	}
+}
+
+// GRPCRequest records one answered call on the worker protocol.
+func (m *Metrics) GRPCRequest(method, code string, took time.Duration) {
+	m.grpcLatency.WithLabelValues(method, code).Observe(took.Seconds())
+}
+
+// GRPCStream records one stream on the worker protocol that ended.
+//
+// Counted and not timed. A watch lives as long as the worker does, so the
+// time it was open says how long the worker ran rather than how fast this
+// server is, and putting hours in the same histogram as a lease would leave
+// the quantiles meaning nothing.
+func (m *Metrics) GRPCStream(method, code string) {
+	m.grpcStreams.WithLabelValues(method, code).Inc()
 }
 
 // HTTPRequest records one answered request.
