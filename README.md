@@ -780,7 +780,7 @@ reads no clock.
 A table test drives every state a job reaches with nothing installed.
 
 **Two stores answer to one suite.**
-[`internal/store/storetest`](internal/store/storetest) holds seventy
+[`internal/store/storetest`](internal/store/storetest) holds ninety two
 rules.
 The in-memory store passes them with nothing installed and the PostgreSQL
 store passes them against a real database.
@@ -852,7 +852,7 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**341 cases pass. 270 of them need nothing installed.**
+**410 cases pass. 317 of them need nothing installed.**
 
 The other 66 need a database. Sixty five of them are the store contract suite,
 and the sixty sixth is the test that holds the suite, which skips without one:
