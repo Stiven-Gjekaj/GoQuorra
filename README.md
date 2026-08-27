@@ -13,7 +13,7 @@ _A worker that dies does not take its job with it_
 </p>
 
 <p align="center">
-  <a href="https://github.com/Stiven-Gjekaj/GoQuorra/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Stiven-Gjekaj/GoQuorra/ci.yml?label=ci&style=flat-square" alt="CI"/></a>
+  <a href="https://github.com/Stiven-Gjekaj/GoQuorra/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/Stiven-Gjekaj/GoQuorra/ci.yml?branch=main&label=ci&style=flat-square" alt="CI on main"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"/>
 </p>
 
