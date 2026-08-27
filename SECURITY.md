@@ -27,12 +27,24 @@ GoQuorra is a server that holds work on behalf of other programs.
 Read this before you report, because two classes of finding are decisions
 rather than defects.
 
-**The API key is the whole of the authentication.**
-There are no accounts, no roles, and no per queue permissions.
-Anybody holding the key can submit a job, read any job, and read every queue
-count.
-Run it inside a network you control, and treat the key the way you treat a
+**An API key is the whole of the authentication.**
+There are no accounts and no per queue permissions.
+A key has a name and one of two scopes.
+A `read` key asks questions and changes nothing.
+A `write` key submits work, cancels any job and revives any job, in every
+queue.
+Run it inside a network you control, and treat a key the way you treat a
 database password.
+
+A key names a service, not a person.
+`acted_by` on a job is the name of the key that acted, and a key four people
+on a team share records the team.
+Do not read it as a record of which person did something.
+
+The names are configuration and the secrets are compared in constant time,
+folded through SHA-256 first so that a length does not leak.
+A lookup compares every key rather than stopping at the first match, so the
+time it takes does not say which key was presented or how many exist.
 
 **A worker is trusted with the jobs it is given, and with nothing else.**
 The gRPC port has no authentication of its own today.
@@ -52,7 +64,9 @@ Do not put a secret in a payload.
 
 **These are in scope:**
 
-- A way to read or change a job without the API key.
+- A way to read or change a job without a key.
+- A way for a `read` key to change anything, or for a key to act under
+  another key's name.
 - A way for a worker to report on a job it was not given, or to be given a job
   that another worker holds.
 - Anything that makes the dashboard run script from the content of a job. The
@@ -68,9 +82,12 @@ Do not put a secret in a payload.
 **These are out of scope:**
 
 - That there is no user model, no rate limit, and no per queue permission.
-  Those are named above.
+  Those are named above. A key naming a service and not a person is a
+  decision, not a defect.
+- That a `write` key may cancel or revive a job in any queue. Scopes divide
+  reading from writing and do not divide the queues.
 - That the gRPC port is unauthenticated. Named above.
-- A denial of service that needs the API key. Somebody holding the key can
-  fill the queue, and that is what the key is for.
+- A denial of service that needs a `write` key. Somebody holding one can fill
+  the queue, and that is what the key is for.
 - Findings from an automated scanner with no working demonstration.
 - A report that a payload is not encrypted at rest. Named above.
