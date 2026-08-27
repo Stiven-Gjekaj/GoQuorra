@@ -38,7 +38,17 @@ type Store struct {
 	// byKey points an idempotency key at the job that claimed it.
 	byKey map[string]string
 
+	// workers holds every worker the store has heard from, keyed by the
+	// worker and the queue it asked about.
+	workers map[workerKey]store.Worker
+
 	next uint64
+}
+
+// workerKey names one worker asking about one queue.
+type workerKey struct {
+	id    string
+	queue string
 }
 
 // record is a job and the order it arrived in.
@@ -66,6 +76,7 @@ func New(opts store.Options) *Store {
 		opts:    opts.WithDefaults(),
 		records: make(map[string]*record),
 		byKey:   make(map[string]string),
+		workers: make(map[workerKey]store.Worker),
 	}
 }
 
@@ -128,6 +139,19 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Recorded before the jobs are looked for, and whether or not any come
+	// back. An ask that finds nothing is the ask that matters: it is the only
+	// sign a fleet with no work is still there.
+	if req.WorkerID != "" {
+		key := workerKey{id: req.WorkerID, queue: req.Queue}
+		seen, found := s.workers[key]
+		if !found {
+			seen = store.Worker{ID: req.WorkerID, Queue: req.Queue, FirstSeenAt: now}
+		}
+		seen.LastSeenAt = now
+		s.workers[key] = seen
+	}
 
 	ready := make([]*record, 0, len(s.records))
 	for _, rec := range s.records {
@@ -434,6 +458,76 @@ func (s *Store) Attempts(ctx context.Context, jobID string) ([]store.Attempt, er
 		}
 	}
 	return out, nil
+}
+
+// Workers lists the workers that have asked for work, most recently first.
+func (s *Store) Workers(ctx context.Context) ([]store.Worker, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.workers) == 0 {
+		return nil, nil
+	}
+
+	out := make([]store.Worker, 0, len(s.workers))
+	for _, w := range s.workers {
+		out = append(out, w)
+	}
+
+	// Most recently seen first, and then by name, so that two workers seen in
+	// the same step of a driven clock come out in the same order every run.
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if !a.LastSeenAt.Equal(b.LastSeenAt) {
+			return a.LastSeenAt.After(b.LastSeenAt)
+		}
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		return a.Queue < b.Queue
+	})
+	return out, nil
+}
+
+// DeleteStaleWorkers removes workers last seen before a time.
+func (s *Store) DeleteStaleWorkers(ctx context.Context, before time.Time, limit int) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Oldest first, so a backlog is worked through from the far end rather
+	// than the same rows being looked at on every sweep.
+	var doomed []workerKey
+	for key, w := range s.workers {
+		if w.LastSeenAt.Before(before) {
+			doomed = append(doomed, key)
+		}
+	}
+	sort.Slice(doomed, func(i, j int) bool {
+		a, b := s.workers[doomed[i]], s.workers[doomed[j]]
+		if !a.LastSeenAt.Equal(b.LastSeenAt) {
+			return a.LastSeenAt.Before(b.LastSeenAt)
+		}
+		return a.ID < b.ID
+	})
+	if len(doomed) > limit {
+		doomed = doomed[:limit]
+	}
+
+	for _, key := range doomed {
+		delete(s.workers, key)
+	}
+	return len(doomed), nil
 }
 
 // DeleteFinished removes finished jobs that stopped moving before a time.

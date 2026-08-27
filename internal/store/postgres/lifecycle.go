@@ -111,6 +111,30 @@ func (s *Store) DeleteFinished(ctx context.Context, status jobs.Status, before t
 	return int(tag.RowsAffected()), nil
 }
 
+// DeleteStaleWorkers removes workers last seen before a time.
+//
+// Bounded like the job sweep, and for the same reason: a first sweep over a
+// year of retired container names would hold locks for as long as it took.
+func (s *Store) DeleteStaleWorkers(ctx context.Context, before time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM workers WHERE (id, queue) IN (
+			SELECT id, queue FROM workers
+			WHERE last_seen_at < $1
+			ORDER BY last_seen_at
+			LIMIT $2
+		)`,
+		before, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: cannot remove stale workers: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // attempts says what happens to the attempt count during a transition.
 type attempts int
 

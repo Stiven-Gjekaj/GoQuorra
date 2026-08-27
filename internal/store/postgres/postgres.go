@@ -166,6 +166,24 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 
 	now := s.opts.Now()
 
+	// The worker is recorded before the jobs are looked for, and whether or
+	// not any come back. An ask that finds nothing is the ask that matters:
+	// it is the only sign a fleet with no work is still there.
+	//
+	// Outside the lease statement rather than in a transaction with it. A row
+	// saying a worker asked, on an ask that then failed, is true. Two round
+	// trips to make it exactly consistent would buy nothing.
+	if req.WorkerID != "" {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO workers (id, queue, first_seen_at, last_seen_at)
+			VALUES ($1, $2, $3, $3)
+			ON CONFLICT (id, queue) DO UPDATE SET last_seen_at = $3`,
+			req.WorkerID, req.Queue, now,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: cannot record the worker: %w", err)
+		}
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		WITH ready AS (
 			-- Named ready_id rather than id. The RETURNING clause below

@@ -349,6 +349,22 @@ func (a Attempt) Took() (time.Duration, bool) {
 	return a.FinishedAt.Sub(*a.StartedAt), true
 }
 
+// Worker is one worker, asking about one queue.
+//
+// A row for each pair and not one for each worker. A worker asks for one
+// queue at a time, so a row for the worker alone would hold whichever queue
+// it asked about last, which reads like a worker moving between queues.
+type Worker struct {
+	ID    string `json:"id"`
+	Queue string `json:"queue"`
+
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+}
+
+// Idle reports how long ago this worker last asked for work.
+func (w Worker) Idle(now time.Time) time.Duration { return now.Sub(w.LastSeenAt) }
+
 // QueueStat is one row of the queue statistics.
 type QueueStat struct {
 	Queue  string      `json:"queue"`
@@ -432,6 +448,24 @@ type Store interface {
 	// that a worker is holding would lose work, and a sweeper is exactly the
 	// place where a wrong status is not noticed for a month.
 	DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error)
+
+	// Workers lists the workers that have asked for work, most recently
+	// seen first.
+	//
+	// A worker is recorded where it asks, so this holds every worker the
+	// queue has heard from and not only the ones holding a job. An empty
+	// queue and a fleet that has stopped look the same in every other
+	// answer, and the second one is an outage.
+	Workers(ctx context.Context) ([]Worker, error)
+
+	// DeleteStaleWorkers removes workers last seen before a time, and reports
+	// how many it removed.
+	//
+	// A worker identifier is usually the name of a container, so a
+	// deployment retires every row in this table and writes a new set.
+	// Without this the table grows once for each worker on each release, for
+	// ever.
+	DeleteStaleWorkers(ctx context.Context, before time.Time, limit int) (int, error)
 
 	// Attempts lists the finished runs of one job, oldest run first.
 	//

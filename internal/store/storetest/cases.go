@@ -679,6 +679,165 @@ var cases = []testCase{
 		}
 	}},
 
+	// A worker that asks for work is remembered, even when there is none.
+	//
+	// This is the whole point. leased_by names the worker holding a job and
+	// is cleared when the job ends, so a fleet with nothing to do left no
+	// trace anywhere: an empty queue and a fleet that has stopped looked the
+	// same from outside, and the second one is an outage.
+	{"a worker that finds no work is still remembered", func(t *testing.T, s store.Store, clock *Clock) {
+		// Nothing is in the queue, so this ask comes back empty.
+		handed, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "idle-1", Limit: 5, TTL: time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+		if len(handed) != 0 {
+			t.Fatalf("an empty queue handed out %d jobs", len(handed))
+		}
+
+		seen, err := s.Workers(ctx())
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(seen) != 1 {
+			t.Fatalf("the store remembers %d workers, want 1: %+v", len(seen), seen)
+		}
+		if seen[0].ID != "idle-1" || seen[0].Queue != store.DefaultQueue {
+			t.Errorf("the worker is %+v", seen[0])
+		}
+		requireTime(t, "first seen at", seen[0].FirstSeenAt, Start)
+		requireTime(t, "last seen at", seen[0].LastSeenAt, Start)
+	}},
+
+	// Asking again moves the last seen and leaves the first alone.
+	//
+	// The pair is what says "this worker has been here since Tuesday and was
+	// here a second ago". Moving both would lose the first half, and moving
+	// neither would make a worker that stopped an hour ago look present.
+	{"asking again moves only the moment a worker was last seen", func(t *testing.T, s store.Store, clock *Clock) {
+		ask := func() {
+			if _, err := s.Lease(ctx(), store.LeaseRequest{
+				Queue: store.DefaultQueue, WorkerID: "poller", Limit: 1, TTL: time.Minute,
+			}); err != nil {
+				t.Fatalf("Lease: %v", err)
+			}
+		}
+
+		ask()
+		clock.Advance(time.Hour)
+		ask()
+
+		seen, err := s.Workers(ctx())
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(seen) != 1 {
+			t.Fatalf("the store remembers %d rows for one worker", len(seen))
+		}
+		requireTime(t, "first seen at", seen[0].FirstSeenAt, Start)
+		requireTime(t, "last seen at", seen[0].LastSeenAt, Start.Add(time.Hour))
+
+		if idle := seen[0].Idle(Start.Add(90 * time.Minute)); idle != 30*time.Minute {
+			t.Errorf("the worker has been idle %s, want 30m", idle)
+		}
+	}},
+
+	// One row for each worker and queue, and not one for each worker.
+	//
+	// A worker asks about one queue at a time, so a row for the worker alone
+	// would hold whichever queue it asked about last and change on the next
+	// ask, which reads like a worker moving between queues.
+	{"a worker asking about two queues is two rows", func(t *testing.T, s store.Store, clock *Clock) {
+		for _, queue := range []string{store.DefaultQueue, "mail"} {
+			if _, err := s.Lease(ctx(), store.LeaseRequest{
+				Queue: queue, WorkerID: "both", Limit: 1, TTL: time.Minute,
+			}); err != nil {
+				t.Fatalf("Lease from %s: %v", queue, err)
+			}
+		}
+
+		seen, err := s.Workers(ctx())
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(seen) != 2 {
+			t.Fatalf("the store remembers %d rows, want one for each queue: %+v", len(seen), seen)
+		}
+
+		queues := map[string]bool{}
+		for _, w := range seen {
+			if w.ID != "both" {
+				t.Errorf("a row names %q", w.ID)
+			}
+			queues[w.Queue] = true
+		}
+		if !queues[store.DefaultQueue] || !queues["mail"] {
+			t.Errorf("the rows cover %v, want both queues", queues)
+		}
+	}},
+
+	// A worker nobody has seen for long enough goes.
+	//
+	// A worker identifier is usually the name of a container, so a
+	// deployment retires every row in this table and writes a new set.
+	// Without a sweep the table grows once for each worker on each release,
+	// for ever.
+	{"a worker nobody has seen is swept away", func(t *testing.T, s store.Store, clock *Clock) {
+		if _, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "the-old-pod", Limit: 1, TTL: time.Minute,
+		}); err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+
+		clock.Advance(time.Hour)
+		if _, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "the-new-pod", Limit: 1, TTL: time.Minute,
+		}); err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+
+		// A cutoff between the two, so the sweep has to choose rather than
+		// removing everything or nothing.
+		removed, err := s.DeleteStaleWorkers(ctx(), Start.Add(30*time.Minute), 10)
+		if err != nil {
+			t.Fatalf("DeleteStaleWorkers: %v", err)
+		}
+		if removed != 1 {
+			t.Fatalf("the sweep removed %d workers, want 1", removed)
+		}
+
+		seen, err := s.Workers(ctx())
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(seen) != 1 || seen[0].ID != "the-new-pod" {
+			t.Errorf("the store kept %+v, want only the new pod", seen)
+		}
+	}},
+
+	// An ask with no worker named records nothing.
+	//
+	// A row with an empty identifier is not a worker. It is one row that
+	// every unnamed caller shares, and its last seen would move whenever any
+	// of them asked.
+	{"an ask with no worker named records no worker", func(t *testing.T, s store.Store, clock *Clock) {
+		if _, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, Limit: 1, TTL: time.Minute,
+		}); err != nil {
+			t.Fatalf("Lease: %v", err)
+		}
+
+		seen, err := s.Workers(ctx())
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(seen) != 0 {
+			t.Errorf("an unnamed ask left %+v behind", seen)
+		}
+	}},
+
 	// The history of a job is one row per finished run.
 	//
 	// The jobs table holds one row per job, so a job that failed and then

@@ -205,6 +205,29 @@ func (s *Store) Attempts(ctx context.Context, jobID string) ([]store.Attempt, er
 	return out, rows.Err()
 }
 
+// Workers lists the workers that have asked for work, most recently first.
+func (s *Store) Workers(ctx context.Context) ([]store.Worker, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, queue, first_seen_at, last_seen_at FROM workers
+		ORDER BY last_seen_at DESC, id, queue`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot list the workers: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Worker
+	for rows.Next() {
+		var w store.Worker
+		if err := rows.Scan(&w.ID, &w.Queue, &w.FirstSeenAt, &w.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("postgres: cannot read a worker: %w", err)
+		}
+		w.FirstSeenAt = w.FirstSeenAt.UTC()
+		w.LastSeenAt = w.LastSeenAt.UTC()
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // Close releases the pool.
 func (s *Store) Close() error {
 	s.pool.Close()
