@@ -167,22 +167,31 @@ a client submits a job over HTTP
 ```mermaid
 stateDiagram-v2
     [*] --> pending: submitted
+    [*] --> blocked: submitted after another job
+    blocked --> pending: every job it waits for succeeded
+    blocked --> cancelled: a job it waits for cannot succeed
     pending --> leased: a worker takes it
     leased --> succeeded: the worker reports success
     leased --> pending: the worker reports a failure, and attempts remain
     leased --> dead: the worker reports a failure, and none remain
     leased --> pending: the lease runs out, and attempts remain
     leased --> dead: the lease runs out, and none remain
+    blocked --> cancelled: a person stops it
     pending --> cancelled: a person stops it
     leased --> cancelled: a person stops it
     dead --> pending: a person revives it
     cancelled --> pending: a person revives it
+    cancelled --> blocked: a person revives it, and it still waits
     succeeded --> [*]
     dead --> [*]
     cancelled --> [*]
 ```
 
-There are five states, and there used to be six different ones.
+There are six states.
+Two of an earlier six went, and two have arrived since, and both halves are
+worth keeping: a state removed for a reason still holds that reason against
+being added back.
+
 `processing` is gone because the server cannot observe it: the worker holds
 the job between the lease and the report, and the server hears nothing in that
 window.
@@ -191,11 +200,18 @@ Both were documented, and no code ever wrote either.
 
 | State | Meaning |
 | ----- | ------- |
-| `pending` | Waiting. Ready once `run_at` has passed. A delayed job and a job serving a backoff both sit here. |
+| `blocked` | Waiting for another job. Not `pending`, because `pending` is a claim that the queue will hand the job out. |
+| `pending` | Waiting for a worker. Ready once `run_at` has passed. A delayed job and a job serving a backoff both sit here. |
 | `leased` | A worker holds it. The lease carries an expiry. |
 | `succeeded` | A worker reported that it is done. |
 | `dead` | Every attempt was used. The row stays, with the last error on it. |
-| `cancelled` | A person stopped it. Separate from `dead`, because the difference between them is the only thing that says whether the queue gave up or somebody decided. |
+| `cancelled` | A person stopped it, or a job it waits for cannot succeed. Separate from `dead`, because the difference between them is the only thing that says whether the queue gave up or somebody decided. |
+
+`blocked` was added rather than holding a waiting job back with a `run_at` far
+in the future.
+That needs no new state and lies in a worse way: the job then says it runs in
+the year nine thousand, which is what `order=soonest` and the ready filter
+would show.
 
 ### Two workers never get the same job
 
