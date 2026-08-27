@@ -147,6 +147,11 @@ type Job struct {
 
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
+	// LeasedAt is when the worker now holding this job took it, and is nil
+	// when nobody holds it. It says how long a run has been going, which is
+	// what somebody looking for a job that is stuck wants to know.
+	LeasedAt *time.Time `json:"leased_at,omitempty"`
+
 	// ActedBy and ActedAt name the key that last cancelled or revived the
 	// job, and when. Both are absent on a job nobody has acted on, and only
 	// cancel and revive set them: the queue leasing, retrying or burying a
@@ -241,6 +246,54 @@ func (c *Client) Get(ctx context.Context, id string) (*Job, error) {
 		return nil, err
 	}
 	return &job, nil
+}
+
+// Attempt is one finished run of a job.
+type Attempt struct {
+	JobID string `json:"job_id"`
+
+	// Number counts from one. Reviving a job sets its count back to zero, so
+	// a job that was buried and revived holds two runs numbered 1, and the
+	// order of the list is what says which came first.
+	Number int `json:"attempt"`
+
+	// Worker is the identifier the worker gave when it took the lease, and is
+	// empty for a lease that ran out with no worker named.
+	Worker string `json:"worker,omitempty"`
+
+	// Outcome is done, failed, expired or refused.
+	Outcome string `json:"outcome"`
+
+	// Error is what went wrong, and is empty for a run that finished.
+	Error string `json:"error,omitempty"`
+
+	// StartedAt is nil when the store does not know when the run began, which
+	// happens for a job leased by a build older than the history itself.
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time  `json:"finished_at"`
+}
+
+// Took gives how long the run took, and whether that is known.
+func (a Attempt) Took() (time.Duration, bool) {
+	if a.StartedAt == nil {
+		return 0, false
+	}
+	return a.FinishedAt.Sub(*a.StartedAt), true
+}
+
+// Attempts lists what a job did, oldest run first.
+//
+// An empty list means the job has not finished a run. A job that is not there
+// gives ErrNotFound, which is the difference between "nothing has happened
+// yet" and "there is nothing to ask about".
+func (c *Client) Attempts(ctx context.Context, id string) ([]Attempt, error) {
+	var answer struct {
+		Attempts []Attempt `json:"attempts"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/v1/jobs/"+url.PathEscape(id)+"/attempts", nil, &answer); err != nil {
+		return nil, err
+	}
+	return answer.Attempts, nil
 }
 
 // Identity is what a key is and what it may do.

@@ -13,6 +13,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/client"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
@@ -25,6 +26,18 @@ const key = "a-key-that-somebody-chose"
 // A stub server would agree with whatever the test author believed the API
 // answers, so a field renamed on one side would go on passing here.
 func connect(t *testing.T) *client.Client {
+	t.Helper()
+	c, _ := connectWithStore(t)
+	return c
+}
+
+// connectWithStore also hands back the store behind the server.
+//
+// Leasing and reporting are the gRPC side, and this package deliberately
+// speaks only HTTP. A test about what a job did has to make something
+// happen to the job first, and this is the honest way to do it without
+// pretending the client can lease.
+func connectWithStore(t *testing.T) (*client.Client, *memory.Store) {
 	t.Helper()
 
 	backing := memory.New(store.Options{})
@@ -42,7 +55,7 @@ func connect(t *testing.T) *client.Client {
 	if err != nil {
 		t.Fatalf("client.New: %v", err)
 	}
-	return c
+	return c, backing
 }
 
 func TestSubmitAndGet(t *testing.T) {
@@ -151,6 +164,68 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 	if back.Status != "pending" || back.Finished() {
 		t.Errorf("the job is %+v", back)
+	}
+}
+
+// A client reads what a job did, run by run.
+func TestAClientReadsWhatAJobDid(t *testing.T) {
+	c, backing := connectWithStore(t)
+	ctx := t.Context()
+
+	made, err := c.Submit(ctx, client.NewJob{Type: "work"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// A job that has not run has no history, and that is not an error.
+	nothing, err := c.Attempts(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("Attempts of a job that has not run: %v", err)
+	}
+	if len(nothing) != 0 {
+		t.Errorf("a job that has not run kept %d runs", len(nothing))
+	}
+
+	held, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 {
+		t.Fatalf("Lease: %v, %d jobs", err, len(held))
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: made.ID, LeaseID: held[0].LeaseID,
+		Outcome: jobs.OutcomeFailed, Error: "upstream said no",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	history, err := c.Attempts(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("Attempts: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("the job kept %d runs, want 1", len(history))
+	}
+
+	run := history[0]
+	if run.Number != 1 || run.Worker != "w1" || run.Outcome != "failed" {
+		t.Errorf("the run is %+v", run)
+	}
+	if run.Error != "upstream said no" {
+		t.Errorf("the run says %q", run.Error)
+	}
+	if _, known := run.Took(); !known {
+		t.Error("the run has no duration, so its start did not survive the round trip")
+	}
+}
+
+// A job that is not there is told apart from a job that has not run.
+func TestTheHistoryOfAMissingJobIsNotFound(t *testing.T) {
+	c := connect(t)
+
+	_, err := c.Attempts(t.Context(), "8de1a3d0-0000-0000-0000-000000000000")
+	if !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("Attempts of an unknown job gave %v, want ErrNotFound", err)
 	}
 }
 
