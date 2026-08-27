@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1187,6 +1189,53 @@ var cases = []testCase{
 		}
 		if back.Attempts != 0 {
 			t.Errorf("attempts = %d, want a full set again", back.Attempts)
+		}
+	}},
+
+	// Both stores refuse a job the column cannot hold, and they refuse it the
+	// same way.
+	//
+	// This rule exists because they did not. Priority and max retries are a Go
+	// int, and both columns are INTEGER, so a number between the two sizes was
+	// accepted by the memory store and refused by PostgreSQL with a message
+	// carrying no "store: " prefix. The API answered 201 against one store and
+	// 500 against the other, for the same submission, while all sixty five
+	// rules here passed.
+	//
+	// A store that agrees only with itself is the thing this suite exists to
+	// prevent, so the rule is written against the interface and not against
+	// either implementation.
+	{"a number the column cannot hold is refused by every store", func(t *testing.T, s store.Store, clock *Clock) {
+		tooBig := math.MaxInt32 + 1
+		tooSmall := math.MinInt32 - 1
+
+		refused := map[string]store.NewJob{
+			"a priority past the column":    {Type: "work", Priority: tooBig},
+			"a priority under the column":   {Type: "work", Priority: tooSmall},
+			"a max retries past the column": {Type: "work", MaxRetries: &tooBig},
+		}
+		for name, n := range refused {
+			_, _, err := s.Create(ctx(), n)
+			if err == nil {
+				t.Errorf("%s was stored", name)
+				continue
+			}
+			// The message says which package refused it, which is how the
+			// layer above tells a client mistake from a server fault.
+			if !strings.HasPrefix(err.Error(), "store: ") {
+				t.Errorf("%s gave %q, which does not read as the client's mistake", name, err)
+			}
+		}
+
+		// And the edges are stored, so the bound is not one out.
+		for name, n := range map[string]store.NewJob{
+			"the highest priority the column holds": {Type: "work", Priority: math.MaxInt32},
+			"the lowest priority the column holds":  {Type: "work", Priority: math.MinInt32},
+		} {
+			got := create(t, s, n)
+			if got.Priority != n.Priority {
+				t.Errorf("%s came back as %d", name, got.Priority)
+			}
 		}
 	}},
 
