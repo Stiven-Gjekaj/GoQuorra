@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -28,7 +29,7 @@ Usage:
   quorractl <command> [options]
 
 Commands:
-  create    Submit a job
+  create    Submit a job, or -file to submit many
   get       Show one job
   list      Show jobs, newest first, with optional filters
   queues    Count the jobs in each queue
@@ -235,13 +236,19 @@ func create(args []string, out io.Writer) error {
 	delay := set.Int("delay", 0, "seconds to wait before the job is ready")
 	retries := set.Int("retries", -1, "retries after the first attempt, or -1 for the server default")
 	after := set.String("after", "", "run only after these jobs succeed, as a comma separated list of identifiers")
+	file := set.String("file", "", "submit the jobs in this file, one JSON object per line, or - for standard input")
 
 	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
+
+	if *file != "" {
+		return createFromFile(c, out, *file)
+	}
+
 	if *jobType == "" {
 		set.Usage()
-		return errors.New("-type is required")
+		return errors.New("-type is required, or -file to submit many")
 	}
 
 	// Checked here rather than at the server, so that a mistake in a shell
@@ -296,6 +303,84 @@ func identifiers(text string) []string {
 		}
 	}
 	return out
+}
+
+// createFromFile submits every job in a file, one JSON object per line.
+//
+// One object per line and not one JSON array. A file of a million jobs read
+// as an array has to be held in memory whole before the first one can be
+// checked, and the format a queue is fed from is almost always a log or an
+// export, which is already one record per line.
+func createFromFile(c *client, out io.Writer, name string) error {
+	source := os.Stdin
+	if name != "-" {
+		opened, err := os.Open(name)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w", name, err)
+		}
+		defer opened.Close()
+		source = opened
+	}
+
+	var jobs []json.RawMessage
+	scanner := bufio.NewScanner(source)
+
+	// A job is one line, and a payload can be long. The default limit is 64k
+	// per line, which a real payload passes.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	line := 0
+	for scanner.Scan() {
+		line++
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" {
+			continue
+		}
+		if !json.Valid([]byte(text)) {
+			return fmt.Errorf("line %d of %s is not JSON: %s", line, name, text)
+		}
+		jobs = append(jobs, json.RawMessage(text))
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("cannot read %s: %w", name, err)
+	}
+	if len(jobs) == 0 {
+		return fmt.Errorf("%s holds no jobs", name)
+	}
+
+	answer, err := c.send(context.Background(), http.MethodPost, "/v1/jobs/bulk",
+		map[string]any{"jobs": jobs})
+	if err != nil {
+		return err
+	}
+
+	// The identifiers first, one per line, so the output feeds a pipe the
+	// same way one submission does.
+	results, _ := answer["results"].([]any)
+	for _, row := range results {
+		one, _ := row.(map[string]any)
+		if id, ok := one["id"].(string); ok {
+			fmt.Fprintln(out, id)
+		}
+	}
+
+	// Then the count and every refusal, naming the line it came from. A
+	// caller with a thousand rows needs to know which one to fix.
+	created := number(answer["created"])
+	refused := number(answer["refused"])
+	fmt.Fprintf(out, "%d created, %d refused\n", created, refused)
+
+	for _, row := range results {
+		one, _ := row.(map[string]any)
+		why, _ := one["error"].(string)
+		if why != "" {
+			fmt.Fprintf(out, "  job %d: %s\n", number(one["index"])+1, why)
+		}
+	}
+	if refused > 0 {
+		return fmt.Errorf("%d of %d jobs were refused", refused, created+refused)
+	}
+	return nil
 }
 
 func get(args []string, out io.Writer) error {

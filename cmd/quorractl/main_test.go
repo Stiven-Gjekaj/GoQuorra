@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +93,94 @@ func TestCreateThenGet(t *testing.T) {
 		if !strings.Contains(shown, want) {
 			t.Errorf("get does not show %q:\n%s", want, shown)
 		}
+	}
+}
+
+// Many jobs are submitted from a file, one JSON object per line.
+//
+// One object per line and not one JSON array. A file of a million jobs read
+// as an array has to be held whole before the first one can be checked, and
+// what a queue is fed from is almost always a log or an export, which is
+// already one record per line.
+func TestCreateSubmitsEveryJobInAFile(t *testing.T) {
+	flags, backing := serveWithStore(t)
+
+	path := filepath.Join(t.TempDir(), "jobs.ndjson")
+	if err := os.WriteFile(path, []byte(`{"type":"a","payload":{"n":1}}
+
+{"type":"b","queue":"mail"}
+{"type":"c"}
+`), 0o600); err != nil {
+		t.Fatalf("cannot write the file: %v", err)
+	}
+
+	got, err := cli(t, flags, "create", "-file", path)
+	if err != nil {
+		t.Fatalf("create -file: %v", err)
+	}
+	if !strings.Contains(got, "3 created, 0 refused") {
+		t.Fatalf("create -file printed %q", got)
+	}
+
+	// The identifiers come first, one per line, so the output feeds a pipe
+	// the same way one submission does. The blank line in the file is not a
+	// job.
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("create -file printed %d lines, want three identifiers and a count: %q", len(lines), got)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := backing.Get(t.Context(), strings.TrimSpace(lines[i])); err != nil {
+			t.Errorf("line %d is not a job identifier: %v", i+1, err)
+		}
+	}
+}
+
+// A refused job names the line it came from, and the command fails.
+//
+// A caller feeding a thousand rows needs to know which one to fix, and a
+// command that answered zero would be one a script could not check.
+func TestCreateFromAFileNamesTheJobsItCouldNotStore(t *testing.T) {
+	flags := serve(t)
+
+	path := filepath.Join(t.TempDir(), "jobs.ndjson")
+	if err := os.WriteFile(path, []byte(`{"type":"good"}
+{"type":""}
+{"type":"also-good"}
+`), 0o600); err != nil {
+		t.Fatalf("cannot write the file: %v", err)
+	}
+
+	got, err := cli(t, flags, "create", "-file", path)
+	if err == nil {
+		t.Error("a file with a bad job succeeded")
+	}
+	if !strings.Contains(got, "2 created, 1 refused") {
+		t.Errorf("create -file printed %q", got)
+	}
+	if !strings.Contains(got, "job 2:") {
+		t.Errorf("create -file does not name the job that was refused: %q", got)
+	}
+}
+
+// A line that is not JSON is reported next to the file that holds it.
+//
+// Sending it and reading back an answer about the whole request tells the
+// caller the same thing a round trip later, and without the line number.
+func TestCreateFromAFileRefusesALineThatIsNotJSON(t *testing.T) {
+	flags := serve(t)
+
+	path := filepath.Join(t.TempDir(), "jobs.ndjson")
+	if err := os.WriteFile(path, []byte("{\"type\":\"good\"}\nnot json at all\n"), 0o600); err != nil {
+		t.Fatalf("cannot write the file: %v", err)
+	}
+
+	_, err := cli(t, flags, "create", "-file", path)
+	if err == nil {
+		t.Fatal("a file with a line that is not JSON was sent")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("the error does not name the line: %v", err)
 	}
 }
 
