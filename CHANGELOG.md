@@ -57,11 +57,25 @@ A version moves only when something is released.
   newline in it would write a line of the caller's own choosing into the log
   of the server.
 
+- **A refused request leaves a line.** Info for a 4xx and Warn for a 5xx,
+  naming the request, the route and the code. Refusals only: a queue answering
+  normally is the normal case, and a line for each would bury the ones that
+  matter.
+
+  This was found by driving the feature rather than by testing it. `quorractl`
+  printed an identifier for a job that was not there, and searching the log of
+  the server for that string found nothing, because the only line written for
+  a 404 was no line at all.
+
 **Changed**
 
 - **The lease line names the jobs it handed over.** It said how many and never
   which, so a reader with a job that went missing had the line that accepted
   it and the line that reported on it, and nothing in between.
+- **A client and `quorractl` name the request in a refusal.** The identifier
+  is the one string that finds every line the server wrote while it was
+  refusing, and a caller should not have to know that such a thing exists to
+  end up holding it.
 
 ### A side effect that happens once
 

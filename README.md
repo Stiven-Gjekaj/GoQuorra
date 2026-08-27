@@ -1092,6 +1092,23 @@ The lease line said how many and never which until this release, so a reader
 with a job that went missing had the line that accepted it and the line that
 reported on it, and nothing in between.
 
+A refused request leaves a line of its own, so that the identifier a caller is
+told to quote is quotable against something:
+
+```
+$ quorractl get 8f14e45f-ceea-467a-9c37-8e8f8f8f8f8f
+quorractl: the server refused this: no job carries that identifier (request 660a05cf-...)
+```
+
+```
+{"level":"INFO","msg":"request refused","request":"660a05cf-...","method":"GET","route":"GET /v1/jobs/{id}","code":404}
+```
+
+Refusals only.
+A queue answering normally is the normal case and a line for each would bury
+the ones that matter, while a queue refusing constantly is itself worth
+seeing.
+
 ---
 
 ## Project structure
