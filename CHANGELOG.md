@@ -13,6 +13,44 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### A caller has a name
+
+One shared secret guarded every route, so the queue could count that forty
+jobs had been cancelled and could not say by whom. That is the answer that
+matters on a queue two teams share, and every kind of per caller rule needs
+the same thing first.
+
+**Added**
+
+- **Named API keys with scopes.** `QUORRA_API_KEYS` holds a comma separated
+  list of `name:scope:secret`. The scope is `read` or `write`. A read key
+  gets 403 from a route that changes a job, and not 401: the key is real and
+  the server knows whose it is, and 401 sends somebody to check a key that is
+  working correctly. `QUORRA_API_KEY` still works and means one key named
+  `default` that may write.
+
+  The keys come from configuration and not from a table. A table needs a
+  bootstrapping story for the first key and a rotation story before it is
+  worth anything, and neither is worth buying at this size.
+
+  Names tell services apart, not people. There is no user model here, and a
+  key four people on a team share is a key that names the team.
+- **`GET /v1/whoami`** answers the name and the scope of the key that asked.
+  It needs read, because a key that changes nothing still has to be able to
+  ask what it is. `quorractl whoami` and `client.Whoami` call it.
+- **A job records who cancelled or revived it.** `acted_by` and `acted_at`
+  name the key that acted last and the moment it acted. A job nobody has
+  acted on carries neither. Only cancel and revive set them: the queue
+  leasing, retrying or burying a job is not a person acting.
+
+  The pair holds the last action and not a history. A caller that names
+  nobody clears it, because keeping the name before would say that ops
+  cancelled a job that ops did not cancel.
+- **The two action counters carry the caller.**
+  `quorra_jobs_cancelled_total` and `quorra_jobs_revived_total` are labelled
+  by the key that asked. The label needs no bound: the names come from the
+  server configuration and not from a request.
+
 ### Towards a release
 
 **Fixed**
