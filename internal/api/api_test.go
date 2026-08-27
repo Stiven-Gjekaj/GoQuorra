@@ -200,8 +200,15 @@ func TestAReadKeyCannotChangeAJob(t *testing.T) {
 
 	changes := []struct{ method, path, body string }{
 		{"POST", "/v1/jobs", `{"type":"work"}`},
+		{"POST", "/v1/jobs/bulk", `{"jobs":[{"type":"work"}]}`},
+		{"POST", "/v1/jobs/cancel", `{"status":"pending","limit":1}`},
+		{"POST", "/v1/jobs/revive", `{"status":"dead","limit":1}`},
 		{"POST", "/v1/jobs/" + created.ID + "/cancel", ""},
 		{"POST", "/v1/jobs/" + created.ID + "/revive", ""},
+		{"POST", "/v1/schedules", `{"name":"x","cron":"0 3 * * *","type":"r","catch_up":"skip"}`},
+		{"POST", "/v1/schedules/nightly/disable", ""},
+		{"POST", "/v1/schedules/nightly/enable", ""},
+		{"DELETE", "/v1/schedules/nightly", ""},
 	}
 	for _, change := range changes {
 		got := call(t, handler, change.method, change.path, change.body,
@@ -224,7 +231,7 @@ func TestAReadKeyCannotChangeAJob(t *testing.T) {
 	// And the same key reads everything it should.
 	for _, path := range []string{
 		"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/jobs/" + created.ID + "/attempts",
-		"/v1/queues", "/v1/workers",
+		"/v1/queues", "/v1/workers", "/v1/schedules",
 	} {
 		got := call(t, handler, "GET", path, "", map[string]string{"X-API-Key": readSecret})
 		if got.Code != http.StatusOK {
@@ -443,6 +450,140 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 	if got := statusOf(t, handler, id); got != "cancelled" {
 		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+// A repeat schedule is stored and read back, and says when it fires next.
+func TestAScheduleIsStoredOverHTTP(t *testing.T) {
+	handler, _ := serve(t)
+
+	made := withKey(t, handler, "POST", "/v1/schedules", `{
+		"name":"nightly","cron":"0 3 * * *","timezone":"Europe/Berlin",
+		"catch_up":"skip","type":"report","payload":{"kind":"summary"},"queue":"reports"
+	}`)
+	if made.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/schedules = %d, body %s", made.Code, made.Body)
+	}
+
+	var one struct {
+		Name     string `json:"name"`
+		Cron     string `json:"cron"`
+		Timezone string `json:"timezone"`
+		CatchUp  string `json:"catch_up"`
+		Enabled  bool   `json:"enabled"`
+		Next     string `json:"next_firing_at"`
+	}
+	if err := json.Unmarshal(made.Body.Bytes(), &one); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if one.Name != "nightly" || one.Cron != "0 3 * * *" || one.Timezone != "Europe/Berlin" {
+		t.Errorf("the schedule came back as %+v", one)
+	}
+	if one.CatchUp != "skip" || !one.Enabled {
+		t.Errorf("the schedule came back as %+v", one)
+	}
+
+	// When it fires next is worked out on the server. A caller would need a
+	// cron parser and this clock to do it, and a browser would answer in
+	// whatever zone the reader's machine is set to.
+	if one.Next == "" {
+		t.Fatal("the schedule does not say when it fires next")
+	}
+	next, err := time.Parse(time.RFC3339, one.Next)
+	if err != nil {
+		t.Fatalf("the next firing is not a moment: %v", err)
+	}
+	if !next.After(frozen) {
+		t.Errorf("the next firing is %s, which is not after the clock at %s", next, frozen)
+	}
+
+	// And it is really stored.
+	read := withKey(t, handler, "GET", "/v1/schedules/nightly", "")
+	if read.Code != http.StatusOK {
+		t.Fatalf("GET the schedule = %d, body %s", read.Code, read.Body)
+	}
+	if !strings.Contains(read.Body.String(), "Europe/Berlin") {
+		t.Errorf("the stored schedule is %s", read.Body)
+	}
+}
+
+// The catch up policy is required, and the message says why.
+//
+// The record called this the part everybody forgets and then argues about, so
+// a caller says what it wants rather than discovering what it got.
+func TestAScheduleWithNoCatchUpPolicyIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "POST", "/v1/schedules",
+		`{"name":"nightly","cron":"0 3 * * *","type":"report"}`)
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("a schedule with no catch up = %d, want 400, body %s", got.Code, got.Body)
+	}
+	for _, want := range []string{"catch_up is required", "skip", "all", "none"} {
+		if !strings.Contains(got.Body.String(), want) {
+			t.Errorf("the answer does not say %q: %s", want, got.Body)
+		}
+	}
+
+	// A policy nobody knows is named back.
+	bad := withKey(t, handler, "POST", "/v1/schedules",
+		`{"name":"nightly","cron":"0 3 * * *","type":"report","catch_up":"maybe"}`)
+	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "maybe") {
+		t.Errorf("an unknown policy = %d, body %s", bad.Code, bad.Body)
+	}
+}
+
+// A rule or a zone the server cannot read is 400 and names what is wrong.
+func TestAScheduleTheServerCannotReadIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	cases := map[string]string{
+		"a rule that is not a rule": `{"name":"a","cron":"every night","type":"r","catch_up":"skip"}`,
+		"a rule with four fields":   `{"name":"a","cron":"0 3 * *","type":"r","catch_up":"skip"}`,
+		"a zone that is not a zone": `{"name":"a","cron":"0 3 * * *","timezone":"Mars/Olympus","type":"r","catch_up":"skip"}`,
+		"no job type":               `{"name":"a","cron":"0 3 * * *","type":"","catch_up":"skip"}`,
+		"no name":                   `{"name":"","cron":"0 3 * * *","type":"r","catch_up":"skip"}`,
+	}
+	for name, body := range cases {
+		if got := withKey(t, handler, "POST", "/v1/schedules", body); got.Code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400, body %s", name, got.Code, got.Body)
+		}
+	}
+}
+
+// A schedule is switched off rather than deleted, and says nothing about when
+// it fires next while it is off.
+func TestAScheduleIsSwitchedOffAndOn(t *testing.T) {
+	handler, _ := serve(t)
+
+	withKey(t, handler, "POST", "/v1/schedules",
+		`{"name":"nightly","cron":"0 3 * * *","type":"report","catch_up":"skip"}`)
+
+	off := withKey(t, handler, "POST", "/v1/schedules/nightly/disable", "")
+	if off.Code != http.StatusOK {
+		t.Fatalf("disable = %d, body %s", off.Code, off.Body)
+	}
+	if strings.Contains(off.Body.String(), "next_firing_at") {
+		t.Errorf("a schedule that is off says when it fires next: %s", off.Body)
+	}
+
+	on := withKey(t, handler, "POST", "/v1/schedules/nightly/enable", "")
+	if !strings.Contains(on.Body.String(), "next_firing_at") {
+		t.Errorf("a schedule that is on does not say when it fires next: %s", on.Body)
+	}
+
+	// Removing it says that the jobs it produced are kept, because a caller
+	// who expected them to go should find out here.
+	gone := withKey(t, handler, "DELETE", "/v1/schedules/nightly", "")
+	if gone.Code != http.StatusOK {
+		t.Fatalf("delete = %d, body %s", gone.Code, gone.Body)
+	}
+	if !strings.Contains(gone.Body.String(), "work that happened") {
+		t.Errorf("the answer does not say what happens to the jobs: %s", gone.Body)
+	}
+
+	if after := withKey(t, handler, "GET", "/v1/schedules/nightly", ""); after.Code != http.StatusNotFound {
+		t.Errorf("the schedule is still there: %d", after.Code)
 	}
 }
 

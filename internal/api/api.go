@@ -105,6 +105,13 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveJob)))
 	mux.Handle("GET /v1/queues", a.guard(auth.Read, http.HandlerFunc(a.queueStats)))
 	mux.Handle("GET /v1/workers", a.guard(auth.Read, http.HandlerFunc(a.workers)))
+
+	mux.Handle("POST /v1/schedules", a.guard(auth.Change, http.HandlerFunc(a.createSchedule)))
+	mux.Handle("GET /v1/schedules", a.guard(auth.Read, http.HandlerFunc(a.listSchedules)))
+	mux.Handle("GET /v1/schedules/{name}", a.guard(auth.Read, http.HandlerFunc(a.getSchedule)))
+	mux.Handle("DELETE /v1/schedules/{name}", a.guard(auth.Change, http.HandlerFunc(a.deleteSchedule)))
+	mux.Handle("POST /v1/schedules/{name}/enable", a.guard(auth.Change, http.HandlerFunc(a.enableSchedule)))
+	mux.Handle("POST /v1/schedules/{name}/disable", a.guard(auth.Change, http.HandlerFunc(a.disableSchedule)))
 	mux.Handle("GET /v1/whoami", a.guard(auth.Read, http.HandlerFunc(a.whoami)))
 
 	return a.observe(mux)
