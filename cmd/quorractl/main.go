@@ -35,6 +35,7 @@ Commands:
   queues    Count the jobs in each queue
   history   Show what a job did, run by run
   workers   Show the workers the queue has heard from
+  schedule  Manage the repeat schedules: list, add, show, on, off, remove
   cancel    Stop a job that has not finished, or -all that a filter names
   revive    Put a dead or cancelled job back, or -all that a filter names
   whoami    Show the name and the scope of the key in use
@@ -77,6 +78,8 @@ func run(args []string, out io.Writer) error {
 		return history(args[1:], out)
 	case "workers":
 		return workers(args[1:], out)
+	case "schedule":
+		return schedule(args[1:], out)
 	case "cancel":
 		return act(args[1:], out, "cancel", "cancelled")
 	case "revive":
@@ -107,7 +110,28 @@ func run(args []string, out io.Writer) error {
 // One limit, and it does not bite here: a bare negative number is read as an
 // option. Every argument this tool takes is a job identifier.
 func reorder(set *flag.FlagSet, args []string) []string {
-	var options, rest []string
+	options, rest := split(set, args)
+	if len(rest) == 0 {
+		return options
+	}
+
+	// A -- between the two halves, always.
+	//
+	// Without it the flag package reads the arguments that were moved to the
+	// back as options, and the first version of this function did exactly
+	// that to whatever followed a -- the caller had typed. Ending the options
+	// explicitly means no argument can ever be read as one, whether the
+	// caller wrote a separator or not.
+	return append(append(options, "--"), rest...)
+}
+
+// split separates the options from the arguments.
+//
+// reorder is this followed by a join. A caller that has to read an argument
+// before the flag package has run needs the two halves apart, and the verb
+// under "schedule" is exactly that: the options may come before it, after it,
+// or on both sides.
+func split(set *flag.FlagSet, args []string) (options, rest []string) {
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -143,18 +167,7 @@ func reorder(set *flag.FlagSet, args []string) []string {
 		}
 	}
 
-	if len(rest) == 0 {
-		return options
-	}
-
-	// A -- between the two halves, always.
-	//
-	// Without it the flag package reads the arguments that were moved to the
-	// back as options, and the first version of this function did exactly
-	// that to whatever followed a -- the caller had typed. Ending the options
-	// explicitly means no argument can ever be read as one, whether the
-	// caller wrote a separator or not.
-	return append(append(options, "--"), rest...)
+	return options, rest
 }
 
 // client holds where to send a request and how to prove who is asking.
@@ -512,6 +525,217 @@ func workers(args []string, out io.Writer) error {
 			runAt(first))
 	}
 	return nil
+}
+
+// schedule manages the repeat schedules.
+//
+// One command with verbs under it rather than six top level ones. A schedule
+// is a thing with a small set of actions, and six commands at the top would
+// bury the five somebody uses every day.
+func schedule(args []string, out io.Writer) error {
+	verb, rest := verbOf(args)
+	if verb == "" {
+		return errors.New("give a verb: list, add, show, on, off or remove")
+	}
+	switch verb {
+	case "list":
+		return scheduleList(rest, out)
+	case "add":
+		return scheduleAdd(rest, out)
+	case "show":
+		return scheduleOne(rest, out, http.MethodGet, "")
+	case "on":
+		return scheduleOne(rest, out, http.MethodPost, "/enable")
+	case "off":
+		return scheduleOne(rest, out, http.MethodPost, "/disable")
+	case "remove":
+		return scheduleOne(rest, out, http.MethodDelete, "")
+	default:
+		return fmt.Errorf("%q is not a schedule verb. Use list, add, show, on, off or remove.", verb)
+	}
+}
+
+// verbOf finds the verb among the arguments, and gives back the rest in the
+// order they were written.
+//
+// The verb is not read off the front, because the two options every command
+// takes may come before it: "quorractl -server X schedule list" is a thing
+// somebody types, and so is "quorractl schedule list -server X".
+//
+// Only those two are skipped over. Every other option belongs to the verb and
+// comes after it, so the first token that is neither an option nor the value
+// of -server or -key is the verb.
+//
+// The rest keeps its order, so an option and its value stay together. An
+// earlier version split them into two lists and handed "-name" to one and
+// "nightly" to the other.
+func verbOf(args []string) (string, []string) {
+	known := flag.NewFlagSet("schedule", flag.ContinueOnError)
+	known.SetOutput(io.Discard)
+	_ = common(known)
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		if strings.HasPrefix(arg, "-") && arg != "-" && arg != "--" {
+			// A value belonging to -server or -key is stepped over. An option
+			// this set does not know belongs to the verb, and its value is
+			// left where it is.
+			if !strings.Contains(arg, "=") && known.Lookup(strings.TrimLeft(arg, "-")) != nil {
+				i++
+			}
+			continue
+		}
+
+		rest := make([]string, 0, len(args)-1)
+		rest = append(rest, args[:i]...)
+		rest = append(rest, args[i+1:]...)
+		return arg, rest
+	}
+	return "", nil
+}
+
+func scheduleList(args []string, out io.Writer) error {
+	set := flag.NewFlagSet("schedule list", flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+
+	answer, err := c.send(context.Background(), http.MethodGet, "/v1/schedules", nil)
+	if err != nil {
+		return err
+	}
+
+	rows, _ := answer["schedules"].([]any)
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "No schedules.")
+		return nil
+	}
+
+	fmt.Fprintf(out, "%-24s %-16s %-20s %-8s %-8s %s\n",
+		"NAME", "CRON", "TIMEZONE", "CATCH UP", "STATE", "NEXT")
+	for _, row := range rows {
+		one, _ := row.(map[string]any)
+		state := "off"
+		if on, _ := one["enabled"].(bool); on {
+			state = "on"
+		}
+		fmt.Fprintf(out, "%-24v %-16v %-20v %-8v %-8s %s\n",
+			one["name"], one["cron"], one["timezone"], one["catch_up"], state,
+			runAt(one["next_firing_at"]))
+	}
+	return nil
+}
+
+func scheduleAdd(args []string, out io.Writer) error {
+	set := flag.NewFlagSet("schedule add", flag.ContinueOnError)
+	c := common(set)
+
+	name := set.String("name", "", "the name of the schedule (required)")
+	rule := set.String("cron", "", "the five field rule, such as \"0 3 * * *\" (required)")
+	zone := set.String("timezone", "UTC", "an IANA time zone name, such as Europe/Berlin")
+	catchUp := set.String("catch-up", "", "what to do about missed windows: skip, all or none (required)")
+	jobType := set.String("type", "", "the type of the job each firing submits (required)")
+	payload := set.String("payload", "{}", "the payload, as JSON")
+	queue := set.String("queue", "", "the queue (default \"default\")")
+	priority := set.Int("priority", 0, "higher runs first")
+	retries := set.Int("retries", -1, "retries after the first attempt, or -1 for the server default")
+	off := set.Bool("off", false, "store it switched off")
+
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+
+	for label, value := range map[string]string{
+		"-name": *name, "-cron": *rule, "-type": *jobType,
+	} {
+		if value == "" {
+			set.Usage()
+			return fmt.Errorf("%s is required", label)
+		}
+	}
+
+	// Required and named as required, because the record called this the part
+	// everybody forgets and then argues about. There is no answer that is
+	// right for every schedule, so there is no default.
+	if *catchUp == "" {
+		set.Usage()
+		return errors.New(
+			"-catch-up is required: skip fires once after an outage, all fires every missed window, " +
+				"and none fires nothing until the next one")
+	}
+
+	if !json.Valid([]byte(*payload)) {
+		return fmt.Errorf("-payload is not JSON: %s", *payload)
+	}
+
+	request := map[string]any{
+		"name":     *name,
+		"cron":     *rule,
+		"timezone": *zone,
+		"catch_up": *catchUp,
+		"type":     *jobType,
+		"payload":  json.RawMessage(*payload),
+		"priority": *priority,
+	}
+	if *queue != "" {
+		request["queue"] = *queue
+	}
+	if *retries >= 0 {
+		request["max_retries"] = *retries
+	}
+	if *off {
+		request["enabled"] = false
+	}
+
+	answer, err := c.send(context.Background(), http.MethodPost, "/v1/schedules", request)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%v\n", answer["name"])
+	if next, ok := answer["next_firing_at"].(string); ok && next != "" {
+		fmt.Fprintf(out, "It runs next at %s.\n", runAt(next))
+	} else {
+		fmt.Fprintln(out, "It is switched off and will not run.")
+	}
+	return nil
+}
+
+// scheduleOne runs a verb that names one schedule.
+func scheduleOne(args []string, out io.Writer, method, suffix string) error {
+	set := flag.NewFlagSet("schedule", flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+	if set.NArg() != 1 {
+		return errors.New("give exactly one schedule name")
+	}
+
+	name := set.Arg(0)
+	answer, err := c.send(context.Background(), method, "/v1/schedules/"+url.PathEscape(name)+suffix, nil)
+	if err != nil {
+		return err
+	}
+
+	if method == http.MethodDelete {
+		fmt.Fprintf(out, "%s removed. The jobs it produced are kept.\n", name)
+		return nil
+	}
+	if suffix != "" {
+		state := "off"
+		if on, _ := answer["enabled"].(bool); on {
+			state = "on"
+		}
+		fmt.Fprintf(out, "%s is %s.\n", name, state)
+		if next, ok := answer["next_firing_at"].(string); ok && next != "" {
+			fmt.Fprintf(out, "It runs next at %s.\n", runAt(next))
+		}
+		return nil
+	}
+	return print(out, answer)
 }
 
 // whoami says which key this shell holds.

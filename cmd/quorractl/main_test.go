@@ -96,6 +96,162 @@ func TestCreateThenGet(t *testing.T) {
 	}
 }
 
+// A repeat schedule is added, listed, switched and removed.
+func TestScheduleIsManagedFromTheTool(t *testing.T) {
+	flags := serve(t)
+
+	none, err := cli(t, flags, "schedule", "list")
+	if err != nil {
+		t.Fatalf("schedule list: %v", err)
+	}
+	if !strings.Contains(none, "No schedules") {
+		t.Errorf("schedule list printed %q", none)
+	}
+
+	added, err := cli(t, flags, "schedule", "add",
+		"-name", "nightly", "-cron", "0 3 * * *", "-timezone", "Europe/Berlin",
+		"-catch-up", "skip", "-type", "report")
+	if err != nil {
+		t.Fatalf("schedule add: %v", err)
+	}
+	if !strings.Contains(added, "nightly") || !strings.Contains(added, "runs next") {
+		t.Errorf("schedule add printed %q", added)
+	}
+
+	listed, err := cli(t, flags, "schedule", "list")
+	if err != nil {
+		t.Fatalf("schedule list: %v", err)
+	}
+	for _, want := range []string{"NAME", "CRON", "nightly", "0 3 * * *", "Europe/Berlin", "skip", "on"} {
+		if !strings.Contains(listed, want) {
+			t.Errorf("schedule list printed %q, want it to hold %q", listed, want)
+		}
+	}
+
+	off, err := cli(t, flags, "schedule", "off", "nightly")
+	if err != nil {
+		t.Fatalf("schedule off: %v", err)
+	}
+	if !strings.Contains(off, "nightly is off") {
+		t.Errorf("schedule off printed %q", off)
+	}
+
+	if on, err := cli(t, flags, "schedule", "on", "nightly"); err != nil || !strings.Contains(on, "nightly is on") {
+		t.Errorf("schedule on printed %q: %v", on, err)
+	}
+
+	shown, err := cli(t, flags, "schedule", "show", "nightly")
+	if err != nil {
+		t.Fatalf("schedule show: %v", err)
+	}
+	if !strings.Contains(shown, `"cron": "0 3 * * *"`) {
+		t.Errorf("schedule show printed %q", shown)
+	}
+
+	gone, err := cli(t, flags, "schedule", "remove", "nightly")
+	if err != nil {
+		t.Fatalf("schedule remove: %v", err)
+	}
+	if !strings.Contains(gone, "jobs it produced are kept") {
+		t.Errorf("schedule remove printed %q, and it does not say what happens to the jobs", gone)
+	}
+}
+
+// The catch up policy is required, and the message names the three answers.
+//
+// There is no answer that is right for every schedule, so there is no default
+// and the tool says what each one does rather than only that one is missing.
+func TestScheduleAddRefusesAScheduleWithNoCatchUpPolicy(t *testing.T) {
+	flags := serve(t)
+
+	_, err := cli(t, flags, "schedule", "add",
+		"-name", "nightly", "-cron", "0 3 * * *", "-type", "report")
+	if err == nil {
+		t.Fatal("a schedule with no catch up policy was added")
+	}
+	for _, want := range []string{"skip", "all", "none"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say what %q does: %v", want, err)
+		}
+	}
+
+	// And the other required options are named too.
+	for _, missing := range [][]string{
+		{"schedule", "add", "-cron", "0 3 * * *", "-catch-up", "skip", "-type", "r"},
+		{"schedule", "add", "-name", "n", "-catch-up", "skip", "-type", "r"},
+		{"schedule", "add", "-name", "n", "-cron", "0 3 * * *", "-catch-up", "skip"},
+	} {
+		if _, err := cli(t, flags, missing[0], missing[1:]...); err == nil {
+			t.Errorf("%v was accepted", missing)
+		}
+	}
+}
+
+// The verb is found wherever the options are written.
+//
+// "quorractl -server X schedule list" and "quorractl schedule list -server X"
+// are both things somebody types, and an option and its value have to stay
+// together: an earlier version split them into two lists and handed -name to
+// one and its value to the other.
+func TestTheScheduleVerbIsFoundWhereverTheOptionsAre(t *testing.T) {
+	cases := map[string]struct {
+		args []string
+		verb string
+		rest []string
+	}{
+		"the verb first": {
+			[]string{"list", "-server", "http://x"},
+			"list", []string{"-server", "http://x"},
+		},
+		"the common options first": {
+			[]string{"-server", "http://x", "-key", "k", "list"},
+			"list", []string{"-server", "http://x", "-key", "k"},
+		},
+		"options on both sides": {
+			[]string{"-server", "http://x", "add", "-name", "nightly"},
+			"add", []string{"-server", "http://x", "-name", "nightly"},
+		},
+		"an option of the verb keeps its value": {
+			[]string{"add", "-name", "nightly", "-cron", "0 3 * * *"},
+			"add", []string{"-name", "nightly", "-cron", "0 3 * * *"},
+		},
+		"nothing at all": {nil, "", nil},
+		"only options":   {[]string{"-server", "http://x"}, "", nil},
+	}
+
+	for name, c := range cases {
+		verb, rest := verbOf(c.args)
+		if verb != c.verb {
+			t.Errorf("%s: the verb is %q, want %q", name, verb, c.verb)
+		}
+		if len(rest) != len(c.rest) {
+			t.Errorf("%s: the rest is %v, want %v", name, rest, c.rest)
+			continue
+		}
+		for i := range rest {
+			if rest[i] != c.rest[i] {
+				t.Errorf("%s: the rest is %v, want %v", name, rest, c.rest)
+				break
+			}
+		}
+	}
+}
+
+// A verb the tool does not know says which ones it does.
+func TestScheduleNamesItsVerbs(t *testing.T) {
+	flags := serve(t)
+
+	_, err := cli(t, flags, "schedule", "delete", "nightly")
+	if err == nil {
+		t.Fatal("an unknown verb ran")
+	}
+	for _, want := range []string{"list", "add", "show", "on", "off", "remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not name the %q verb: %v", want, err)
+		}
+	}
+}
+
 // Many jobs are submitted from a file, one JSON object per line.
 //
 // One object per line and not one JSON array. A file of a million jobs read
