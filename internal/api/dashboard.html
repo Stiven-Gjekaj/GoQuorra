@@ -227,6 +227,11 @@ function renderQueues(rows) {
 // jobs in it is still a button somebody can press.
 const STATUSES = ["blocked", "pending", "leased", "succeeded", "dead", "cancelled"];
 
+// The states a job never leaves. A job in any other state can be cancelled,
+// and the buttons are decided from this rather than from a second list of the
+// states that can be.
+const FINISHED = ["succeeded", "dead", "cancelled"];
+
 function renderFilters() {
   const holder = document.getElementById("filters");
   holder.replaceChildren();
@@ -378,9 +383,13 @@ function renderJobs(list) {
 
     // Only the actions the server would accept. A button that always answers
     // 409 teaches the reader to ignore the row.
+    //
+    // Written as "not finished" rather than as a list of states. The list was
+    // there first and went stale on the first state added after it: a waiting
+    // job could be cancelled by every other route and had no button here.
     const acts = cell(row, "");
     acts.className = "act";
-    if (job.status === "pending" || job.status === "leased") {
+    if (!FINISHED.includes(job.status)) {
       action(acts, "cancel", "cancel", job.id);
     }
     if (job.status === "dead" || job.status === "cancelled") {

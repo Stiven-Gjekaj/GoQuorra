@@ -264,6 +264,50 @@ func TestTheDashboardOffersEveryStatus(t *testing.T) {
 	}
 }
 
+// Every job that has not finished can be cancelled from the page.
+//
+// Decided from what is finished rather than from a list of what can be
+// cancelled. The list was there first and went stale on the first state added
+// after it: a waiting job could be cancelled by every other route and had no
+// button here. Found by loading the page, not by a test.
+func TestEveryUnfinishedJobCanBeCancelledFromThePage(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	// The list of states the page treats as finished has to be exactly the
+	// ones the domain calls terminal.
+	for _, status := range jobs.All() {
+		listed := strings.Contains(page, `const FINISHED = [`) &&
+			strings.Contains(finishedList(page), `"`+status.String()+`"`)
+		if listed != status.Terminal() {
+			t.Errorf("the page lists %q as finished: %v, and the domain says %v",
+				status, listed, status.Terminal())
+		}
+	}
+
+	// And the button is not decided by naming the states that can be
+	// cancelled, which is the shape that went stale.
+	if strings.Contains(page, `job.status === "pending" || job.status === "leased"`) {
+		t.Error("the cancel button is decided from a list of states, which goes stale")
+	}
+}
+
+// finishedList gives the text of the FINISHED array in the page.
+func finishedList(page string) string {
+	start := strings.Index(page, "const FINISHED = [")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(page[start:], "]")
+	if end < 0 {
+		return ""
+	}
+	return page[start : start+end]
+}
+
 // The dashboard acts on a job through the same routes everything else uses.
 func TestTheDashboardUsesTheRealVerbs(t *testing.T) {
 	source, err := os.ReadFile("dashboard.html")
