@@ -446,6 +446,125 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 }
 
+// Many jobs are submitted in one request.
+//
+// A producer with a thousand rows to queue otherwise makes a thousand
+// requests, and the round trips cost more than the work does.
+func TestManyJobsAreSubmittedInOneRequest(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "POST", "/v1/jobs/bulk", `{"jobs":[
+		{"type":"a"},
+		{"type":"b","queue":"mail","priority":5},
+		{"type":"c","idempotency_key":"k1"}
+	]}`)
+	if got.Code != http.StatusOK {
+		t.Fatalf("bulk submit = %d, body %s", got.Code, got.Body)
+	}
+
+	var answer struct {
+		Created int `json:"created"`
+		Refused int `json:"refused"`
+		Results []struct {
+			Index   int    `json:"index"`
+			ID      string `json:"id"`
+			Created bool   `json:"created"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if answer.Created != 3 || answer.Refused != 0 {
+		t.Fatalf("created %d and refused %d, want 3 and 0: %s", answer.Created, answer.Refused, got.Body)
+	}
+	for i, one := range answer.Results {
+		if one.Index != i || one.ID == "" || !one.Created {
+			t.Errorf("result %d is %+v", i, one)
+		}
+	}
+
+	// The idempotency key still holds across a bulk submission.
+	again := withKey(t, handler, "POST", "/v1/jobs/bulk", `{"jobs":[{"type":"c","idempotency_key":"k1"}]}`)
+	var second struct {
+		Created int `json:"created"`
+		Results []struct {
+			ID      string `json:"id"`
+			Created bool   `json:"created"`
+		} `json:"results"`
+	}
+	_ = json.Unmarshal(again.Body.Bytes(), &second)
+	if second.Created != 0 || second.Results[0].Created {
+		t.Errorf("a repeated key created a second job: %s", again.Body)
+	}
+	if second.Results[0].ID != answer.Results[2].ID {
+		t.Errorf("a repeated key gave back a different job")
+	}
+}
+
+// One bad job does not lose the good ones.
+//
+// Jobs are independent, so one transaction for the batch is the wrong shape:
+// a single bad payload would lose the nine hundred and ninety nine beside it.
+func TestOneBadJobDoesNotLoseTheGoodOnes(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "POST", "/v1/jobs/bulk", `{"jobs":[
+		{"type":"good"},
+		{"type":""},
+		{"type":"also-good"}
+	]}`)
+	if got.Code != http.StatusOK {
+		t.Fatalf("bulk submit = %d, body %s", got.Code, got.Body)
+	}
+
+	var answer struct {
+		Created int `json:"created"`
+		Refused int `json:"refused"`
+		Results []struct {
+			Index int    `json:"index"`
+			ID    string `json:"id"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if answer.Created != 2 || answer.Refused != 1 {
+		t.Fatalf("created %d and refused %d, want 2 and 1: %s", answer.Created, answer.Refused, got.Body)
+	}
+
+	// The failure names which row it was, because that is what the caller
+	// needs to fix it.
+	if answer.Results[1].Index != 1 || answer.Results[1].Error == "" {
+		t.Errorf("the refused row is %+v", answer.Results[1])
+	}
+	if answer.Results[0].ID == "" || answer.Results[2].ID == "" {
+		t.Error("a job beside the bad one was lost")
+	}
+}
+
+// A request with no jobs, or with too many, is refused.
+func TestABulkSubmissionIsBounded(t *testing.T) {
+	handler, _ := serve(t)
+
+	if got := withKey(t, handler, "POST", "/v1/jobs/bulk", `{"jobs":[]}`); got.Code != http.StatusBadRequest {
+		t.Errorf("an empty submission = %d, want 400", got.Code)
+	}
+
+	var many []string
+	for i := 0; i < 1001; i++ {
+		many = append(many, `{"type":"work"}`)
+	}
+	got := withKey(t, handler, "POST", "/v1/jobs/bulk", `{"jobs":[`+strings.Join(many, ",")+`]}`)
+	if got.Code != http.StatusBadRequest {
+		t.Errorf("a submission of 1001 jobs = %d, want 400, body %s", got.Code, got.Body)
+	}
+	if !strings.Contains(got.Body.String(), "1000") {
+		t.Errorf("the answer does not say how many one request may carry: %s", got.Body)
+	}
+}
+
 // A dead letter queue is cleared in one request.
 func TestJobsAreRevivedInOneRequest(t *testing.T) {
 	handler, backing := serve(t)

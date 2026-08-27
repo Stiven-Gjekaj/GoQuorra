@@ -124,6 +124,110 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 	a.send(w, code, answer)
 }
 
+// createMany handles POST /v1/jobs/bulk.
+//
+// One request for many jobs. A producer with a thousand rows to queue
+// otherwise makes a thousand requests, and the round trips cost more than the
+// work does.
+//
+// Each job is stored on its own and the answer says what happened to each.
+// One transaction for the batch was the alternative and is wrong here: jobs
+// are independent, and one bad payload would lose the nine hundred and
+// ninety nine good ones.
+func (a *API) createMany(w http.ResponseWriter, r *http.Request) {
+	body := http.MaxBytesReader(w, r.Body, a.opts.MaxBodyBytes)
+
+	var req struct {
+		Jobs []createRequest `json:"jobs"`
+	}
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			a.fail(w, http.StatusRequestEntityTooLarge,
+				"the request body is larger than "+strconv.FormatInt(a.opts.MaxBodyBytes, 10)+" bytes")
+			return
+		}
+		a.fail(w, http.StatusBadRequest, "the request body is not the JSON this endpoint expects: "+err.Error())
+		return
+	}
+
+	if len(req.Jobs) == 0 {
+		a.fail(w, http.StatusBadRequest, "the request names no jobs")
+		return
+	}
+	if len(req.Jobs) > bulkSubmitMost {
+		a.fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"the request holds %d jobs, and one request may carry %d", len(req.Jobs), bulkSubmitMost))
+		return
+	}
+
+	results := make([]map[string]any, 0, len(req.Jobs))
+	created := 0
+	failed := 0
+
+	for i, one := range req.Jobs {
+		job, made, err := a.opts.Store.Create(r.Context(), store.NewJob{
+			Type:           one.Type,
+			Payload:        one.Payload,
+			Queue:          one.Queue,
+			Priority:       one.Priority,
+			Delay:          time.Duration(one.DelaySeconds) * time.Second,
+			MaxRetries:     one.MaxRetries,
+			After:          one.After,
+			IdempotencyKey: one.IdempotencyKey,
+		})
+		if err != nil {
+			// A job the store refuses is reported beside the others rather
+			// than ending the request. The caller learns which of its rows
+			// is wrong, which is the answer it needs to fix them.
+			if !errors.Is(err, store.ErrNotFound) && !isClientMistake(err) {
+				a.log.Error("cannot store a job", "error", err)
+				a.fail(w, http.StatusInternalServerError, "cannot store the jobs")
+				return
+			}
+			results = append(results, map[string]any{"index": i, "error": err.Error()})
+			failed++
+			continue
+		}
+
+		if made {
+			created++
+			a.opts.Metrics.JobCreated()
+		}
+		results = append(results, map[string]any{
+			"index":   i,
+			"id":      job.ID,
+			"status":  job.Status,
+			"queue":   job.Queue,
+			"run_at":  job.RunAt,
+			"created": made,
+		})
+	}
+
+	a.log.Info("jobs accepted in one request", "created", created, "refused", failed)
+
+	// 200 and not 201, whatever the counts.
+	//
+	// The request succeeded: it was read, and every job in it was answered
+	// for. 201 would claim the whole thing was created, which is not true
+	// when one row was refused, and 400 would claim none of it was, which is
+	// not true when nine hundred were stored.
+	a.send(w, http.StatusOK, map[string]any{
+		"created": created,
+		"refused": failed,
+		"results": results,
+	})
+}
+
+// bulkSubmitMost bounds how many jobs one request may carry.
+//
+// The body size is bounded too, so this is the second of two limits. It
+// matters because a body of a thousand tiny jobs fits easily and is a
+// thousand round trips to the database.
+const bulkSubmitMost = 1000
+
 // whoami handles GET /v1/whoami.
 //
 // It answers the name and the scope of the key that asked, and nothing about

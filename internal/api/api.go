@@ -95,6 +95,7 @@ func (a *API) Handler() http.Handler {
 	// would be a route that anybody could call, and reading the list is how
 	// somebody notices.
 	mux.Handle("POST /v1/jobs", a.guard(auth.Write, http.HandlerFunc(a.createJob)))
+	mux.Handle("POST /v1/jobs/bulk", a.guard(auth.Write, http.HandlerFunc(a.createMany)))
 	mux.Handle("GET /v1/jobs", a.guard(auth.Read, http.HandlerFunc(a.listJobs)))
 	mux.Handle("GET /v1/jobs/{id}", a.guard(auth.Read, http.HandlerFunc(a.getJob)))
 	mux.Handle("GET /v1/jobs/{id}/attempts", a.guard(auth.Read, http.HandlerFunc(a.jobAttempts)))
