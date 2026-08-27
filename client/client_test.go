@@ -167,6 +167,69 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// Many jobs are submitted in one call, and one bad one does not lose the rest.
+func TestAProducerSubmitsManyJobsInOneCall(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	results, err := c.SubmitMany(ctx, []client.NewJob{
+		{Type: "a", Payload: map[string]int{"n": 1}},
+		{Type: "b", Queue: "mail"},
+		{Type: "c", Key: "k1"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitMany: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("the answer holds %d results, want 3", len(results))
+	}
+	for i, one := range results {
+		if one.Index != i || one.ID == "" || !one.Created || one.Error != "" {
+			t.Errorf("result %d is %+v", i, one)
+		}
+	}
+
+	// The jobs are really there, with what was sent.
+	first, err := c.Get(ctx, results[0].ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(first.Payload) != `{"n":1}` {
+		t.Errorf("the payload is %s, want what was sent", first.Payload)
+	}
+
+	// A job the server refuses is reported beside the others rather than
+	// ending the call.
+	mixed, err := c.SubmitMany(ctx, []client.NewJob{
+		{Type: "good"},
+		{Type: "bad", After: []string{"8de1a3d0-0000-0000-0000-000000000000"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitMany with one bad job: %v", err)
+	}
+	if mixed[0].Error != "" || mixed[0].ID == "" {
+		t.Errorf("the good job is %+v", mixed[0])
+	}
+	if mixed[1].Error == "" {
+		t.Errorf("the bad job is %+v, want it to say why", mixed[1])
+	}
+}
+
+// A job with no type is refused here rather than being sent.
+//
+// The single path already refuses it, and the bulk path builds its bodies
+// through the same function, so a field added to one is in the other.
+func TestSubmitManyRefusesAJobWithNoType(t *testing.T) {
+	c := connect(t)
+
+	if _, err := c.SubmitMany(t.Context(), []client.NewJob{{Type: "good"}, {}}); err == nil {
+		t.Error("a job with no type was sent")
+	}
+	if _, err := c.SubmitMany(t.Context(), nil); err == nil {
+		t.Error("an empty list was sent")
+	}
+}
+
 // A dead letter queue is cleared in one call.
 func TestAClientClearsADeadLetterQueueInOneCall(t *testing.T) {
 	c, backing := connectWithStore(t)

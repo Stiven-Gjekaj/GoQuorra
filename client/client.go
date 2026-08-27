@@ -219,6 +219,33 @@ type submitted struct {
 // It does not carry the payload back, because the server does not send it: ask
 // for the job with Get when the whole of it is wanted.
 func (c *Client) Submit(ctx context.Context, n NewJob) (*Job, error) {
+
+	body, err := submission(n)
+	if err != nil {
+		return nil, err
+	}
+
+	var answer submitted
+	if err := c.call(ctx, http.MethodPost, "/v1/jobs", body, &answer); err != nil {
+		return nil, err
+	}
+
+	return &Job{
+		ID:     answer.ID,
+		Type:   n.Type,
+		Status: answer.Status,
+		Queue:  answer.Queue,
+		After:  answer.After,
+		RunAt:  answer.RunAt,
+	}, nil
+}
+
+// submission turns a NewJob into the body the API takes.
+//
+// One place, used by both the single and the bulk paths, so that a field
+// added to one is in the other. Written twice, the two would drift on the
+// first field added to either.
+func submission(n NewJob) (map[string]any, error) {
 	if n.Type == "" {
 		return nil, errors.New("quorra: a job needs a type")
 	}
@@ -250,20 +277,56 @@ func (c *Client) Submit(ctx context.Context, n NewJob) (*Job, error) {
 	if len(n.After) > 0 {
 		body["after"] = n.After
 	}
+	return body, nil
+}
 
-	var answer submitted
-	if err := c.call(ctx, http.MethodPost, "/v1/jobs", body, &answer); err != nil {
-		return nil, err
+// Submitted is what happened to one job in a bulk submission.
+type Submitted struct {
+	// Index is the position of the job in the list that was sent, so a
+	// caller can match a failure to the row that caused it.
+	Index int `json:"index"`
+
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Queue  string `json:"queue"`
+
+	// Created is false for a job that an idempotency key already claimed.
+	Created bool `json:"created"`
+
+	// Error is what the server refused this job for, and is empty for one it
+	// stored.
+	Error string `json:"error"`
+}
+
+// SubmitMany stores many jobs in one request.
+//
+// A producer with a thousand rows to queue otherwise makes a thousand
+// requests, and the round trips cost more than the work does.
+//
+// Each job is answered for on its own. A failure in the list is not an error
+// from this call: jobs are independent, and one bad payload does not lose the
+// nine hundred and ninety nine beside it. Read Error on each result.
+func (c *Client) SubmitMany(ctx context.Context, jobs []NewJob) ([]Submitted, error) {
+	if len(jobs) == 0 {
+		return nil, errors.New("quorra: SubmitMany was given no jobs")
 	}
 
-	return &Job{
-		ID:     answer.ID,
-		Type:   n.Type,
-		Status: answer.Status,
-		Queue:  answer.Queue,
-		After:  answer.After,
-		RunAt:  answer.RunAt,
-	}, nil
+	bodies := make([]map[string]any, 0, len(jobs))
+	for _, n := range jobs {
+		body, err := submission(n)
+		if err != nil {
+			return nil, err
+		}
+		bodies = append(bodies, body)
+	}
+
+	var answer struct {
+		Results []Submitted `json:"results"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/v1/jobs/bulk", map[string]any{"jobs": bodies}, &answer); err != nil {
+		return nil, err
+	}
+	return answer.Results, nil
 }
 
 // Get reads one job.
