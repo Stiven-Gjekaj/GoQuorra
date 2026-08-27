@@ -7,6 +7,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/reqid"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
 
@@ -140,16 +142,28 @@ func (r *recorder) Write(b []byte) (int, error) {
 }
 
 // observe times a request, records it, and turns a panic into a 500.
+//
+// It also gives the request its identifier, before anything else runs. A
+// request refused by the guard has one, and so does a request that panics:
+// those are the two a caller is most likely to ask about.
 func (a *API) observe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		rec := &recorder{ResponseWriter: w}
 
+		id := reqid.Of(r.Header.Get(reqid.Header))
+		r = r.WithContext(reqid.Into(r.Context(), id))
+
+		// On the answer before the handler runs, so that it is there whatever
+		// the answer turns out to be. A header written after the status line
+		// has gone is a header nobody receives.
+		rec.Header().Set(reqid.Header, id)
+
 		defer func() {
 			if panicked := recover(); panicked != nil {
 				// One bad request must not end the process and take every
 				// other request in flight with it.
-				a.log.Error("a request panicked",
+				a.logOf(r.Context()).Error("a request panicked",
 					"method", r.Method, "path", r.URL.Path, "panic", panicked)
 				if rec.status == 0 {
 					http.Error(rec, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -233,7 +247,7 @@ func (a *API) fail(w http.ResponseWriter, status int, message string) {
 // The old handler answered 404 to every failure from the store, so a database
 // that had fallen over was reported to the client as a missing job, and the
 // logs of the client and of the server told different stories.
-func (a *API) failWith(w http.ResponseWriter, err error, what string) {
+func (a *API) failWith(ctx context.Context, w http.ResponseWriter, err error, what string) {
 	if errors.Is(err, store.ErrNotFound) {
 		a.fail(w, http.StatusNotFound, "no job carries that identifier")
 		return
@@ -247,8 +261,19 @@ func (a *API) failWith(w http.ResponseWriter, err error, what string) {
 		return
 	}
 
-	a.log.Error(what, "error", err)
+	a.logOf(ctx).Error(what, "error", err)
 	a.fail(w, http.StatusInternalServerError, what)
+}
+
+// logOf gives a log that names the request every line came from.
+//
+// The identifier is on the answer as well, so a caller with a failure can
+// quote the one string that finds every line about it.
+func (a *API) logOf(ctx context.Context) *slog.Logger {
+	if id := reqid.From(ctx); id != "" {
+		return a.log.With("request", id)
+	}
+	return a.log
 }
 
 func statusText(status int) string {

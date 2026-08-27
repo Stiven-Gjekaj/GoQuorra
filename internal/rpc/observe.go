@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/reqid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -33,7 +35,7 @@ type Observer struct {
 // NewObserver builds an observer that reports to a recorder.
 func NewObserver(to Recorder) *Observer { return &Observer{to: to} }
 
-// Unary times calls that answer once.
+// Unary times calls that answer once, and gives each one its identifier.
 func (o *Observer) Unary() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -42,6 +44,7 @@ func (o *Observer) Unary() grpc.UnaryServerInterceptor {
 		handler grpc.UnaryHandler,
 	) (any, error) {
 		started := time.Now()
+		ctx = withRequestID(ctx)
 		answer, err := handler(ctx, req)
 		o.to.GRPCRequest(shortMethod(info.FullMethod), codeOf(err), time.Since(started))
 		return answer, err
@@ -65,11 +68,51 @@ func (o *Observer) Stream() grpc.StreamServerInterceptor {
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		err := handler(srv, stream)
+		err := handler(srv, &identified{ServerStream: stream, ctx: withRequestID(stream.Context())})
 		o.to.GRPCStream(shortMethod(info.FullMethod), codeOf(err))
 		return err
 	}
 }
+
+// withRequestID puts the identifier of this call on its context, and sends it
+// back to the caller.
+//
+// Taken from what the caller sent when the caller sent something usable, so a
+// worker that already carries a trace identifier keeps it and the two sides
+// name the same string.
+//
+// The header is sent whatever happens next. A call that is refused is the one
+// a caller is most likely to ask about.
+func withRequestID(ctx context.Context) context.Context {
+	sent := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get(header); len(values) > 0 {
+			sent = values[0]
+		}
+	}
+
+	id := reqid.Of(sent)
+	_ = grpc.SetHeader(ctx, metadata.Pairs(header, id))
+	return reqid.Into(ctx, id)
+}
+
+// identified is a stream whose context carries the identifier.
+//
+// A stream handler reads its context from the stream and not from an argument,
+// so an interceptor that wants to put something on it has to wrap the stream.
+type identified struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (i *identified) Context() context.Context { return i.ctx }
+
+// header is the metadata key the identifier travels under.
+//
+// gRPC lowercases metadata keys, and a key with an upper case letter in it is
+// refused outright, so the name from the reqid package is lowered here rather
+// than being written out a second time.
+var header = strings.ToLower(reqid.Header)
 
 // shortMethod is the method name without the service in front of it.
 //

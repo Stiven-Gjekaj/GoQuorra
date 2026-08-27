@@ -49,7 +49,7 @@ func (s *Service) Watch(req *quorrapb.WatchRequest, stream quorrapb.QueueService
 	}
 
 	caller := CallerOf(ctx)
-	s.log.Debug("a worker is watching",
+	s.logOf(ctx).Debug("a worker is watching",
 		"worker", req.GetWorkerId(), "queues", req.GetQueues(), "key", caller.Name)
 
 	for {

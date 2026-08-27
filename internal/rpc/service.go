@@ -15,6 +15,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/reqid"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -119,13 +120,22 @@ func (s *Service) Lease(ctx context.Context, req *quorrapb.LeaseRequest) (*quorr
 		TTL:      ttl,
 	})
 	if err != nil {
-		s.log.Error("cannot lease jobs", "worker", req.GetWorkerId(), "queue", queue, "error", err)
+		s.logOf(ctx).Error("cannot lease jobs", "worker", req.GetWorkerId(), "queue", queue, "error", err)
 		return nil, status.Error(codes.Internal, "cannot lease jobs")
 	}
 
 	s.metrics.JobsLeased(len(leased))
 	if len(leased) > 0 {
-		s.log.Debug("leased jobs", "worker", req.GetWorkerId(), "queue", queue, "count", len(leased))
+		// The identifiers and not only a count. A reader with a job that
+		// went missing has the line that accepted it and the line that
+		// reported on it, and until this named them there was nothing in
+		// between: the count said one job was leased and never which.
+		handed := make([]string, len(leased))
+		for i, job := range leased {
+			handed[i] = job.ID
+		}
+		s.logOf(ctx).Debug("leased jobs",
+			"worker", req.GetWorkerId(), "queue", queue, "count", len(leased), "jobs", handed)
 	}
 
 	out := make([]*quorrapb.Job, len(leased))
@@ -218,12 +228,12 @@ func (s *Service) Report(ctx context.Context, req *quorrapb.ReportRequest) (*quo
 		if errors.Is(err, store.ErrNotJSON) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		s.log.Error("cannot record a report", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
+		s.logOf(ctx).Error("cannot record a report", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
 		return nil, status.Error(codes.Internal, "cannot record the report")
 	}
 
 	s.metrics.JobFinished(job, outcome, s.now())
-	s.log.Debug("recorded a report",
+	s.logOf(ctx).Debug("recorded a report",
 		"job", job.ID, "worker", req.GetWorkerId(), "outcome", outcome, "status", job.Status)
 
 	return &quorrapb.ReportResponse{
@@ -265,7 +275,7 @@ func (s *Service) Heartbeat(ctx context.Context, req *quorrapb.HeartbeatRequest)
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"the lease on job %s is no longer valid, so the job is no longer yours", req.GetJobId())
 	case err != nil:
-		s.log.Error("cannot extend a lease", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
+		s.logOf(ctx).Error("cannot extend a lease", "job", req.GetJobId(), "worker", req.GetWorkerId(), "error", err)
 		return nil, status.Error(codes.Internal, "cannot extend the lease")
 	}
 
@@ -294,4 +304,15 @@ func toProto(job *store.Job) *quorrapb.Job {
 		out.LeaseExpiresAt = timestamppb.New(*job.LeaseExpiresAt)
 	}
 	return out
+}
+
+// logOf gives a log that names the call every line came from.
+//
+// The identifier is sent back to the caller as well, so a worker with a
+// failure has the one string that finds every line about it.
+func (s *Service) logOf(ctx context.Context) *slog.Logger {
+	if id := reqid.From(ctx); id != "" {
+		return s.log.With("request", id)
+	}
+	return s.log
 }

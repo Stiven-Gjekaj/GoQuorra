@@ -15,6 +15,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/reqid"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
 )
@@ -1463,4 +1464,98 @@ func testKeys(t *testing.T, secret string) *auth.Set {
 		t.Fatalf("auth.NewSet: %v", err)
 	}
 	return set
+}
+
+// Every answer carries an identifier for the request that made it.
+//
+// A caller that says "it failed at 14:02" has nothing to quote without one,
+// and a server writing two hundred lines a second at 14:02 has nothing to
+// look for.
+func TestEveryAnswerCarriesARequestIdentifier(t *testing.T) {
+	handler, _ := serve(t)
+
+	first := withKey(t, handler, "GET", "/v1/queues", "")
+	second := withKey(t, handler, "GET", "/v1/queues", "")
+
+	one := first.Header().Get(reqid.Header)
+	two := second.Header().Get(reqid.Header)
+	if one == "" {
+		t.Fatal("an answer carries no identifier")
+	}
+	if one == two {
+		t.Errorf("two requests share the identifier %q", one)
+	}
+}
+
+// A request the guard refused carries one as well.
+//
+// That is the one a caller is most likely to ask about, which is why the
+// identifier is given out before the guard runs and not after it.
+//
+// Over a real connection, and not through a recorder like every other test
+// here. A recorder keeps a header set after the answer was written, so it
+// cannot tell a header that reached the caller from one that did not, and the
+// first version of this test passed against a build that set the header after
+// the handler had already answered.
+func TestARefusedRequestCarriesARequestIdentifier(t *testing.T) {
+	handler, _ := serve(t)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	request, err := http.NewRequest("GET", server.URL+"/v1/queues", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	request.Header.Set("X-API-Key", "the-wrong-key-entirely-abcdef")
+
+	answer, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("the request failed: %v", err)
+	}
+	defer func() { _ = answer.Body.Close() }()
+
+	if answer.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the request answered %d, want 401", answer.StatusCode)
+	}
+	if answer.Header.Get(reqid.Header) == "" {
+		t.Error("a refused request carries no identifier")
+	}
+}
+
+// What a caller sent is what comes back, so both sides quote one string.
+func TestWhatACallerSentComesBack(t *testing.T) {
+	handler, _ := serve(t)
+
+	answer := call(t, handler, "GET", "/v1/queues", "", map[string]string{
+		"X-API-Key":  key,
+		reqid.Header: "trace-abc-123",
+	})
+
+	if got := answer.Header().Get(reqid.Header); got != "trace-abc-123" {
+		t.Errorf("the answer carries %q, and the caller sent trace-abc-123", got)
+	}
+}
+
+// An identifier a caller made up is refused when it could write a log line of
+// its own.
+//
+// A log line is a line. A value with a newline in it puts a line of the
+// caller's choosing in the log of the server, saying whatever the caller
+// likes.
+func TestAnIdentifierThatCouldWriteALogLineIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	answer := call(t, handler, "GET", "/v1/queues", "", map[string]string{
+		"X-API-Key":  key,
+		reqid.Header: "ok\nlevel=ERROR\tmsg=the-database-is-gone",
+	})
+
+	got := answer.Header().Get(reqid.Header)
+	if strings.ContainsAny(got, "\n\r\t") {
+		t.Errorf("the answer carries %q, which could write a line of its own", got)
+	}
+	if got == "" {
+		t.Error("a request with an unusable identifier got none at all")
+	}
 }

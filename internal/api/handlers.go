@@ -89,7 +89,7 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		a.log.Error("cannot store a job", "error", err)
+		a.logOf(r.Context()).Error("cannot store a job", "error", err)
 		a.fail(w, http.StatusInternalServerError, "cannot store the job")
 		return
 	}
@@ -104,9 +104,9 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 	if created {
 		code = http.StatusCreated
 		a.opts.Metrics.JobCreated()
-		a.log.Info("job accepted", "job", job.ID, "type", job.Type, "queue", job.Queue)
+		a.logOf(r.Context()).Info("job accepted", "job", job.ID, "type", job.Type, "queue", job.Queue)
 	} else {
-		a.log.Info("job already submitted under this key", "job", job.ID, "key", job.IdempotencyKey)
+		a.logOf(r.Context()).Info("job already submitted under this key", "job", job.ID, "key", job.IdempotencyKey)
 	}
 
 	w.Header().Set("Location", "/v1/jobs/"+job.ID)
@@ -183,7 +183,7 @@ func (a *API) createMany(w http.ResponseWriter, r *http.Request) {
 			// than ending the request. The caller learns which of its rows
 			// is wrong, which is the answer it needs to fix them.
 			if !errors.Is(err, store.ErrNotFound) && !isClientMistake(err) {
-				a.log.Error("cannot store a job", "error", err)
+				a.logOf(r.Context()).Error("cannot store a job", "error", err)
 				a.fail(w, http.StatusInternalServerError, "cannot store the jobs")
 				return
 			}
@@ -206,7 +206,7 @@ func (a *API) createMany(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	a.log.Info("jobs accepted in one request", "created", created, "refused", failed)
+	a.logOf(r.Context()).Info("jobs accepted in one request", "created", created, "refused", failed)
 
 	// 200 and not 201, whatever the counts.
 	//
@@ -248,7 +248,7 @@ func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
 func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 	job, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.failWith(w, err, "cannot read the job")
+		a.failWith(r.Context(), w, err, "cannot read the job")
 		return
 	}
 	a.send(w, http.StatusOK, job)
@@ -266,7 +266,7 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 func (a *API) jobAttempts(w http.ResponseWriter, r *http.Request) {
 	found, err := a.opts.Store.Attempts(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.failWith(w, err, "cannot read what the job did")
+		a.failWith(r.Context(), w, err, "cannot read what the job did")
 		return
 	}
 
@@ -292,12 +292,12 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
-		a.failWith(w, err, "cannot cancel the job")
+		a.failWith(r.Context(), w, err, "cannot cancel the job")
 		return
 	}
 
 	a.opts.Metrics.JobCancelled(caller.Name)
-	a.log.Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
+	a.logOf(r.Context()).Info("job cancelled", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
 
@@ -307,12 +307,12 @@ func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
-		a.failWith(w, err, "cannot revive the job")
+		a.failWith(r.Context(), w, err, "cannot revive the job")
 		return
 	}
 
 	a.opts.Metrics.JobRevived(caller.Name)
-	a.log.Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
+	a.logOf(r.Context()).Info("job revived", "job", job.ID, "type", job.Type, "queue", job.Queue, "by", caller.Name)
 	a.send(w, http.StatusOK, job)
 }
 
@@ -392,7 +392,7 @@ func (a *API) bulk(
 	caller := callerOf(r.Context())
 	moved, err := act(r.Context(), filter, caller.Name)
 	if err != nil {
-		a.failWith(w, err, "cannot act on the jobs")
+		a.failWith(r.Context(), w, err, "cannot act on the jobs")
 		return
 	}
 
@@ -402,7 +402,7 @@ func (a *API) bulk(
 	for i := 0; i < moved; i++ {
 		count(caller.Name)
 	}
-	a.log.Info("jobs "+done+" in one request", "count", moved, "by", caller.Name)
+	a.logOf(r.Context()).Info("jobs "+done+" in one request", "count", moved, "by", caller.Name)
 
 	a.send(w, http.StatusOK, map[string]any{"moved": moved})
 }
@@ -488,7 +488,7 @@ func (a *API) listJobs(w http.ResponseWriter, r *http.Request) {
 				"the before cursor names no job, so the page cannot be placed. Ask again without it.")
 			return
 		}
-		a.failWith(w, err, "cannot list the jobs")
+		a.failWith(r.Context(), w, err, "cannot list the jobs")
 		return
 	}
 
@@ -523,7 +523,7 @@ func statusNames() []string {
 func (a *API) queueStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := a.opts.Store.QueueStats(r.Context())
 	if err != nil {
-		a.failWith(w, err, "cannot count the queues")
+		a.failWith(r.Context(), w, err, "cannot count the queues")
 		return
 	}
 
@@ -546,7 +546,7 @@ func (a *API) queueStats(w http.ResponseWriter, r *http.Request) {
 func (a *API) workers(w http.ResponseWriter, r *http.Request) {
 	seen, err := a.opts.Store.Workers(r.Context())
 	if err != nil {
-		a.failWith(w, err, "cannot list the workers")
+		a.failWith(r.Context(), w, err, "cannot list the workers")
 		return
 	}
 
@@ -578,7 +578,7 @@ func (a *API) ready(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if _, err := a.opts.Store.QueueStats(ctx); err != nil {
-		a.log.Warn("the readiness check failed", "error", err)
+		a.logOf(r.Context()).Warn("the readiness check failed", "error", err)
 		a.send(w, http.StatusServiceUnavailable, map[string]string{
 			"status": "the store cannot be reached",
 		})

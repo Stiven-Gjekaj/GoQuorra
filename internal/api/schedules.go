@@ -74,12 +74,12 @@ func (a *API) createSchedule(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		a.failWith(w, err, "cannot store the schedule")
+		a.failWith(r.Context(), w, err, "cannot store the schedule")
 		return
 	}
 
 	caller := callerOf(r.Context())
-	a.log.Info("schedule stored", "schedule", made.Name, "cron", made.Cron,
+	a.logOf(r.Context()).Info("schedule stored", "schedule", made.Name, "cron", made.Cron,
 		"timezone", made.Timezone, "catch_up", made.CatchUp, "by", caller.Name)
 
 	w.Header().Set("Location", "/v1/schedules/"+made.Name)
@@ -95,7 +95,7 @@ func (a *API) listSchedules(w http.ResponseWriter, r *http.Request) {
 
 	found, err := a.opts.Store.Schedules(r.Context(), false, limit)
 	if err != nil {
-		a.failWith(w, err, "cannot list the schedules")
+		a.failWith(r.Context(), w, err, "cannot list the schedules")
 		return
 	}
 
@@ -109,7 +109,7 @@ func (a *API) listSchedules(w http.ResponseWriter, r *http.Request) {
 func (a *API) getSchedule(w http.ResponseWriter, r *http.Request) {
 	one, err := a.opts.Store.Schedule(r.Context(), r.PathValue("name"))
 	if err != nil {
-		a.failWith(w, err, "cannot read the schedule")
+		a.failWith(r.Context(), w, err, "cannot read the schedule")
 		return
 	}
 	a.send(w, http.StatusOK, a.withNextFiring(one))
@@ -118,12 +118,12 @@ func (a *API) getSchedule(w http.ResponseWriter, r *http.Request) {
 func (a *API) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := a.opts.Store.DeleteSchedule(r.Context(), name); err != nil {
-		a.failWith(w, err, "cannot remove the schedule")
+		a.failWith(r.Context(), w, err, "cannot remove the schedule")
 		return
 	}
 
 	caller := callerOf(r.Context())
-	a.log.Info("schedule removed", "schedule", name, "by", caller.Name)
+	a.logOf(r.Context()).Info("schedule removed", "schedule", name, "by", caller.Name)
 
 	// The jobs it produced stay, and the answer says so. A caller who
 	// expected them to go should find that out here rather than a week later.
@@ -139,12 +139,12 @@ func (a *API) disableSchedule(w http.ResponseWriter, r *http.Request) { a.switch
 func (a *API) switchSchedule(w http.ResponseWriter, r *http.Request, on bool) {
 	one, err := a.opts.Store.SetScheduleEnabled(r.Context(), r.PathValue("name"), on)
 	if err != nil {
-		a.failWith(w, err, "cannot switch the schedule")
+		a.failWith(r.Context(), w, err, "cannot switch the schedule")
 		return
 	}
 
 	caller := callerOf(r.Context())
-	a.log.Info("schedule switched", "schedule", one.Name, "enabled", on, "by", caller.Name)
+	a.logOf(r.Context()).Info("schedule switched", "schedule", one.Name, "enabled", on, "by", caller.Name)
 	a.send(w, http.StatusOK, a.withNextFiring(one))
 }
 
