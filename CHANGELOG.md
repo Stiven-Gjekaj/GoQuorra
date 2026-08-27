@@ -71,6 +71,11 @@ safe to run twice.
   newline in it would write a line of the caller's own choosing into the log
   of the server.
 
+- **No binary could say which build it was.** The Dockerfile has passed
+  `-X main.version` since the first image and no such variable existed, so the
+  flag did nothing. Go accepts `-X` for a symbol that is not there without a
+  word. The server and the worker now say it in the first line of their log,
+  and `quorractl version` answers.
 - **The smoke test could not read a counter that has labels.** It matched a
   bare name against a bare series, so the day `quorra_jobs_cancelled_total`
   gained a `caller` label it reported that a counter which had moved to 2 was
