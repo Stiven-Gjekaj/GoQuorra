@@ -1019,3 +1019,36 @@ func testKeys(t *testing.T, secret string) *auth.Set {
 	}
 	return set
 }
+
+// The version verb answers, and so do the two spellings of the option.
+//
+// A person reaching for a version reaches for whichever of the three they
+// last used somewhere else.
+func TestTheVersionVerbAnswers(t *testing.T) {
+	for _, asked := range []string{"version", "-version", "--version"} {
+		var out strings.Builder
+		if err := run([]string{asked}, &out); err != nil {
+			t.Fatalf("%s: %v", asked, err)
+		}
+		if strings.TrimSpace(out.String()) == "" {
+			t.Errorf("%s printed nothing", asked)
+		}
+	}
+}
+
+// The usage names the version verb.
+//
+// A verb nothing points at is a verb nobody finds.
+func TestTheUsageNamesEveryVerbThatWorks(t *testing.T) {
+	var out strings.Builder
+	_ = run(nil, &out)
+
+	for _, verb := range []string{
+		"create", "get", "list", "queues", "history", "workers",
+		"schedule", "cancel", "revive", "whoami", "version",
+	} {
+		if !strings.Contains(out.String(), verb) {
+			t.Errorf("the usage does not name %q", verb)
+		}
+	}
+}

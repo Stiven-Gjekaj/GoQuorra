@@ -20,6 +20,14 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/postgres"
 )
 
+// version is the build this binary came from.
+//
+// The Dockerfile has passed -X main.version since the first image, and no
+// such variable existed, so the flag did nothing and every build said
+// nothing about itself. Go accepts -X for a symbol that is not there without
+// a word, which is why it went unnoticed.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		// One place that ends the process, and it runs after every deferred
@@ -44,6 +52,12 @@ func run() error {
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
+
+	// First line in the log, because an operator reading a log of a queue
+	// that is behaving strangely asks which build it is before anything else.
+	// Neither this nor the worker takes an argument, on purpose and for a
+	// reason written in config.CheckNoArguments, so the log is where it goes.
+	log.Info("starting", "version", version)
 
 	// SIGTERM as well as an interrupt, because SIGTERM is what a container
 	// runtime sends and an interrupt is what a keyboard sends.

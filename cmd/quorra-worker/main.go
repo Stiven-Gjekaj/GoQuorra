@@ -26,6 +26,14 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/worker"
 )
 
+// version is the build this binary came from.
+//
+// The Dockerfile has passed -X main.version since the first image, and no
+// such variable existed, so the flag did nothing and every build said
+// nothing about itself. Go accepts -X for a symbol that is not there without
+// a word, which is why it went unnoticed.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -46,6 +54,7 @@ func run() error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	log.Info("starting", "version", version)
 
 	w, err := worker.New(worker.Config{
 		ID:            cfg.ID,

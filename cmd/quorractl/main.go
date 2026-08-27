@@ -39,6 +39,7 @@ Commands:
   cancel    Stop a job that has not finished, or -all that a filter names
   revive    Put a dead or cancelled job back, or -all that a filter names
   whoami    Show the name and the scope of the key in use
+  version   Show which build of quorractl this is
 
 Options common to every command:
   -server   The server address (default http://localhost:8080,
@@ -58,6 +59,18 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// version is the build this binary came from.
+//
+// The Dockerfile has passed -X main.version since the first image, and no
+// such variable existed, so the flag did nothing and every build said nothing
+// about itself. Go accepts -X for a symbol that is not there without a word,
+// which is why it went unnoticed.
+//
+// It answers to -version and --version as well as to the verb, because a
+// person reaching for a version reaches for whichever of the three they last
+// used somewhere else.
+var version = "dev"
 
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
@@ -86,6 +99,9 @@ func run(args []string, out io.Writer) error {
 		return act(args[1:], out, "revive", "put back in the queue")
 	case "whoami":
 		return whoami(args[1:], out)
+	case "version", "-version", "--version":
+		fmt.Fprintln(out, version)
+		return nil
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
