@@ -64,22 +64,40 @@ Two ways to learn:
 **What would change the answer.** A measured need for latency below a second.
 Nothing in this project has one today, and the polling interval is a setting.
 
-### Authenticating a worker
+### Authenticating a worker, built on 27 August 2026
 
-The gRPC port has no authentication.
-A process that can reach it can lease from any queue.
-It cannot submit work, and it cannot report on a job it does not hold, because
-a report carries a lease identifier and the server refuses one that does not
-match.
+The gRPC port had no authentication.
+A process that could reach it could lease from any queue.
 
-The shape of the fix is known: mutual TLS, or a token in the call metadata
-checked by an interceptor.
-The work is not the check.
-It is the key distribution, the rotation, and a story for a worker whose
-certificate expires while it holds jobs.
+This entry said the shape of the fix was known and that the work was not the
+check: it was the key distribution and the rotation.
+That was right, and it is why this waited for the named keys.
+A deployment that has a key distribution story for its HTTP keys has one for
+its worker keys, because they are the same keys.
 
-**What would change the answer.** A deployment where the workers are not
-inside a network the operator controls.
+The gate this entry set was a deployment where the workers are not inside a
+network the operator controls.
+That was not what happened.
+It was built because it was asked for, and this line records that so the file
+keeps meaning what it says.
+
+A token in the call metadata, checked by an interceptor on both the unary and
+the streaming path.
+A worker key holds the `worker` scope and nothing else, which is why the
+permissions stopped being an ordered number: leasing work off the queue is not
+more than changing a job, and a key an operator keeps in a shell profile must
+not be able to lease the queue empty.
+
+Mutual TLS was the other shape and is not built.
+It carries the part this entry named as the real work, a story for a worker
+whose certificate expires while it holds jobs, and a key in the metadata does
+not: a worker that is refused stops leasing and keeps reporting on what it
+holds until its own key is replaced.
+
+Measured against a running server: a worker with no key does not start, and a
+worker holding a `write` key is refused with
+`PermissionDenied: the key "ops" may write, and the worker protocol needs
+worker`.
 
 ### A repeat schedule
 
