@@ -10,14 +10,23 @@ These files exist, and this page says plainly what they do not do.
 ## Apply them
 
     kubectl create namespace goquorra
+    WORKER_KEY="$(openssl rand -hex 32)"
     kubectl -n goquorra create secret generic quorra \
-      --from-literal=api-key="$(openssl rand -hex 32)" \
+      --from-literal=api-keys="ops:write:$(openssl rand -hex 32),fleet:worker:$WORKER_KEY" \
+      --from-literal=worker-key="$WORKER_KEY" \
       --from-literal=database-url="postgres://user:password@host:5432/quorra?sslmode=require"
     kubectl -n goquorra apply -f .
 
+Two keys and not one.
+The worker protocol has a scope of its own, so a key an operator uses cannot
+lease the queue empty and a worker cannot cancel anything.
+`worker-key` is the secret half of the `fleet` entry in `api-keys`, which is
+why it is written twice: the server needs the whole list and each worker needs
+only its own secret.
+
 The secret comes first.
 The deployment does not start without it, because the server refuses to start
-with no API key.
+with no API key and the workers refuse to start with none.
 
 ## What these do not do
 

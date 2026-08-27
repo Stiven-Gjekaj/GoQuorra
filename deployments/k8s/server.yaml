@@ -34,11 +34,15 @@ spec:
               value: ":8080"
             - name: QUORRA_GRPC_ADDR
               value: ":50051"
-            - name: QUORRA_API_KEY
+            # api-keys and not api-key. The worker protocol needs a scope of
+            # its own, so a deployment holds at least two: one an operator
+            # uses, and one the workers present. A single key that did both
+            # would let anything that could reach the queue drain it.
+            - name: QUORRA_API_KEYS
               valueFrom:
                 secretKeyRef:
                   name: quorra
-                  key: api-key
+                  key: api-keys
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

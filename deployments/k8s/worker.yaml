@@ -39,6 +39,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # The key this fleet presents, and it needs the worker scope.
+            # The server refuses every call without one: the gRPC port used
+            # to accept anything that could reach it.
+            - name: QUORRA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: quorra
+                  key: worker-key
             - name: QUORRA_GRPC_ADDR
               value: "quorra-server:50051"
             - name: QUORRA_WORKER_QUEUES

@@ -40,10 +40,14 @@ services:
       QUORRA_GRPC_ADDR: ":50051"
       QUORRA_LOG_LEVEL: "info"
       DATABASE_URL: "postgres://quorra:quorra@postgres:5432/quorra?sslmode=disable"
-      # A development key, and it is only safe because this stack is not
-      # reachable from anywhere else. Generate a real one before this goes
+      # Two keys, because the worker protocol needs its own scope. A key an
+      # operator uses must not be able to lease the queue empty, and a worker
+      # must not be able to cancel anything.
+      #
+      # Development keys, and they are only safe because this stack is not
+      # reachable from anywhere else. Generate real ones before this goes
       # anywhere: openssl rand -hex 32
-      QUORRA_API_KEY: "local-development-key-not-for-anywhere-else"
+      QUORRA_API_KEYS: "ops:write:local-development-key-not-for-anywhere-else,fleet:worker:local-development-worker-key-not-for-anywhere"
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,6 +68,7 @@ services:
     command: ["/usr/local/bin/quorra-worker"]
     environment:
       QUORRA_WORKER_ID: "worker-one"
+      QUORRA_API_KEY: "local-development-worker-key-not-for-anywhere"
       QUORRA_WORKER_QUEUES: "default,email"
       QUORRA_WORKER_MAX_JOBS: "5"
       QUORRA_WORKER_LEASE_TTL: "30s"
@@ -81,6 +86,7 @@ services:
     command: ["/usr/local/bin/quorra-worker"]
     environment:
       QUORRA_WORKER_ID: "worker-two"
+      QUORRA_API_KEY: "local-development-worker-key-not-for-anywhere"
       QUORRA_WORKER_QUEUES: "default"
       QUORRA_WORKER_MAX_JOBS: "3"
       QUORRA_WORKER_LEASE_TTL: "30s"
