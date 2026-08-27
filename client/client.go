@@ -296,6 +296,41 @@ func (c *Client) Attempts(ctx context.Context, id string) ([]Attempt, error) {
 	return answer.Attempts, nil
 }
 
+// Worker is one worker, asking about one queue.
+type Worker struct {
+	ID    string `json:"id"`
+	Queue string `json:"queue"`
+
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+
+	// IdleSeconds is how long ago the worker last asked for work, worked out
+	// by the server. It is not computed here, because a caller a second out
+	// of step with the server's clock reads a fleet that is fine as one that
+	// stopped.
+	IdleSeconds float64 `json:"idle_seconds"`
+}
+
+// Idle gives how long ago the worker last asked for work.
+func (w Worker) Idle() time.Duration {
+	return time.Duration(w.IdleSeconds * float64(time.Second))
+}
+
+// Workers lists the workers the queue has heard from, most recently first.
+//
+// An empty list means nothing is out there. That is worth checking before
+// waiting on a job: a queue with a thousand waiting jobs and no worker looks
+// exactly like a queue that is busy.
+func (c *Client) Workers(ctx context.Context) ([]Worker, error) {
+	var answer struct {
+		Workers []Worker `json:"workers"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/v1/workers", nil, &answer); err != nil {
+		return nil, err
+	}
+	return answer.Workers, nil
+}
+
 // Identity is what a key is and what it may do.
 type Identity struct {
 	// Name is what the server records against an action this key takes.

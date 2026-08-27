@@ -33,6 +33,7 @@ Commands:
   list      Show jobs, newest first, with optional filters
   queues    Count the jobs in each queue
   history   Show what a job did, run by run
+  workers   Show the workers the queue has heard from
   cancel    Stop a job that has not finished
   revive    Put a dead or cancelled job back in the queue
   whoami    Show the name and the scope of the key in use
@@ -73,6 +74,8 @@ func run(args []string, out io.Writer) error {
 		return queues(args[1:], out)
 	case "history":
 		return history(args[1:], out)
+	case "workers":
+		return workers(args[1:], out)
 	case "cancel":
 		return act(args[1:], out, "cancel", "cancelled")
 	case "revive":
@@ -361,6 +364,42 @@ func moment(value any) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return parsed, true
+}
+
+// workers shows the workers the queue has heard from.
+//
+// The answer to "is anything out there", which no other command gives. A
+// queue with a thousand waiting jobs and no worker looks exactly like a busy
+// one in list and in queues.
+func workers(args []string, out io.Writer) error {
+	set := flag.NewFlagSet("workers", flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+
+	answer, err := c.send(context.Background(), http.MethodGet, "/v1/workers", nil)
+	if err != nil {
+		return err
+	}
+
+	rows, _ := answer["workers"].([]any)
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "No worker has asked for work.")
+		return nil
+	}
+
+	fmt.Fprintf(out, "%-24s %-16s %-12s %s\n", "WORKER", "QUEUE", "IDLE", "FIRST SEEN")
+	for _, row := range rows {
+		one, _ := row.(map[string]any)
+		idle, _ := one["idle_seconds"].(float64)
+		first, _ := one["first_seen_at"].(string)
+		fmt.Fprintf(out, "%-24v %-16v %-12s %s\n",
+			one["id"], one["queue"],
+			(time.Duration(idle * float64(time.Second))).Round(time.Second),
+			runAt(first))
+	}
+	return nil
 }
 
 // whoami says which key this shell holds.

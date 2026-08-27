@@ -167,6 +167,43 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// A producer can ask whether anything is out there.
+//
+// Worth checking before waiting on a job. A queue with a thousand waiting
+// jobs and no worker looks exactly like a queue that is busy.
+func TestAClientCanAskWhetherAnythingIsOutThere(t *testing.T) {
+	c, backing := connectWithStore(t)
+	ctx := t.Context()
+
+	nothing, err := c.Workers(ctx)
+	if err != nil {
+		t.Fatalf("Workers: %v", err)
+	}
+	if len(nothing) != 0 {
+		t.Errorf("nothing has asked, and the answer holds %d workers", len(nothing))
+	}
+
+	if _, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "idle-1", Limit: 1, TTL: time.Minute,
+	}); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+
+	seen, err := c.Workers(ctx)
+	if err != nil {
+		t.Fatalf("Workers: %v", err)
+	}
+	if len(seen) != 1 || seen[0].ID != "idle-1" || seen[0].Queue != "default" {
+		t.Fatalf("the answer is %+v", seen)
+	}
+	if seen[0].FirstSeenAt.IsZero() || seen[0].LastSeenAt.IsZero() {
+		t.Errorf("the moments did not survive the round trip: %+v", seen[0])
+	}
+	if idle := seen[0].Idle(); idle < 0 || idle > time.Minute {
+		t.Errorf("the worker has been idle %s, which is not a moment ago", idle)
+	}
+}
+
 // A client reads what a job did, run by run.
 func TestAClientReadsWhatAJobDid(t *testing.T) {
 	c, backing := connectWithStore(t)
