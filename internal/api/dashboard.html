@@ -10,12 +10,14 @@
   --ink: #16191d; --dim: #5b6670; --line: #dfe3e8;
   --ground: #f5f6f8; --panel: #ffffff;
   --pending: #9a6700; --leased: #0b5ed7; --succeeded: #1a7f37; --dead: #b42318;
+  --blocked: #5b6670;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --ink: #e6e9ec; --dim: #98a1ab; --line: #2c333b;
     --ground: #14171a; --panel: #1c2126;
     --pending: #d4a72c; --leased: #6cb6ff; --succeeded: #57ab5a; --dead: #ff7b72;
+    --blocked: #98a1ab;
   }
 }
 * { box-sizing: border-box; }
@@ -50,6 +52,9 @@ tr:last-child td { border-bottom: 0; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .pending { color: var(--pending); } .leased { color: var(--leased); }
 .succeeded { color: var(--succeeded); } .dead { color: var(--dead); }
+/* Grey, and quieter than the rest. A waiting job is not a problem and not a
+   result: it is a job nobody has to look at yet. */
+.blocked { color: var(--blocked); }
 .note { color: var(--dim); padding: 16px; }
 form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 input, button {
@@ -220,7 +225,7 @@ function renderQueues(rows) {
 // The statuses the filter row offers. Taken from what the server can hold,
 // not from what happens to be in the table right now, so a status with no
 // jobs in it is still a button somebody can press.
-const STATUSES = ["pending", "leased", "succeeded", "dead", "cancelled"];
+const STATUSES = ["blocked", "pending", "leased", "succeeded", "dead", "cancelled"];
 
 function renderFilters() {
   const holder = document.getElementById("filters");
@@ -313,6 +318,13 @@ function renderJobs(list) {
       state.title = "by " + job.acted_by + " on " + new Date(job.acted_at).toLocaleString();
     }
 
+    // A waiting job says how many jobs it waits for, and names them on the
+    // cell. "blocked" on its own is the question and not the answer.
+    if (job.status === "blocked" && job.after && job.after.length) {
+      state.textContent = "blocked (" + job.after.length + ")";
+      state.title = "waits for " + job.after.join(", ");
+    }
+
     cell(row, job.attempts + " of " + (job.max_retries + 1));
     // A short form for today and a date for anything older. The full moment
     // is on the title. A column holding the date and the seconds of every
@@ -330,8 +342,12 @@ function renderJobs(list) {
     // is ready this second in every other column on this row. The relative
     // form is what a reader wants: "in 2h" answers the question, and the
     // moment itself hangs off the cell for whoever needs it.
+    // A blocked job has a run time and it means nothing: the job runs when
+    // its parents succeed, and showing "now" beside a job that will not run
+    // is the clearest way to make a reader distrust the whole column.
     const runs = new Date(job.run_at);
-    const runsCell = cell(row, job.status === "pending" ? untilText(runs) : "");
+    const runsCell = cell(row, job.status === "pending" ? untilText(runs)
+      : job.status === "blocked" ? "waiting" : "");
     runsCell.title = runs.toLocaleString();
     if (job.status === "pending" && runs > new Date()) {
       runsCell.className = "waiting";

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
@@ -246,10 +247,20 @@ func TestTheDashboardOffersEveryStatus(t *testing.T) {
 		t.Fatalf("cannot read the dashboard: %v", err)
 	}
 
-	for _, status := range []string{"pending", "leased", "succeeded", "dead", "cancelled"} {
-		if !strings.Contains(string(source), `"`+status+`"`) {
+	// From jobs.All and not from a list written here. A list written here
+	// goes stale the same way the page does, and then the test agrees with
+	// the fault rather than catching it. blocked was added and this rule did
+	// not see it, which is exactly what that costs.
+	for _, status := range jobs.All() {
+		if !strings.Contains(string(source), `"`+status.String()+`"`) {
 			t.Errorf("the dashboard does not offer the %q filter", status)
 		}
+	}
+
+	// And a waiting job says what it waits for. The word blocked on its own
+	// is the question and not the answer.
+	if !strings.Contains(string(source), "job.after") {
+		t.Error("a waiting row does not say which jobs it waits for")
 	}
 }
 
