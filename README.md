@@ -344,6 +344,14 @@ A job that succeeded cannot be revived.
 Running it again is a new piece of work and deserves a new identifier that the
 caller can follow.
 
+Both actions record the key that asked, on the job as `acted_by` and
+`acted_at`, and on the two counters as a `caller` label.
+The dashboard marks a row that carries one with a star beside the status and
+puts the name and the moment on the cell.
+`quorractl cancel` and `quorractl revive` print it on the line they answer
+with, so an operator with two keys in a shell profile finds out at once that
+the action went down under the wrong one.
+
 ### Submitting the same job twice
 
 A client that sends a job and does not see the answer cannot tell whether the
