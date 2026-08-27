@@ -573,7 +573,7 @@ func TestCancellingAJobStopsTheHandler(t *testing.T) {
 	defer stop()
 
 	<-started
-	if _, err := backing.Cancel(t.Context(), made.ID); err != nil {
+	if _, err := backing.Cancel(t.Context(), made.ID, ""); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 

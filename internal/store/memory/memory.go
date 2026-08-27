@@ -244,7 +244,7 @@ func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.
 }
 
 // Cancel stops a job that has not finished.
-func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
+func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -269,12 +269,13 @@ func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
 	rec.job.LeasedBy = ""
 	rec.job.LeaseExpiresAt = nil
 	rec.job.UpdatedAt = now
+	recordAction(&rec.job, actor, now)
 
 	return clone(&rec.job), nil
 }
 
 // Revive puts a dead or cancelled job back in the queue.
-func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
+func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -303,6 +304,7 @@ func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
 	rec.job.LeaseID = ""
 	rec.job.LeasedBy = ""
 	rec.job.LeaseExpiresAt = nil
+	recordAction(&rec.job, actor, now)
 
 	return clone(&rec.job), nil
 }
@@ -552,6 +554,27 @@ func clone(job *store.Job) *store.Job {
 		expires := *job.LeaseExpiresAt
 		out.LeaseExpiresAt = &expires
 	}
+	if job.ActedAt != nil {
+		at := *job.ActedAt
+		out.ActedAt = &at
+	}
 
 	return &out
+}
+
+// recordAction writes the caller that cancelled or revived a job.
+//
+// A name and a moment, or neither of them. The two fields hold the last
+// action and not a history, so a caller that does not name itself clears
+// them: leaving the previous name there would say that somebody cancelled
+// this job who did not.
+func recordAction(job *store.Job, actor string, now time.Time) {
+	if actor == "" {
+		job.ActedBy = ""
+		job.ActedAt = nil
+		return
+	}
+	at := now.UTC()
+	job.ActedBy = actor
+	job.ActedAt = &at
 }

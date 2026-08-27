@@ -445,7 +445,7 @@ var cases = []testCase{
 		made := create(t, s, store.NewJob{Type: "work"})
 		held := lease(t, s, store.LeaseRequest{TTL: time.Minute})[0]
 
-		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+		if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 
@@ -592,7 +592,7 @@ var cases = []testCase{
 		made := create(t, s, store.NewJob{Type: "work"})
 
 		clock.Advance(time.Second)
-		got, err := s.Cancel(ctx(), made.ID)
+		got, err := s.Cancel(ctx(), made.ID, "")
 		if err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
@@ -618,7 +618,7 @@ var cases = []testCase{
 		made := create(t, s, store.NewJob{Type: "work"})
 		held := lease(t, s, store.LeaseRequest{WorkerID: "busy"})[0]
 
-		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+		if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 
@@ -644,7 +644,7 @@ var cases = []testCase{
 			t.Fatalf("Report: %v", err)
 		}
 
-		_, err := s.Cancel(ctx(), made.ID)
+		_, err := s.Cancel(ctx(), made.ID, "")
 		if !errors.Is(err, store.ErrWrongState) {
 			t.Fatalf("Cancel of a finished job gave %v, want ErrWrongState", err)
 		}
@@ -659,23 +659,110 @@ var cases = []testCase{
 	{"cancelling twice is refused the second time", func(t *testing.T, s store.Store, clock *Clock) {
 		made := create(t, s, store.NewJob{Type: "work"})
 
-		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+		if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 			t.Fatalf("the first Cancel: %v", err)
 		}
-		if _, err := s.Cancel(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+		if _, err := s.Cancel(ctx(), made.ID, ""); !errors.Is(err, store.ErrWrongState) {
 			t.Fatalf("the second Cancel gave %v, want ErrWrongState", err)
 		}
 	}},
 
 	{"cancelling an unknown job is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
-		_, err := s.Cancel(ctx(), "8de1a3d0-0000-0000-0000-000000000000")
+		_, err := s.Cancel(ctx(), "8de1a3d0-0000-0000-0000-000000000000", "")
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("Cancel of an unknown job gave %v, want ErrNotFound", err)
 		}
 
 		// Text that is not an identifier at all is also a missing job.
-		if _, err := s.Cancel(ctx(), "not-a-uuid"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := s.Cancel(ctx(), "not-a-uuid", ""); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("Cancel of a malformed identifier gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	// Who cancelled a job is part of the job, and both stores keep it the
+	// same way.
+	//
+	// The counters say how many jobs were cancelled and the log line says
+	// which one. Neither says whose hand it was, and on a queue that two
+	// teams share that is the first question somebody asks.
+	{"a cancel records the caller that asked for it", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		clock.Advance(time.Second)
+
+		got, err := s.Cancel(ctx(), made.ID, "ops")
+		if err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		if got.ActedBy != "ops" {
+			t.Errorf("acted by = %q, want ops", got.ActedBy)
+		}
+		if got.ActedAt == nil {
+			t.Fatal("acted at is not set, so the name has no moment beside it")
+		}
+		requireTime(t, "acted at", *got.ActedAt, Start.Add(time.Second))
+
+		// And it is stored, not only returned.
+		stored, err := s.Get(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if stored.ActedBy != "ops" {
+			t.Errorf("the stored acted by = %q, want ops", stored.ActedBy)
+		}
+	}},
+
+	// The two fields hold the last action and not a history.
+	//
+	// A job that ops cancelled and that billing then revived was last acted
+	// on by billing. Keeping the first name would point an investigation at
+	// the wrong team.
+	{"a revive replaces the name the cancel left", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		if _, err := s.Cancel(ctx(), made.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		clock.Advance(time.Minute)
+		got, err := s.Revive(ctx(), made.ID, "billing")
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if got.ActedBy != "billing" {
+			t.Errorf("acted by = %q, want billing, which acted last", got.ActedBy)
+		}
+		if got.ActedAt == nil {
+			t.Fatal("acted at is not set")
+		}
+		requireTime(t, "acted at", *got.ActedAt, Start.Add(time.Minute))
+	}},
+
+	// A caller that names nobody records nobody.
+	//
+	// Leaving the previous name there would say that ops cancelled this job
+	// when ops did not. No answer is better than a wrong one.
+	{"an action with no caller clears the name", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		if _, err := s.Cancel(ctx(), made.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		got, err := s.Revive(ctx(), made.ID, "")
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if got.ActedBy != "" {
+			t.Errorf("acted by = %q, want nobody", got.ActedBy)
+		}
+		if got.ActedAt != nil {
+			t.Errorf("acted at = %s, want nothing beside a name that is not there", got.ActedAt)
+		}
+	}},
+
+	// A job nobody has acted on says so.
+	{"a new job has no action on it", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		if made.ActedBy != "" || made.ActedAt != nil {
+			t.Errorf("a new job claims %q acted on it at %s", made.ActedBy, made.ActedAt)
 		}
 	}},
 
@@ -695,7 +782,7 @@ var cases = []testCase{
 			t.Fatalf("the job ran %d times before it was buried, want %d", runs, want)
 		}
 
-		got, err := s.Revive(ctx(), made.ID)
+		got, err := s.Revive(ctx(), made.ID, "")
 		if err != nil {
 			t.Fatalf("Revive: %v", err)
 		}
@@ -714,11 +801,11 @@ var cases = []testCase{
 
 	{"a cancelled job can be revived", func(t *testing.T, s store.Store, clock *Clock) {
 		made := create(t, s, store.NewJob{Type: "work"})
-		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+		if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 
-		got, err := s.Revive(ctx(), made.ID)
+		got, err := s.Revive(ctx(), made.ID, "")
 		if err != nil {
 			t.Fatalf("Revive: %v", err)
 		}
@@ -741,7 +828,7 @@ var cases = []testCase{
 			t.Fatalf("Report: %v", err)
 		}
 
-		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+		if _, err := s.Revive(ctx(), made.ID, ""); !errors.Is(err, store.ErrWrongState) {
 			t.Fatalf("Revive of a finished job gave %v, want ErrWrongState", err)
 		}
 	}},
@@ -749,18 +836,18 @@ var cases = []testCase{
 	{"a job already in the queue cannot be revived", func(t *testing.T, s store.Store, clock *Clock) {
 		made := create(t, s, store.NewJob{Type: "work"})
 
-		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+		if _, err := s.Revive(ctx(), made.ID, ""); !errors.Is(err, store.ErrWrongState) {
 			t.Fatalf("Revive of a waiting job gave %v, want ErrWrongState", err)
 		}
 
 		lease(t, s, store.LeaseRequest{})
-		if _, err := s.Revive(ctx(), made.ID); !errors.Is(err, store.ErrWrongState) {
+		if _, err := s.Revive(ctx(), made.ID, ""); !errors.Is(err, store.ErrWrongState) {
 			t.Fatalf("Revive of a leased job gave %v, want ErrWrongState", err)
 		}
 	}},
 
 	{"reviving an unknown job is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
-		if _, err := s.Revive(ctx(), "8de1a3d0-0000-0000-0000-000000000000"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := s.Revive(ctx(), "8de1a3d0-0000-0000-0000-000000000000", ""); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("Revive of an unknown job gave %v, want ErrNotFound", err)
 		}
 	}},
@@ -943,7 +1030,7 @@ var cases = []testCase{
 		failUntilBuried(t, s, clock, buried.ID)
 
 		stopped := create(t, s, store.NewJob{Type: "stopped"})
-		if _, err := s.Cancel(ctx(), stopped.ID); err != nil {
+		if _, err := s.Cancel(ctx(), stopped.ID, ""); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 
@@ -964,7 +1051,7 @@ var cases = []testCase{
 	{"a sweep removes no more than it is asked for", func(t *testing.T, s store.Store, clock *Clock) {
 		for i := 0; i < 5; i++ {
 			made := create(t, s, store.NewJob{Type: fmt.Sprintf("job-%d", i)})
-			if _, err := s.Cancel(ctx(), made.ID); err != nil {
+			if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 				t.Fatalf("Cancel: %v", err)
 			}
 		}
@@ -988,7 +1075,7 @@ var cases = []testCase{
 	// for ever on behalf of a job nobody can look at any more.
 	{"removing a job frees its idempotency key", func(t *testing.T, s store.Store, clock *Clock) {
 		made := create(t, s, store.NewJob{Type: "charge", IdempotencyKey: "order-1"})
-		if _, err := s.Cancel(ctx(), made.ID); err != nil {
+		if _, err := s.Cancel(ctx(), made.ID, ""); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 
@@ -1180,7 +1267,7 @@ var cases = []testCase{
 		// who has fixed what was wrong is the one who decides that has
 		// changed, and revive is how they say so. A refusal that could not be
 		// revived would be a second kind of dead, and there is one kind.
-		back, err := s.Revive(ctx(), made.ID)
+		back, err := s.Revive(ctx(), made.ID, "")
 		if err != nil {
 			t.Fatalf("Revive: %v", err)
 		}

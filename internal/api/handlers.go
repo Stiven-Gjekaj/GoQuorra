@@ -140,7 +140,7 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 // status is not a field a client may set: there is no request that legally
 // moves a job to succeeded, and an endpoint shaped like a field invites one.
 func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
-	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"))
+	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"), "")
 	if err != nil {
 		a.failWith(w, err, "cannot cancel the job")
 		return
@@ -153,7 +153,7 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 
 // reviveJob handles POST /v1/jobs/{id}/revive.
 func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
-	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"))
+	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"), "")
 	if err != nil {
 		a.failWith(w, err, "cannot revive the job")
 		return

@@ -85,6 +85,16 @@ type Job struct {
 	// inside it.
 	Result json.RawMessage `json:"result,omitempty"`
 
+	// ActedBy and ActedAt record the caller that last cancelled or revived
+	// this job, and when. They are set together or not at all, and a job that
+	// nobody has acted on carries neither.
+	//
+	// Only a person acting is recorded here. A job that failed, was retried
+	// or was reclaimed was moved by the queue itself, and writing the queue's
+	// own name into this pair would bury the entries that matter.
+	ActedBy string     `json:"acted_by,omitempty"`
+	ActedAt *time.Time `json:"acted_at,omitempty"`
+
 	RunAt     time.Time `json:"run_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -344,7 +354,7 @@ type Store interface {
 	// it says.
 	//
 	// It returns ErrWrongState for a job that has already finished.
-	Cancel(ctx context.Context, id string) (*Job, error)
+	Cancel(ctx context.Context, id, actor string) (*Job, error)
 
 	// Revive puts a dead or cancelled job back in the queue, and returns it
 	// as stored.
@@ -359,7 +369,7 @@ type Store interface {
 	// can follow.
 	//
 	// It returns ErrWrongState for any other state.
-	Revive(ctx context.Context, id string) (*Job, error)
+	Revive(ctx context.Context, id, actor string) (*Job, error)
 
 	// ReclaimExpired returns jobs whose lease has run out, and reports how
 	// many it moved. A job that has no attempts left is buried instead.

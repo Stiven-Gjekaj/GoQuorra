@@ -17,8 +17,8 @@ import (
 // steps, and without the lock a worker can report between them, so a job
 // reported as done comes back as cancelled or the other way round depending
 // on which write lands last.
-func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
-	return s.transition(ctx, id, func(current jobs.Status) (jobs.Status, error) {
+func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error) {
+	return s.transition(ctx, id, actor, func(current jobs.Status) (jobs.Status, error) {
 		if current.Terminal() {
 			return "", fmt.Errorf("%w: the job is %s and has already finished", store.ErrWrongState, current)
 		}
@@ -27,8 +27,8 @@ func (s *Store) Cancel(ctx context.Context, id string) (*store.Job, error) {
 }
 
 // Revive puts a dead or cancelled job back in the queue.
-func (s *Store) Revive(ctx context.Context, id string) (*store.Job, error) {
-	return s.transition(ctx, id, func(current jobs.Status) (jobs.Status, error) {
+func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error) {
+	return s.transition(ctx, id, actor, func(current jobs.Status) (jobs.Status, error) {
 		if current != jobs.Dead && current != jobs.Cancelled {
 			return "", fmt.Errorf(
 				"%w: the job is %s, and only a dead or cancelled job can be revived", store.ErrWrongState, current)
@@ -128,6 +128,7 @@ const (
 func (s *Store) transition(
 	ctx context.Context,
 	id string,
+	actor string,
 	next func(current jobs.Status) (jobs.Status, error),
 	count attempts,
 ) (*store.Job, error) {
@@ -170,6 +171,15 @@ func (s *Store) transition(
 		setAttempts = "0"
 	}
 
+	// A name and a moment, or neither of them. The columns hold the last
+	// action and not a history, so a caller that does not name itself clears
+	// them: leaving the previous name there would say that somebody cancelled
+	// this job who did not.
+	var who, when any
+	if actor != "" {
+		who, when = actor, now
+	}
+
 	row := tx.QueryRow(ctx, `
 		UPDATE jobs SET
 			status = $1,
@@ -178,10 +188,12 @@ func (s *Store) transition(
 			updated_at = $2,
 			lease_id = NULL,
 			leased_by = NULL,
-			lease_expires_at = NULL
+			lease_expires_at = NULL,
+			acted_by = $4,
+			acted_at = $5
 		WHERE id = $3
 		RETURNING `+columns,
-		string(wanted), now, id,
+		string(wanted), now, id, who, when,
 	)
 
 	job, _, err := scanJob(row)

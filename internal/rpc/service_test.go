@@ -380,7 +380,7 @@ func TestAHeartbeatOnACancelledJobIsRefused(t *testing.T) {
 	create(t, backing, ctx)
 	leased := leaseOne(t, client, ctx)
 
-	if _, err := backing.Cancel(ctx, leased.GetId()); err != nil {
+	if _, err := backing.Cancel(ctx, leased.GetId(), ""); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 

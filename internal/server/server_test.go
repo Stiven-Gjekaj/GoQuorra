@@ -343,7 +343,7 @@ func TestFinishedJobsAreRemovedOnceTheyAreOldEnough(t *testing.T) {
 	}
 
 	id := submit(t, s, `{"type":"work"}`)
-	if _, err := backing.Cancel(context.Background(), id); err != nil {
+	if _, err := backing.Cancel(context.Background(), id, ""); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestNothingIsRemovedWhenNoRetentionIsSet(t *testing.T) {
 	s, backing := start(t)
 
 	id := submit(t, s, `{"type":"work"}`)
-	if _, err := backing.Cancel(context.Background(), id); err != nil {
+	if _, err := backing.Cancel(context.Background(), id, ""); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 

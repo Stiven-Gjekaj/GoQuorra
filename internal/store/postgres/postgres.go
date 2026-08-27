@@ -26,7 +26,7 @@ import (
 // six queries that read a job cannot fall out of step with the scanner.
 const columns = `id, seq, type, payload, queue, priority, status, attempts,
 	max_retries, last_error, lease_id, leased_by, lease_expires_at,
-	idempotency_key, result, run_at, created_at, updated_at`
+	idempotency_key, result, acted_by, acted_at, run_at, created_at, updated_at`
 
 // Store keeps jobs in PostgreSQL.
 type Store struct {
