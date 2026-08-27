@@ -28,6 +28,10 @@ type createRequest struct {
 	MaxRetries *int `json:"max_retries"`
 
 	IdempotencyKey string `json:"idempotency_key"`
+
+	// After names jobs this one waits for. Every one has to already exist,
+	// which is what makes a cycle impossible.
+	After []string `json:"after"`
 }
 
 func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +71,8 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		Delay:      time.Duration(req.DelaySeconds) * time.Second,
 		MaxRetries: req.MaxRetries,
 
+		After: req.After,
+
 		// The header wins over the body when both are set, because a proxy or
 		// a client library adds the header and the body is the application's.
 		IdempotencyKey: firstNonEmpty(r.Header.Get("Idempotency-Key"), req.IdempotencyKey),
@@ -75,6 +81,9 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		// A job the store refuses is the client's mistake, and the store says
 		// which field. Answering 500 to it, as the old handler did, sends the
 		// client looking for a fault on this side.
+		// A job that waits for one that is not there is the caller's mistake,
+		// and 400 rather than 404: the route exists, and the job the caller
+		// asked to create is not the thing that is missing.
 		if errors.Is(err, store.ErrNotFound) || isClientMistake(err) {
 			a.fail(w, http.StatusBadRequest, err.Error())
 			return
@@ -100,12 +109,18 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Location", "/v1/jobs/"+job.ID)
-	a.send(w, code, map[string]any{
+	answer := map[string]any{
 		"id":     job.ID,
 		"status": job.Status,
 		"queue":  job.Queue,
 		"run_at": job.RunAt,
-	})
+	}
+	// Only when there is one. A caller that named no parent gets exactly the
+	// answer it got before this field existed.
+	if len(job.After) > 0 {
+		answer["after"] = job.After
+	}
+	a.send(w, code, answer)
 }
 
 // whoami handles GET /v1/whoami.

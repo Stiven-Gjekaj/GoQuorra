@@ -436,6 +436,82 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 }
 
+// A job submitted to follow another is not handed out until it succeeds.
+func TestAJobIsSubmittedToFollowAnotherOverHTTP(t *testing.T) {
+	handler, backing := serve(t)
+	ctx := t.Context()
+
+	first := submit(t, handler, `{"type":"extract"}`)
+
+	made := withKey(t, handler, "POST", "/v1/jobs",
+		`{"type":"load","after":["`+first+`"]}`)
+	if made.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/jobs = %d, body %s", made.Code, made.Body)
+	}
+
+	var created struct {
+		ID     string   `json:"id"`
+		Status string   `json:"status"`
+		After  []string `json:"after"`
+	}
+	if err := json.Unmarshal(made.Body.Bytes(), &created); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if created.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", created.Status)
+	}
+	if len(created.After) != 1 || created.After[0] != first {
+		t.Errorf("the job waits for %v, want the first job", created.After)
+	}
+
+	// Finish the first, and the second is ready.
+	held, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 || held[0].ID != first {
+		t.Fatalf("Lease: %v, %v", err, held)
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: first, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeDone,
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	if got := statusOf(t, handler, created.ID); got != "pending" {
+		t.Errorf("status = %q after the parent succeeded, want pending", got)
+	}
+}
+
+// A job that waits for one that is not there is 400 and not 404.
+//
+// The route exists, and the job the caller asked to create is not the thing
+// that is missing.
+func TestAJobThatFollowsAMissingJobIsRefused(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "POST", "/v1/jobs",
+		`{"type":"load","after":["8de1a3d0-0000-0000-0000-000000000000"]}`)
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("POST with a missing parent = %d, want 400, body %s", got.Code, got.Body)
+	}
+	if !strings.Contains(got.Body.String(), "8de1a3d0") {
+		t.Errorf("the answer does not name the job that is missing: %s", got.Body)
+	}
+}
+
+// A job that waits for nothing answers exactly what it answered before.
+//
+// Every caller that exists was written before this field, and an answer that
+// grew a null field would break a client that refuses unknown keys.
+func TestAJobThatFollowsNothingCarriesNoAfter(t *testing.T) {
+	handler, _ := serve(t)
+
+	made := withKey(t, handler, "POST", "/v1/jobs", `{"type":"work"}`)
+	if strings.Contains(made.Body.String(), "after") {
+		t.Errorf("a job that waits for nothing answers with an after field: %s", made.Body)
+	}
+}
+
 // The queue says whether anything is out there.
 //
 // Every other question this API answers is about the jobs. A queue with a
