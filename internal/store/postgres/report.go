@@ -35,11 +35,14 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 		attempts   int
 		maxRetries int
 		leaseID    *string
+		leasedBy   *string
+		leasedAt   *time.Time
 	)
 	err = tx.QueryRow(ctx,
-		`SELECT attempts, max_retries, lease_id::text FROM jobs WHERE id = $1 FOR UPDATE`,
+		`SELECT attempts, max_retries, lease_id::text, leased_by, leased_at
+			FROM jobs WHERE id = $1 FOR UPDATE`,
 		rep.JobID,
-	).Scan(&attempts, &maxRetries, &leaseID)
+	).Scan(&attempts, &maxRetries, &leaseID, &leasedBy, &leasedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -61,7 +64,13 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 		return nil, store.ErrLeaseNotValid
 	}
 
-	job, err := s.applyDecision(ctx, tx, rep.JobID, attempts, maxRetries, rep.Outcome, rep.Error, now, rep.Result)
+	job, err := s.applyDecision(ctx, tx, ending{
+		id:         rep.JobID,
+		attempts:   attempts,
+		maxRetries: maxRetries,
+		worker:     text(leasedBy),
+		startedAt:  leasedAt,
+	}, rep.Outcome, rep.Error, now, rep.Result)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +100,7 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, attempts, max_retries, leased_by FROM jobs
+		SELECT id::text, attempts, max_retries, leased_by, leased_at FROM jobs
 		WHERE status = 'leased' AND lease_expires_at <= $1
 		ORDER BY lease_expires_at, seq
 		LIMIT $2
@@ -102,24 +111,16 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 		return 0, fmt.Errorf("postgres: cannot look for expired leases: %w", err)
 	}
 
-	type expired struct {
-		id         string
-		attempts   int
-		maxRetries int
-		worker     string
-	}
-	var found []expired
+	var found []ending
 
 	for rows.Next() {
-		var e expired
+		var e ending
 		var worker *string
-		if err := rows.Scan(&e.id, &e.attempts, &e.maxRetries, &worker); err != nil {
+		if err := rows.Scan(&e.id, &e.attempts, &e.maxRetries, &worker, &e.startedAt); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("postgres: cannot read an expired lease: %w", err)
 		}
-		if worker != nil {
-			e.worker = *worker
-		}
+		e.worker = text(worker)
 		found = append(found, e)
 	}
 	rows.Close()
@@ -128,7 +129,7 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 	}
 
 	for _, e := range found {
-		if _, err := s.applyDecision(ctx, tx, e.id, e.attempts, e.maxRetries,
+		if _, err := s.applyDecision(ctx, tx, e,
 			jobs.OutcomeExpired, expiryMessage(e.worker), now, nil); err != nil {
 			return 0, err
 		}
@@ -148,14 +149,13 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 func (s *Store) applyDecision(
 	ctx context.Context,
 	tx pgx.Tx,
-	id string,
-	attempts, maxRetries int,
+	end ending,
 	outcome jobs.Outcome,
 	message string,
 	now time.Time,
 	result json.RawMessage,
 ) (*store.Job, error) {
-	decision := s.opts.PolicyFor(maxRetries).Decide(attempts, outcome, now, s.opts.Jitter())
+	decision := s.opts.PolicyFor(end.maxRetries).Decide(end.attempts, outcome, now, s.opts.Jitter())
 
 	// A success leaves the previous error in place rather than clearing it.
 	// The row then still says what went wrong on the attempt before the one
@@ -187,14 +187,68 @@ func (s *Store) applyDecision(
 			leased_at = NULL
 		WHERE id = $7
 		RETURNING `+columns,
-		string(decision.Status), decision.Attempts, decision.RunAt, now, lastError, kept, id,
+		string(decision.Status), decision.Attempts, decision.RunAt, now, lastError, kept, end.id,
 	)
 
 	job, _, err := scanJob(row)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot write the job: %w", err)
 	}
+
+	// The attempt row goes in the same transaction as the job. A history that
+	// can commit without the job it describes, or the other way round, is a
+	// history nobody can rely on.
+	//
+	// The count is read from the run that ended and not from the decision.
+	// Decide leaves it alone today, so the two hold the same number and no
+	// test can tell them apart. That is the reason to be careful here rather
+	// than a reason not to be: a policy that ever moved the count would
+	// renumber this row to describe the run that comes next, and the history
+	// would be wrong from that release onwards with nothing failing.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_attempts
+			(job_id, attempt, worker, outcome, error, started_at, finished_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		end.id, end.attempts, end.worker, outcome.String(), attemptError(outcome, message),
+		end.startedAt, now,
+	); err != nil {
+		return nil, fmt.Errorf("postgres: cannot write the attempt: %w", err)
+	}
+
 	return job, nil
+}
+
+// ending is the attempt that is finishing.
+//
+// One struct rather than five more parameters. Both paths that end an attempt
+// fill it in, which is what keeps a worker reporting and a lease running out
+// writing the same history.
+type ending struct {
+	id         string
+	attempts   int
+	maxRetries int
+	worker     string
+	startedAt  *time.Time
+}
+
+// text reads a nullable column that the rest of the code holds as a string.
+func text(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// attemptError gives what to record against one run.
+//
+// A run that finished has no error, whatever the job carried before it. The
+// job keeps its last error on purpose, so reading the job's field here would
+// copy an old failure onto the row of the attempt that worked.
+func attemptError(outcome jobs.Outcome, message string) string {
+	if outcome == jobs.OutcomeDone {
+		return ""
+	}
+	return message
 }
 
 func expiryMessage(worker string) string {

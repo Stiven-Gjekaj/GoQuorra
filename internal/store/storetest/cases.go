@@ -679,6 +679,218 @@ var cases = []testCase{
 		}
 	}},
 
+	// The history of a job is one row per finished run.
+	//
+	// The jobs table holds one row per job, so a job that failed and then
+	// worked carried one error, from whichever attempt wrote last, and no
+	// record that the other runs happened. Nobody could answer which worker
+	// was failing.
+	{"every finished run leaves a row behind", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		// Fail once, then succeed. The job carries the error from the first
+		// run afterwards, on purpose, and this is what tells the two apart.
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1"})[0]
+		clock.Advance(2 * time.Second)
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeFailed, Error: "upstream said no",
+		}); err != nil {
+			t.Fatalf("the first Report: %v", err)
+		}
+
+		clock.Advance(time.Hour)
+		again := lease(t, s, store.LeaseRequest{WorkerID: "w2"})[0]
+		clock.Advance(time.Second)
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: again.LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("the second Report: %v", err)
+		}
+
+		history, err := s.Attempts(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Attempts: %v", err)
+		}
+		if len(history) != 2 {
+			t.Fatalf("the job kept %d runs, want 2", len(history))
+		}
+
+		first, second := history[0], history[1]
+		if first.Number != 1 || second.Number != 2 {
+			t.Errorf("the runs are numbered %d and %d, want 1 and 2", first.Number, second.Number)
+		}
+		if first.Worker != "w1" || second.Worker != "w2" {
+			t.Errorf("the runs name %q and %q, want w1 and w2", first.Worker, second.Worker)
+		}
+		if first.Outcome != jobs.OutcomeFailed || second.Outcome != jobs.OutcomeDone {
+			t.Errorf("the outcomes are %s and %s, want failed and done", first.Outcome, second.Outcome)
+		}
+		if first.Error != "upstream said no" {
+			t.Errorf("the failed run says %q", first.Error)
+		}
+
+		// The run that worked carries no error. The job keeps its last error
+		// on purpose, and copying that here would put the old failure on the
+		// row of the attempt that worked.
+		if second.Error != "" {
+			t.Errorf("the run that worked says %q went wrong", second.Error)
+		}
+
+		// How long each run took, which is the answer a single row per job
+		// could never give.
+		took, known := first.Took()
+		if !known {
+			t.Fatal("the first run has no duration, so its start was not recorded")
+		}
+		if took != 2*time.Second {
+			t.Errorf("the first run took %s, want 2s", took)
+		}
+	}},
+
+	// A lease that ran out is a finished run too.
+	//
+	// It is the one nobody reported, so it is the one a single row per job
+	// could never describe: the worker is gone, and the row it would have
+	// written is the row that says what happened to it.
+	{"a lease that runs out leaves a row naming the worker", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		lease(t, s, store.LeaseRequest{WorkerID: "the-one-that-died", TTL: time.Second})
+
+		clock.Advance(2 * time.Second)
+		if _, err := s.ReclaimExpired(ctx(), 10); err != nil {
+			t.Fatalf("ReclaimExpired: %v", err)
+		}
+
+		history, err := s.Attempts(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Attempts: %v", err)
+		}
+		if len(history) != 1 {
+			t.Fatalf("the job kept %d runs, want 1", len(history))
+		}
+		if history[0].Outcome != jobs.OutcomeExpired {
+			t.Errorf("the outcome is %s, want expired", history[0].Outcome)
+		}
+		if history[0].Worker != "the-one-that-died" {
+			t.Errorf("the run names %q, want the worker that held it", history[0].Worker)
+		}
+		if history[0].Error == "" {
+			t.Error("the run says nothing about why it ended")
+		}
+	}},
+
+	// A refusal is recorded as a refusal.
+	//
+	// It reaches the same code as a failure and takes a different path
+	// through the policy, so a store that wrote the outcome from the status
+	// would record it as failed and lose the one thing that tells a bad
+	// payload apart from a broken upstream.
+	{"a refused run is recorded as refused", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1"})[0]
+
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID,
+			Outcome: jobs.OutcomeRefused, Error: "the payload names no account",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		history, err := s.Attempts(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Attempts: %v", err)
+		}
+		if len(history) != 1 || history[0].Outcome != jobs.OutcomeRefused {
+			t.Fatalf("the history is %+v, want one refused run", history)
+		}
+	}},
+
+	// A job that has run nothing has no history, and a job that is not there
+	// is a different answer.
+	{"a job with no runs is not a job that is missing", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+
+		history, err := s.Attempts(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Attempts of a job that has not run: %v", err)
+		}
+		if len(history) != 0 {
+			t.Errorf("a job that has not run kept %d runs", len(history))
+		}
+
+		if _, err := s.Attempts(ctx(), "8de1a3d0-0000-0000-0000-000000000000"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Attempts of an unknown job gave %v, want ErrNotFound", err)
+		}
+		if _, err := s.Attempts(ctx(), "not-a-uuid"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Attempts of a malformed identifier gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	// Reviving keeps what happened before it.
+	//
+	// The point of the history is that it survives. It also holds two runs
+	// numbered 1, because reviving sets the count back to zero on purpose, so
+	// the order they were written in is the only thing that says which came
+	// first.
+	{"reviving a job keeps the runs that came before", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		runs := failUntilBuried(t, s, clock, made.ID)
+
+		if _, err := s.Revive(ctx(), made.ID, "ops"); err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		held := lease(t, s, store.LeaseRequest{WorkerID: "after"})[0]
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		history, err := s.Attempts(ctx(), made.ID)
+		if err != nil {
+			t.Fatalf("Attempts: %v", err)
+		}
+		if len(history) != runs+1 {
+			t.Fatalf("the job kept %d runs, want the %d before the revive and the one after", len(history), runs+1)
+		}
+
+		last := history[len(history)-1]
+		if last.Outcome != jobs.OutcomeDone || last.Worker != "after" {
+			t.Errorf("the last run is %+v, want the one after the revive", last)
+		}
+		if last.Number != 1 {
+			t.Errorf("the run after the revive is numbered %d, want 1", last.Number)
+		}
+	}},
+
+	// The history goes when the job goes.
+	//
+	// Otherwise the retention sweep leaves the runs of every removed job
+	// behind, and this side of the schema grows for ever while the side it
+	// describes does not.
+	{"removing a job removes what it kept", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1"})[0]
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: made.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		clock.Advance(48 * time.Hour)
+		removed, err := s.DeleteFinished(ctx(), jobs.Succeeded, clock.Now(), 10)
+		if err != nil {
+			t.Fatalf("DeleteFinished: %v", err)
+		}
+		if removed != 1 {
+			t.Fatalf("the sweep removed %d jobs, want 1", removed)
+		}
+
+		if _, err := s.Attempts(ctx(), made.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("the runs of a removed job are still there: %v", err)
+		}
+	}},
+
 	// A leased job says when the run began, not only when the queue gives up.
 	//
 	// lease_expires_at answers "how much longer will the queue wait". The

@@ -308,6 +308,47 @@ func (f Filter) Validate() error {
 	return nil
 }
 
+// Attempt is one finished run of a job.
+//
+// A row is written where the run ends and not where it starts. A running
+// attempt is already fully visible on the job itself, which names the worker
+// holding it and says when the lease ends, so writing a row at lease time
+// would be a second write on the busiest statement in the system to record
+// what the first one already said.
+type Attempt struct {
+	JobID string `json:"job_id"`
+
+	// Number counts from one. It is the attempt count the job carried while
+	// this run was happening.
+	Number int `json:"attempt"`
+
+	// Worker is the identifier the worker gave when it took the lease. It is
+	// empty for a lease that ran out with no worker named.
+	Worker string `json:"worker,omitempty"`
+
+	// Outcome is done, failed, expired or refused.
+	Outcome jobs.Outcome `json:"outcome"`
+
+	// Error is what went wrong, and is empty for a run that finished.
+	Error string `json:"error,omitempty"`
+
+	// StartedAt is when the worker took the lease, and is nil when that is
+	// not known. A job leased by a build older than this table has no start
+	// to record, and an invented one would put a wrong duration in the
+	// history this type exists to keep.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// Took gives how long the run took, and whether that is known.
+func (a Attempt) Took() (time.Duration, bool) {
+	if a.StartedAt == nil {
+		return 0, false
+	}
+	return a.FinishedAt.Sub(*a.StartedAt), true
+}
+
 // QueueStat is one row of the queue statistics.
 type QueueStat struct {
 	Queue  string      `json:"queue"`
@@ -391,6 +432,12 @@ type Store interface {
 	// that a worker is holding would lose work, and a sweeper is exactly the
 	// place where a wrong status is not noticed for a month.
 	DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error)
+
+	// Attempts lists the finished runs of one job, oldest run first.
+	//
+	// An empty list means the job has not finished a run yet, and is not the
+	// same as a job that is not there, which is ErrNotFound.
+	Attempts(ctx context.Context, jobID string) ([]Attempt, error)
 
 	// QueueStats counts the jobs by queue and by status.
 	QueueStats(ctx context.Context) ([]QueueStat, error)

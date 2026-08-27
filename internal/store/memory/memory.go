@@ -50,6 +50,14 @@ type Store struct {
 type record struct {
 	job store.Job
 	seq uint64
+
+	// attempts is what happened on each finished run, oldest first.
+	//
+	// A slice and not a map keyed by the attempt number. Reviving a job sets
+	// its count back to zero, so a job that was buried and revived holds two
+	// runs numbered 1, and only the order they were appended in says which
+	// came first.
+	attempts []store.Attempt
 }
 
 // New makes an empty store.
@@ -355,6 +363,31 @@ func (s *Store) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now time.Time) {
 	decision := s.opts.PolicyFor(rec.job.MaxRetries).Decide(rec.job.Attempts, outcome, now, s.opts.Jitter())
 
+	// Recorded before the job moves, from the run that ended and not from the
+	// decision. Decide leaves the count alone today, so the two hold the same
+	// number and no test can tell them apart. That is the reason to be
+	// careful here rather than a reason not to be: a policy that ever moved
+	// the count would renumber this row to describe the run that comes next.
+	//
+	// A run that finished carries no error, whatever the job carried before
+	// it. The job keeps its last error on purpose, and copying it here would
+	// put an old failure on the row of the attempt that worked.
+	attempt := store.Attempt{
+		JobID:      rec.job.ID,
+		Number:     rec.job.Attempts,
+		Worker:     rec.job.LeasedBy,
+		Outcome:    outcome,
+		FinishedAt: now,
+	}
+	if outcome != jobs.OutcomeDone {
+		attempt.Error = message
+	}
+	if rec.job.LeasedAt != nil {
+		at := *rec.job.LeasedAt
+		attempt.StartedAt = &at
+	}
+	rec.attempts = append(rec.attempts, attempt)
+
 	rec.job.Status = decision.Status
 	rec.job.Attempts = decision.Attempts
 	rec.job.RunAt = decision.RunAt
@@ -367,6 +400,40 @@ func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now tim
 	if outcome != jobs.OutcomeDone {
 		rec.job.LastError = message
 	}
+}
+
+// Attempts lists the finished runs of one job, oldest run first.
+func (s *Store) Attempts(ctx context.Context, jobID string) ([]store.Attempt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[jobID]
+	if !found {
+		// An empty list means a job that has not finished a run. A job that
+		// is not there is a different answer, and the caller above turns the
+		// two into a 200 and a 404.
+		return nil, store.ErrNotFound
+	}
+	if len(rec.attempts) == 0 {
+		return nil, nil
+	}
+
+	// A copy, so that a caller holding the answer cannot change what the
+	// store believes, and so that the next run appending to the slice does
+	// not write into an array the caller is reading.
+	out := make([]store.Attempt, len(rec.attempts))
+	for i, a := range rec.attempts {
+		out[i] = a
+		if a.StartedAt != nil {
+			at := *a.StartedAt
+			out[i].StartedAt = &at
+		}
+	}
+	return out, nil
 }
 
 // DeleteFinished removes finished jobs that stopped moving before a time.

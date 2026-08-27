@@ -147,6 +147,64 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 	return out, rows.Err()
 }
 
+// Attempts lists the finished runs of one job, oldest run first.
+//
+// Ordered by id and not by the attempt number. Reviving a job sets its count
+// back to zero, so a job that was buried and revived holds two runs numbered
+// 1, and only the order they were written in says which came first.
+func (s *Store) Attempts(ctx context.Context, jobID string) ([]store.Attempt, error) {
+	if _, err := parseID(jobID); err != nil {
+		return nil, store.ErrNotFound
+	}
+
+	// The job is looked for first. An empty list means a job that has not
+	// finished a run, and without this it would also mean a job that is not
+	// there, which are different answers to the caller above.
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT TRUE FROM jobs WHERE id = $1`, jobID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot read the job: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT job_id::text, attempt, worker, outcome, error, started_at, finished_at
+		FROM job_attempts WHERE job_id = $1 ORDER BY id`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot read the attempts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Attempt
+	for rows.Next() {
+		var (
+			a       store.Attempt
+			outcome string
+			started *time.Time
+		)
+		if err := rows.Scan(
+			&a.JobID, &a.Number, &a.Worker, &outcome, &a.Error, &started, &a.FinishedAt,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: cannot read an attempt: %w", err)
+		}
+
+		parsed, err := jobs.ParseOutcome(outcome)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: the table holds %w", err)
+		}
+		a.Outcome = parsed
+		if started != nil {
+			at := started.UTC()
+			a.StartedAt = &at
+		}
+		a.FinishedAt = a.FinishedAt.UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // Close releases the pool.
 func (s *Store) Close() error {
 	s.pool.Close()
