@@ -144,11 +144,19 @@ func TestACatchUpIsBoundedAndKeepsTheNewest(t *testing.T) {
 	now := moment("2026-03-01 00:00")
 
 	at, mark, dropped := Firings(c, CatchUpAll, last, now)
-	if len(at) > MostCaughtUp {
+	if len(at) != MostCaughtUp {
 		t.Fatalf("all fired %d times, and the bound is %d", len(at), MostCaughtUp)
 	}
-	if dropped == 0 {
-		t.Fatal("a two month outage dropped nothing")
+
+	// The count is the real number of windows that did not run, and not the
+	// number that happened not to fit. An earlier version stopped walking at
+	// the bound and reported one missed window for an outage of a hundred
+	// and forty, which is a number nobody could act on.
+	//
+	// January and February 2026 are 31 and 28 days, so 59 days of hours.
+	windows := 59 * 24
+	if want := windows - MostCaughtUp; dropped != want {
+		t.Errorf("the outage dropped %d windows, want %d", dropped, want)
 	}
 
 	// The newest kept, so the last one is the most recent window reached.
@@ -160,6 +168,36 @@ func TestACatchUpIsBoundedAndKeepsTheNewest(t *testing.T) {
 	for i := 1; i < len(at); i++ {
 		if !at[i].After(at[i-1]) {
 			t.Fatalf("firing %d is at %s, which is not after %s", i, at[i], at[i-1])
+		}
+	}
+}
+
+// The count of what did not run is the real number under every policy.
+//
+// It is what an operator reads to find out how much work was lost, so a
+// number bounded by what happened to fit in memory would be worse than none.
+func TestTheCountOfMissedWindowsIsTheRealNumber(t *testing.T) {
+	c := mustCron(t, "0 * * * *")
+	last := moment("2026-01-01 00:00")
+	now := moment("2026-03-01 00:00")
+	windows := 59 * 24
+
+	cases := map[CatchUp]struct{ fired, dropped int }{
+		CatchUpAll:  {MostCaughtUp, windows - MostCaughtUp},
+		CatchUpSkip: {1, windows - 1},
+		CatchUpNone: {0, windows},
+	}
+	for policy, want := range cases {
+		at, _, dropped := Firings(c, policy, last, now)
+		if len(at) != want.fired {
+			t.Errorf("%s fired %d times, want %d", policy, len(at), want.fired)
+		}
+		if dropped != want.dropped {
+			t.Errorf("%s dropped %d windows, want %d", policy, dropped, want.dropped)
+		}
+		// Every window is accounted for, whichever policy ran.
+		if len(at)+dropped != windows {
+			t.Errorf("%s accounts for %d of %d windows", policy, len(at)+dropped, windows)
 		}
 	}
 }

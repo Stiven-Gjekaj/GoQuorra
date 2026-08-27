@@ -38,6 +38,18 @@ const (
 	CatchUpNone CatchUp = "none"
 )
 
+// mostWindowsWalked bounds the walk that counts the missed windows.
+//
+// Next gives up after five years, so a schedule that has not fired for longer
+// than that already stops. This is the second bound, and it is on the
+// arithmetic rather than on the calendar: a rule that fires every minute is
+// half a million windows a year, and counting five of those on one tick of a
+// background loop is time the loop owes to the sweep and the reclaim.
+//
+// A count that hits this is a floor rather than a total, and the schedule is
+// so far behind that the difference does not change what anybody does.
+const mostWindowsWalked = 100_000
+
 // MostCaughtUp bounds one catch up.
 //
 // A schedule that has not fired for a year is not sixty missed windows, it is
@@ -95,27 +107,47 @@ func Firings(c Cron, policy CatchUp, last, now time.Time) (at []time.Time, mark 
 	}
 
 	// Every window between the last firing and now.
-	var missed []time.Time
+	//
+	// Counted in full and kept in part. The count is what an operator reads
+	// to find out how much did not run, so it has to be the real number: a
+	// version that stopped walking at the bound reported one missed window
+	// for an outage of a hundred and forty, which is a number nobody could
+	// act on.
+	//
+	// What is kept is a ring of the newest MostCaughtUp. A schedule left for
+	// a decade would otherwise hold five million moments in memory before
+	// any of them were dropped.
+	ring := make([]time.Time, 0, MostCaughtUp)
+	total := 0
 	from := last
+
 	for {
 		next, found := c.Next(from)
 		if !found || next.After(now) {
 			break
 		}
-		missed = append(missed, next)
+		total++
 		from = next
 
-		// Bounded while it is being built and not after. A schedule left for
-		// a decade would otherwise hold five million moments in memory
-		// before any of them were dropped.
-		if len(missed) > MostCaughtUp {
+		if len(ring) < MostCaughtUp {
+			ring = append(ring, next)
+		} else {
+			ring = append(ring[1:], next)
+		}
+
+		// The walk is bounded, and the bound is the honest one: Next gives
+		// up after five years, so a schedule that has not fired for longer
+		// than that stops here rather than walking to the epoch.
+		if total >= mostWindowsWalked {
 			break
 		}
 	}
 
-	if len(missed) == 0 {
+	if total == 0 {
 		return nil, last, 0
 	}
+
+	missed := ring
 
 	// The last window reached is what the schedule is now behind, whichever
 	// policy applies. A policy that fired nothing still moves on: leaving the
@@ -125,22 +157,18 @@ func Firings(c Cron, policy CatchUp, last, now time.Time) (at []time.Time, mark 
 
 	switch policy {
 	case CatchUpNone:
-		return nil, mark, len(missed)
+		return nil, mark, total
 
 	case CatchUpAll:
-		if len(missed) > MostCaughtUp {
-			// The oldest are dropped and the newest kept. A catch up that
-			// ran out of room has to choose, and the recent windows are the
-			// ones still worth doing.
-			dropped = len(missed) - MostCaughtUp
-			missed = missed[dropped:]
-		}
-		return missed, mark, dropped
+		// The oldest are dropped and the newest kept. A catch up that ran
+		// out of room has to choose, and the recent windows are the ones
+		// still worth doing.
+		return missed, mark, total - len(missed)
 
 	default: // CatchUpSkip
 		// One firing, at the most recent missed window rather than at now.
 		// The job then carries the moment it was meant to run at, which is
 		// what a handler keyed on a window needs even when it only gets one.
-		return missed[len(missed)-1:], mark, len(missed) - 1
+		return missed[len(missed)-1:], mark, total - 1
 	}
 }
