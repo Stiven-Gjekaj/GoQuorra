@@ -426,7 +426,16 @@ func act(args []string, out io.Writer, verb, done string) error {
 	}
 
 	status, _ := answer["status"].(string)
-	fmt.Fprintf(out, "%s %s (now %s)\n", id, done, status)
+	fmt.Fprintf(out, "%s %s (now %s)", id, done, status)
+
+	// Which name the queue wrote against the job, and not which key this
+	// shell holds. An operator with several keys in a profile finds out here
+	// that the action went down under the wrong one, rather than a month
+	// later when somebody reads the job.
+	if by, _ := answer["acted_by"].(string); by != "" {
+		fmt.Fprintf(out, ", by %s", by)
+	}
+	fmt.Fprintln(out)
 	return nil
 }
 

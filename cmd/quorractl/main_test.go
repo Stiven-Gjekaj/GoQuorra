@@ -82,6 +82,26 @@ func TestCreateThenGet(t *testing.T) {
 	}
 }
 
+// The line an action prints names the key the queue recorded.
+//
+// An operator with two keys in a shell profile finds out here that the
+// cancel went down under the wrong name, rather than a month later when
+// somebody reads the job and asks who stopped it.
+func TestAnActionSaysWhichKeyTheQueueRecorded(t *testing.T) {
+	flags := serve(t)
+
+	printed, _ := cli(t, flags, "create", "-type", "work")
+	id := strings.TrimSpace(printed)
+
+	stopped, err := cli(t, flags, "cancel", id)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if !strings.Contains(stopped, "by test") {
+		t.Errorf("cancel printed %q, want the name of the key beside it", stopped)
+	}
+}
+
 func TestCancelAndRevive(t *testing.T) {
 	flags := serve(t)
 
