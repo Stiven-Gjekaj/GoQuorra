@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,18 @@ func TestValidateRefusesAJobThatCannotBeStored(t *testing.T) {
 		t.Errorf("a job with no payload was refused: %v", err)
 	}
 
+	// The edges themselves fit. A bound written one out is a bound that
+	// refuses a job the column would have held.
+	for name, edge := range map[string]NewJob{
+		"the highest priority the column holds": {Type: "e", Priority: math.MaxInt32},
+		"the lowest priority the column holds":  {Type: "e", Priority: math.MinInt32},
+		"the most retries the column holds":     {Type: "e", MaxRetries: intPtr(math.MaxInt32)},
+	} {
+		if err := edge.Validate(); err != nil {
+			t.Errorf("%s was refused: %v", name, err)
+		}
+	}
+
 	bad := map[string]NewJob{
 		"no type":             {Payload: json.RawMessage(`{}`)},
 		"type too long":       {Type: strings.Repeat("t", 256)},
@@ -30,6 +43,13 @@ func TestValidateRefusesAJobThatCannotBeStored(t *testing.T) {
 		"negative delay":      {Type: "email", Delay: -time.Second},
 		"negative retries":    {Type: "email", MaxRetries: intPtr(-1)},
 		"payload is not json": {Type: "email", Payload: json.RawMessage(`{"to":`)},
+
+		// The column is INTEGER and the field is a Go int, so a number
+		// between the two sizes used to pass here and be refused by
+		// PostgreSQL, which answered 500 for the client's mistake.
+		"priority past the column":    {Type: "email", Priority: math.MaxInt32 + 1},
+		"priority under the column":   {Type: "email", Priority: math.MinInt32 - 1},
+		"max retries past the column": {Type: "email", MaxRetries: intPtr(math.MaxInt32 + 1)},
 	}
 	for name, n := range bad {
 		if err := n.Validate(); err == nil {

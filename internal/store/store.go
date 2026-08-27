@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
@@ -126,8 +127,30 @@ func (n NewJob) Validate() error {
 	if n.Delay < 0 {
 		return fmt.Errorf("store: the delay is %s, which puts the job in the past", n.Delay)
 	}
+	// Priority and max retries are bounded by the column and not only by
+	// their sign.
+	//
+	// Both columns are INTEGER, which holds a 32 bit value, and both fields
+	// are a Go int, which holds a 64 bit one. A number between the two sizes
+	// passed every check here and reached PostgreSQL, which refused it with
+	// "integer out of range". That message carries no "store: " prefix, so
+	// the layer above read it as the server's fault and answered 500 to what
+	// the client had plainly got wrong.
+	//
+	// The in-memory store has no such column and stored the same value
+	// happily, so the two stores disagreed about the same job while the whole
+	// contract suite passed. That is the part worth fixing: the suite exists
+	// so that a store cannot agree only with itself.
+	if n.Priority > math.MaxInt32 || n.Priority < math.MinInt32 {
+		return fmt.Errorf("store: the priority is %d, and the column holds a number between %d and %d",
+			n.Priority, math.MinInt32, math.MaxInt32)
+	}
 	if n.MaxRetries != nil && *n.MaxRetries < 0 {
 		return fmt.Errorf("store: max retries is %d, and it cannot be negative", *n.MaxRetries)
+	}
+	if n.MaxRetries != nil && *n.MaxRetries > math.MaxInt32 {
+		return fmt.Errorf("store: max retries is %d, and the column holds no more than %d",
+			*n.MaxRetries, math.MaxInt32)
 	}
 	if len(n.IdempotencyKey) > 255 {
 		return fmt.Errorf("store: the idempotency key is %d characters, and the column holds 255", len(n.IdempotencyKey))
