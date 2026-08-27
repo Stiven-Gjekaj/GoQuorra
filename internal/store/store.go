@@ -130,6 +130,15 @@ type NewJob struct {
 	// An empty key means the caller is not asking for that, and two jobs
 	// submitted without one are two jobs.
 	IdempotencyKey string
+
+	// After names jobs this one waits for. It runs when every one of them has
+	// succeeded, and is cancelled when any one of them cannot.
+	//
+	// Every identifier has to name a job that already exists, because that is
+	// what makes a cycle impossible: a job cannot be created before itself,
+	// so a job can only ever wait for one older than it. There is no cycle
+	// check anywhere, and there is none to forget.
+	After []string
 }
 
 // Validate refuses a job that cannot be stored.
@@ -145,6 +154,19 @@ func (n NewJob) Validate() error {
 	}
 	if n.Delay < 0 {
 		return fmt.Errorf("store: the delay is %s, which puts the job in the past", n.Delay)
+	}
+	// A bound on how many jobs one may wait for. Every one of them is read
+	// at submission and again whenever one of them ends, so an unbounded
+	// list is an unbounded amount of work on a path a caller controls.
+	if len(n.After) > MostAfter {
+		return fmt.Errorf(
+			"store: the job waits for %d jobs, and the most it may wait for is %d",
+			len(n.After), MostAfter)
+	}
+	for _, id := range n.After {
+		if id == "" {
+			return errors.New("store: the job waits for a job with no identifier")
+		}
 	}
 	// Priority and max retries are bounded by the column and not only by
 	// their sign.

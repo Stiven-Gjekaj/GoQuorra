@@ -11,6 +11,14 @@ import (
 // DefaultQueue is where a job goes when the caller names no queue.
 const DefaultQueue = "default"
 
+// MostAfter bounds how many jobs one job may wait for.
+//
+// Every one of them is read when the job is submitted, and the list is read
+// again whenever one of them ends. An unbounded list is an unbounded amount
+// of work on a path a caller controls, and sixty four is far past what any
+// real chain of work needs.
+const MostAfter = 64
+
 // defaultJitter draws the number the backoff needs.
 //
 // math/rand/v2 is safe to call from several goroutines, which matters because
