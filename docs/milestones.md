@@ -255,23 +255,31 @@ whether each one swallows the token after it. It writes a `--` between the two
 halves, always: the first version dropped a separator the caller had typed,
 and the argument it was protecting was then read as an option.
 
-### The dashboard polls for ever, and that is not fixed
+### The dashboard polled for ever, and now it does not
 
-The page reloads every five seconds with `setInterval` and no backoff, no
-check for whether the tab is visible, and no stop when the key is wrong.
-So a wrong key makes two failing requests every five seconds for as long as
-the tab is open, and a tab left in the background polls until it is closed.
+The page reloaded every five seconds on a fixed interval with no backoff, no
+check for whether the tab was visible, and no stop when the key was wrong.
+A wrong key made two failing requests every five seconds for as long as the
+tab was open, and a tab left in the background polled until it was closed.
 
-This is real and it is left.
-Fixing it properly means giving the page a request lifecycle: a backoff, a
-pause when hidden, and a stop after a run of failures.
-That is its own piece of work rather than a line, and the cost today is a
-request every five seconds against a server that answers it in under a
-millisecond.
+This entry said it was real and left, and named what fixing it would take: a
+backoff, a pause when hidden, and a stop after a run of failures.
+It now has all three.
+The wait doubles on a failure to a ceiling of a minute, the page stops after
+six failures in a row, and a hidden tab is asked for nothing.
 
-**What would change the answer.** A deployment where the dashboard is open on
-many screens at once, or one where the server is not on the same network as
-the people watching it.
+Measured over the browser.
+With a wrong key: one request in the first second and a half, and two in
+twenty one and a half, with the wait at twenty seconds.
+Hidden for thirteen seconds: no requests at all, and two the moment the tab
+was seen again.
+Correcting the key put the wait back to five seconds and refreshed at once,
+because somebody who has just fixed the reason for the failures should not
+serve the punishment for them.
+
+**What was needed to change the answer.** Nothing measured.
+The request was made, and the entry that recorded the cost is what made it
+easy to say yes to.
 
 ### Why the state machine has four states and not six
 
