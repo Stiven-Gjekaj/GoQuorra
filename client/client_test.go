@@ -206,13 +206,26 @@ func TestAClientClearsADeadLetterQueueInOneCall(t *testing.T) {
 // Sending it and reading a 400 back tells them the same thing a round trip
 // later, and only if they are watching.
 func TestABulkCallNeedsALimit(t *testing.T) {
-	c := connect(t)
-
-	if _, err := c.CancelMatching(t.Context(), client.Many{Status: "dead"}); err == nil {
-		t.Error("a bulk call with no limit was sent")
+	// Pointed at an address nothing is listening on. A check on this side
+	// answers about the limit, and a call that goes out answers about the
+	// connection, so the two cannot be confused. Against a real server both
+	// give an error and the test would pass either way.
+	c, err := client.New(client.Config{Server: "http://127.0.0.1:1", APIKey: key})
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
 	}
-	if _, err := c.ReviveMatching(t.Context(), client.Many{Status: "dead", Limit: -1}); err == nil {
-		t.Error("a bulk call with a negative limit was sent")
+
+	for name, m := range map[string]client.Many{
+		"no limit":         {Status: "dead"},
+		"a negative limit": {Status: "dead", Limit: -1},
+	} {
+		_, err := c.CancelMatching(t.Context(), m)
+		if err == nil {
+			t.Fatalf("%s: a bulk call was sent", name)
+		}
+		if !strings.Contains(err.Error(), "needs a limit") {
+			t.Errorf("%s: the call went out and failed on the connection: %v", name, err)
+		}
 	}
 }
 
