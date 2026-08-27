@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -58,6 +59,16 @@ type Config struct {
 
 	Logger *slog.Logger
 
+	// APIKey is the key this worker presents on every call. It has to hold
+	// the worker scope, which is separate from the one an operator's key
+	// holds: an operator must not be able to lease the queue empty, and a
+	// worker must not be able to cancel anything.
+	//
+	// The server refuses every call without one. The gRPC port used to have
+	// no authentication at all, so a process that could reach it could lease
+	// from any queue.
+	APIKey string
+
 	// DialOptions are passed to gRPC. Leave empty for an insecure connection,
 	// which is the right choice only inside a private network.
 	DialOptions []grpc.DialOption
@@ -96,6 +107,42 @@ func (c *Config) fill() {
 	}
 }
 
+// sendKey puts the key on every call that answers once.
+func sendKey(key string) grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		conn *grpc.ClientConn,
+		invoke grpc.UnaryInvoker,
+		options ...grpc.CallOption,
+	) error {
+		return invoke(withKey(ctx, key), method, req, reply, conn, options...)
+	}
+}
+
+// sendKeyOnStream puts the key on every call that holds a stream open.
+func sendKeyOnStream(key string) grpc.StreamClientInterceptor {
+	return func(
+		ctx context.Context,
+		desc *grpc.StreamDesc,
+		conn *grpc.ClientConn,
+		method string,
+		streamer grpc.Streamer,
+		options ...grpc.CallOption,
+	) (grpc.ClientStream, error) {
+		return streamer(withKey(ctx, key), desc, conn, method, options...)
+	}
+}
+
+// withKey adds the key to the metadata of one call.
+//
+// AppendToOutgoingContext and not NewOutgoingContext, so that a caller who
+// set metadata of their own keeps it.
+func withKey(ctx context.Context, key string) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "x-api-key", key)
+}
+
 // Worker takes jobs from a server and runs them.
 type Worker struct {
 	cfg    Config
@@ -117,10 +164,22 @@ type Worker struct {
 func New(cfg Config) (*Worker, error) {
 	cfg.fill()
 
+	if cfg.APIKey == "" {
+		return nil, errors.New("worker: an API key is required, and it needs the worker scope")
+	}
+
 	options := cfg.DialOptions
 	if len(options) == 0 {
 		options = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	}
+
+	// The key goes on every call through an interceptor rather than being
+	// added at each call site. There are four of them, and the one somebody
+	// forgets is the one that fails at three in the morning.
+	options = append(options,
+		grpc.WithUnaryInterceptor(sendKey(cfg.APIKey)),
+		grpc.WithStreamInterceptor(sendKeyOnStream(cfg.APIKey)),
+	)
 
 	conn, err := grpc.NewClient(cfg.ServerAddr, options...)
 	if err != nil {

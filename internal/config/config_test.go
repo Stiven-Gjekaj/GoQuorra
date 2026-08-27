@@ -264,6 +264,7 @@ func TestDurationsAndLevelsAreParsed(t *testing.T) {
 
 func TestTheQueueListIsSplitAndTrimmed(t *testing.T) {
 	got, err := LoadWorker(FromMap(map[string]string{
+		"QUORRA_API_KEY":       "a-key-that-somebody-chose",
 		"QUORRA_WORKER_QUEUES": " default , email ,, processing ",
 	}))
 	if err != nil {
@@ -288,6 +289,7 @@ func TestTheQueueListIsSplitAndTrimmed(t *testing.T) {
 // the pairing is refused at startup.
 func TestAShutdownWaitPastTheLeaseIsRefused(t *testing.T) {
 	_, err := LoadWorker(FromMap(map[string]string{
+		"QUORRA_API_KEY":          "a-key-that-somebody-chose",
 		"QUORRA_WORKER_LEASE_TTL": "30s",
 		"QUORRA_SHUTDOWN_GRACE":   "60s",
 	}))
@@ -305,6 +307,7 @@ func TestAShutdownWaitPastTheLeaseIsRefused(t *testing.T) {
 // from the others when a deployment tool writes an empty string into it.
 func TestAValueOfSpacesMeansTheVariableIsNotSet(t *testing.T) {
 	got, err := LoadWorker(FromMap(map[string]string{
+		"QUORRA_API_KEY":         "a-key-that-somebody-chose",
 		"QUORRA_WORKER_ID":       "   ",
 		"QUORRA_WORKER_QUEUES":   "  ",
 		"QUORRA_WORKER_MAX_JOBS": " ",

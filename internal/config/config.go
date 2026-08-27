@@ -99,6 +99,12 @@ type Worker struct {
 	PollEvery  time.Duration
 	LogLevel   slog.Level
 
+	// APIKey is presented on every call to the server, and has to hold the
+	// worker scope. There is no default: the gRPC port used to accept every
+	// caller that could reach it, and a default here would be a way to keep
+	// doing that by accident.
+	APIKey string
+
 	// ShutdownGrace is how long a stopping worker waits for the jobs it is
 	// running. The old worker passed context.Background() to every job and
 	// then closed the connection, so work in flight was abandoned and its
@@ -223,6 +229,8 @@ func LoadWorker(getenv Getenv) (*Worker, error) {
 		PollEvery:     l.duration("QUORRA_WORKER_POLL_EVERY", time.Second),
 		LogLevel:      l.level("QUORRA_LOG_LEVEL", slog.LevelInfo),
 		ShutdownGrace: l.duration("QUORRA_SHUTDOWN_GRACE", 30*time.Second),
+
+		APIKey: l.required("QUORRA_API_KEY"),
 	}
 
 	if err := l.err(); err != nil {

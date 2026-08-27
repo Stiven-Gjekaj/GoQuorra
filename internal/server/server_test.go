@@ -21,6 +21,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/worker"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -137,6 +138,7 @@ func TestAJobTravelsFromHTTPToAWorker(t *testing.T) {
 		LeaseTTL:      30 * time.Second,
 		PollEvery:     5 * time.Millisecond,
 		ShutdownGrace: 5 * time.Second,
+		APIKey:        key,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -204,7 +206,11 @@ func TestAnAbandonedLeaseIsTakenBack(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	leased, err := quorrapb.NewQueueServiceClient(conn).Lease(context.Background(), &quorrapb.LeaseRequest{
+	// The key goes on by hand here, because this test uses the generated
+	// client directly rather than the worker package that adds it.
+	worked := metadata.AppendToOutgoingContext(context.Background(), "x-api-key", key)
+
+	leased, err := quorrapb.NewQueueServiceClient(conn).Lease(worked, &quorrapb.LeaseRequest{
 		WorkerId: "the-worker-that-died",
 		Queue:    "default",
 		MaxJobs:  1,
@@ -248,7 +254,7 @@ func TestAnAbandonedLeaseIsTakenBack(t *testing.T) {
 	// how busy the machine was.
 	var after *quorrapb.LeaseResponse
 	waitFor(t, "the job to be offered to another worker", func() bool {
-		got, err := quorrapb.NewQueueServiceClient(conn).Lease(context.Background(), &quorrapb.LeaseRequest{
+		got, err := quorrapb.NewQueueServiceClient(conn).Lease(worked, &quorrapb.LeaseRequest{
 			WorkerId: "the-worker-that-took-over",
 			Queue:    "default",
 			MaxJobs:  1,
@@ -446,11 +452,12 @@ func TestNothingIsRemovedWhenNoRetentionIsSet(t *testing.T) {
 
 // testKeys builds a one key set for a test harness.
 //
-// Named "test" and allowed to write, because these harnesses drive every
-// route. A test about scopes builds its own set rather than using this.
+// Named "test" and allowed everything, because these harnesses drive the HTTP
+// routes and the worker protocol from one process. A test about scopes builds
+// its own set rather than using this.
 func testKeys(t *testing.T, secret string) *auth.Set {
 	t.Helper()
-	key, err := auth.NewKey("test", auth.Write, secret)
+	key, err := auth.NewKey("test", auth.Everything, secret)
 	if err != nil {
 		t.Fatalf("auth.NewKey: %v", err)
 	}

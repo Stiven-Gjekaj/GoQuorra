@@ -56,7 +56,15 @@ func New(cfg *config.Server, s store.Store, log *slog.Logger) *Server {
 		DashboardEnabled: true,
 	}).Handler()
 
-	grpcServer := grpc.NewServer()
+	// The worker protocol is guarded by the same keys the HTTP API uses, and
+	// a worker key is a scope of its own. The port had no authentication at
+	// all before this: a process that could reach it could lease from any
+	// queue.
+	guard := rpc.NewGuard(cfg.Keys)
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(guard.Unary()),
+		grpc.StreamInterceptor(guard.Stream()),
+	)
 	quorrapb.RegisterQueueServiceServer(grpcServer,
 		rpc.New(s, m, log, rpc.DefaultLimits(), time.Now))
 

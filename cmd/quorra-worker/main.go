@@ -55,6 +55,7 @@ func run() error {
 		LeaseTTL:      cfg.LeaseTTL,
 		PollEvery:     cfg.PollEvery,
 		ShutdownGrace: cfg.ShutdownGrace,
+		APIKey:        cfg.APIKey,
 		Logger:        log,
 	})
 	if err != nil {

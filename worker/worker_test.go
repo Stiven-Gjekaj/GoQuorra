@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb"
@@ -32,6 +33,24 @@ import (
 // is where this project's worst defect lived. The server here is the same one
 // the binary runs, over a connection in memory, so a test costs milliseconds
 // and still covers the codec.
+// workerKey is the secret the harness presents, and workerKeys is the set
+// that accepts it.
+const workerKey = "a-worker-key-that-is-long-enough"
+
+func workerKeys(t *testing.T) *auth.Set {
+	t.Helper()
+
+	key, err := auth.NewKey("fleet", auth.Worker, workerKey)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(key)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+	return set
+}
+
 func serve(t *testing.T) (store.Store, []grpc.DialOption) {
 	t.Helper()
 
@@ -43,8 +62,15 @@ func serve(t *testing.T) (store.Store, []grpc.DialOption) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := rpc.New(backing, metrics.New(), quiet, rpc.DefaultLimits(), time.Now)
 
+	// The guard is part of the server this package talks to. A harness
+	// without it would let every test here pass against a build that had
+	// stopped sending the key.
 	listener := bufconn.Listen(1 << 20)
-	server := grpc.NewServer()
+	guard := rpc.NewGuard(workerKeys(t))
+	server := grpc.NewServer(
+		grpc.UnaryInterceptor(guard.Unary()),
+		grpc.StreamInterceptor(guard.Stream()),
+	)
 	quorrapb.RegisterQueueServiceServer(server, service)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
@@ -68,6 +94,7 @@ func newWorker(t *testing.T, dial []grpc.DialOption) *worker.Worker {
 		LeaseTTL:      30 * time.Second,
 		PollEvery:     5 * time.Millisecond,
 		ShutdownGrace: 5 * time.Second,
+		APIKey:        workerKey,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DialOptions:   dial,
 	})
@@ -467,6 +494,7 @@ func TestASlowHandlerKeepsItsJob(t *testing.T) {
 		ShutdownGrace:  5 * time.Second,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DialOptions:    dial,
+		APIKey:         workerKey,
 	})
 	if err != nil {
 		t.Fatalf("worker.New: %v", err)
@@ -541,6 +569,7 @@ func TestCancellingAJobStopsTheHandler(t *testing.T) {
 		ShutdownGrace:  5 * time.Second,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DialOptions:    dial,
+		APIKey:         workerKey,
 	})
 	if err != nil {
 		t.Fatalf("worker.New: %v", err)
@@ -602,6 +631,7 @@ func TestTheHeartbeatIntervalDefaultsToAThirdOfTheLease(t *testing.T) {
 		LeaseTTL:    30 * time.Second,
 		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DialOptions: dial,
+		APIKey:      workerKey,
 	})
 	if err != nil {
 		t.Fatalf("worker.New: %v", err)
@@ -725,6 +755,7 @@ func TestTheHandlerContextDoesNotEndAtTheFirstLeaseExpiry(t *testing.T) {
 		ShutdownGrace:  5 * time.Second,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DialOptions:    dial,
+		APIKey:         workerKey,
 	})
 	if err != nil {
 		t.Fatalf("worker.New: %v", err)
