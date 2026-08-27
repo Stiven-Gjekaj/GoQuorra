@@ -463,6 +463,29 @@ type Store interface {
 	// It returns ErrWrongState for any other state.
 	Revive(ctx context.Context, id, actor string) (*Job, error)
 
+	// CancelMatching stops every job a filter names, up to a limit, and
+	// reports how many it stopped.
+	//
+	// One request and one transaction rather than one of each per job. An
+	// operator clearing a thousand jobs otherwise writes a shell loop, and a
+	// shell loop that stops half way through leaves the queue in a state
+	// nobody chose.
+	//
+	// The filter is the one List takes, so the jobs cancelled are exactly the
+	// jobs a listing with the same filter shows. A job the filter names that
+	// has already finished is skipped rather than refused: a bulk action
+	// against a moving queue will always race something, and failing the
+	// whole batch for it would make the operation useless.
+	CancelMatching(ctx context.Context, f Filter, actor string) (int, error)
+
+	// ReviveMatching puts every job a filter names back in the queue, up to a
+	// limit, and reports how many it moved.
+	//
+	// The reason this exists. Recovering a dead letter queue after fixing
+	// what broke is the most common thing an operator does to a queue, and
+	// without this it is a shell loop.
+	ReviveMatching(ctx context.Context, f Filter, actor string) (int, error)
+
 	// ReclaimExpired returns jobs whose lease has run out, and reports how
 	// many it moved. A job that has no attempts left is buried instead.
 	ReclaimExpired(ctx context.Context, limit int) (int, error)

@@ -332,6 +332,13 @@ func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error
 		return nil, fmt.Errorf("%w: the job is %s and has already finished", store.ErrWrongState, rec.job.Status)
 	}
 
+	s.cancelOne(rec, actor, now)
+	return clone(&rec.job), nil
+}
+
+// cancelOne stops one job. The caller holds the lock and has checked the
+// state, so that the bulk path and the single one write the same thing.
+func (s *Store) cancelOne(rec *record, actor string, now time.Time) bool {
 	// The lease goes with it. A worker still running this job reports later
 	// and is refused, which is the same path a reclaimed job takes.
 	rec.job.Status = jobs.Cancelled
@@ -344,8 +351,7 @@ func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error
 
 	// What was waiting for this job will never run either.
 	s.settleAfter(rec.job.ID, now)
-
-	return clone(&rec.job), nil
+	return true
 }
 
 // Revive puts a dead or cancelled job back in the queue.
@@ -371,12 +377,23 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	// A fresh set of attempts, and ready now. The last error stays on the
 	// row, because the thing that went wrong before is what somebody looking
 	// at the job afterwards wants to see.
-	// A revived job goes back to waiting when it still waits.
-	//
-	// Sending it to pending would run it before the parent it was submitted
-	// to follow, which is the one thing the whole feature exists to stop. A
-	// job whose parents have since succeeded is pending, and one whose parent
-	// is still dead cannot be revived until that parent is.
+	if !s.reviveOne(rec, actor, now) {
+		return nil, fmt.Errorf(
+			"%w: %s", store.ErrWrongState, afterMessage(rec.job.After, s.records))
+	}
+	return clone(&rec.job), nil
+}
+
+// reviveOne puts one job back in the queue, and reports whether it moved.
+//
+// The caller holds the lock and has checked the state. It answers false for a
+// job that still waits for one that cannot succeed, which is the one case a
+// revive cannot do anything about: sending the job to pending would run it
+// before the job it was submitted to follow, and leaving it blocked would
+// claim it is waiting for something that will arrive.
+func (s *Store) reviveOne(rec *record, actor string, now time.Time) bool {
+	// A revived job goes back to waiting when it still waits. A job whose
+	// parents have since succeeded is pending.
 	parents := make([]jobs.Status, 0, len(rec.job.After))
 	for _, id := range rec.job.After {
 		if parent, found := s.records[id]; found {
@@ -387,8 +404,7 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	}
 	back := jobs.AfterState(parents)
 	if back == jobs.Cancelled {
-		return nil, fmt.Errorf(
-			"%w: %s", store.ErrWrongState, afterMessage(rec.job.After, s.records))
+		return false
 	}
 
 	rec.job.Status = back
@@ -404,8 +420,86 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	// A job that was itself a parent releases what waited for it, because a
 	// revive can take a chain out of cancelled.
 	s.settleAfter(rec.job.ID, now)
+	return true
+}
 
-	return clone(&rec.job), nil
+// CancelMatching stops every job a filter names, up to its limit.
+func (s *Store) CancelMatching(ctx context.Context, f store.Filter, actor string) (int, error) {
+	return s.actOnMatching(ctx, f, actor, func(rec *record) bool {
+		return !rec.job.Status.Terminal()
+	}, s.cancelOne)
+}
+
+// ReviveMatching puts every job a filter names back in the queue.
+func (s *Store) ReviveMatching(ctx context.Context, f store.Filter, actor string) (int, error) {
+	return s.actOnMatching(ctx, f, actor, func(rec *record) bool {
+		return rec.job.Status == jobs.Dead || rec.job.Status == jobs.Cancelled
+	}, s.reviveOne)
+}
+
+// actOnMatching runs one action over every job a filter names.
+//
+// The jobs are collected first and acted on after. Acting inside the walk
+// would change the map that the walk is reading, and the two actions both
+// move jobs that were not the ones matched: cancelling a job cancels what
+// waits for it.
+//
+// A job the filter names that the action does not apply to is skipped rather
+// than refused. A bulk action against a moving queue will always race
+// something, and failing the whole batch for it would make this useless.
+func (s *Store) actOnMatching(
+	ctx context.Context,
+	f store.Filter,
+	actor string,
+	applies func(*record) bool,
+	act func(*record, string, time.Time) bool,
+) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := f.Validate(); err != nil {
+		return 0, err
+	}
+	if f.Limit <= 0 {
+		return 0, nil
+	}
+
+	now := s.opts.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// The same matching the listing uses, so the jobs acted on are exactly
+	// the jobs a listing with this filter shows.
+	var chosen []*record
+	for _, rec := range s.records {
+		if !matches(&rec.job, f) || !applies(rec) {
+			continue
+		}
+		chosen = append(chosen, rec)
+	}
+
+	// Oldest first, so a backlog is worked through from the far end and two
+	// runs of the same bounded command make progress rather than looking at
+	// the same rows.
+	sort.Slice(chosen, func(i, j int) bool { return chosen[i].seq < chosen[j].seq })
+	if len(chosen) > f.Limit {
+		chosen = chosen[:f.Limit]
+	}
+
+	moved := 0
+	for _, rec := range chosen {
+		// Checked again, because acting on an earlier job in this batch can
+		// have moved a later one: cancelling a parent cancels the jobs that
+		// wait for it, and one of those may be in this list.
+		if !applies(rec) {
+			continue
+		}
+		if act(rec, actor, now) {
+			moved++
+		}
+	}
+	return moved, nil
 }
 
 // ReclaimExpired returns jobs whose lease has run out.
@@ -777,19 +871,7 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 
 	matching := make([]*record, 0, len(s.records))
 	for _, rec := range s.records {
-		if f.Queue != "" && rec.job.Queue != f.Queue {
-			continue
-		}
-		if f.Status != "" && rec.job.Status != f.Status {
-			continue
-		}
-		if f.Type != "" && rec.job.Type != f.Type {
-			continue
-		}
-		if f.Worker != "" && rec.job.LeasedBy != f.Worker {
-			continue
-		}
-		if !f.DueBy.IsZero() && rec.job.RunAt.After(f.DueBy) {
+		if !matches(&rec.job, f) {
 			continue
 		}
 		if f.Before != "" && !after(rec) {
@@ -817,6 +899,34 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		out[i] = clone(&rec.job)
 	}
 	return out, nil
+}
+
+// matches reports whether a job passes the fields of a filter.
+//
+// The cursor is not one of them. A cursor says where a page starts and not
+// which jobs belong in it, and a bulk action has no page.
+//
+// One function, used by the listing and by the bulk actions, so that the jobs
+// a bulk cancel stops are exactly the jobs a listing with the same filter
+// shows. Written twice, the two would answer differently on the first field
+// added to one of them.
+func matches(job *store.Job, f store.Filter) bool {
+	if f.Queue != "" && job.Queue != f.Queue {
+		return false
+	}
+	if f.Status != "" && job.Status != f.Status {
+		return false
+	}
+	if f.Type != "" && job.Type != f.Type {
+		return false
+	}
+	if f.Worker != "" && job.LeasedBy != f.Worker {
+		return false
+	}
+	if !f.DueBy.IsZero() && job.RunAt.After(f.DueBy) {
+		return false
+	}
+	return true
 }
 
 // Close releases nothing, and exists so that a caller can treat every store

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
@@ -35,6 +36,112 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 		}
 		return jobs.Pending, nil
 	}, resetAttempts)
+}
+
+// CancelMatching stops every job a filter names, up to its limit.
+func (s *Store) CancelMatching(ctx context.Context, f store.Filter, actor string) (int, error) {
+	return s.actOnMatching(ctx, f, actor, func(current jobs.Status) (jobs.Status, error) {
+		if current.Terminal() {
+			return "", errSkip
+		}
+		return jobs.Cancelled, nil
+	}, keepAttempts)
+}
+
+// ReviveMatching puts every job a filter names back in the queue.
+func (s *Store) ReviveMatching(ctx context.Context, f store.Filter, actor string) (int, error) {
+	return s.actOnMatching(ctx, f, actor, func(current jobs.Status) (jobs.Status, error) {
+		if current != jobs.Dead && current != jobs.Cancelled {
+			return "", errSkip
+		}
+		return jobs.Pending, nil
+	}, resetAttempts)
+}
+
+// errSkip says that a job the filter named is not one this action applies to.
+//
+// A job the filter names that has already moved is skipped rather than
+// refused. A bulk action against a moving queue will always race something,
+// and failing the whole batch for it would make the operation useless.
+var errSkip = errors.New("store: this job is not one the action applies to")
+
+// actOnMatching runs one transition over every job a filter names.
+//
+// One transaction for the batch, and the same transition each job would get on
+// its own. An operator clearing a thousand jobs otherwise writes a shell loop,
+// and a shell loop that stops half way through leaves the queue in a state
+// nobody chose.
+func (s *Store) actOnMatching(
+	ctx context.Context,
+	f store.Filter,
+	actor string,
+	next func(current jobs.Status) (jobs.Status, error),
+	count attempts,
+) (int, error) {
+	if err := f.Validate(); err != nil {
+		return 0, err
+	}
+	if f.Limit <= 0 {
+		return 0, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: cannot begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The same conditions the listing builds, so the jobs acted on are
+	// exactly the jobs a listing with this filter shows.
+	//
+	// Oldest first, so a backlog is worked through from the far end and two
+	// runs of the same bounded command make progress rather than looking at
+	// the same rows. FOR UPDATE SKIP LOCKED, so two operators running this at
+	// once share the work instead of one waiting behind the other.
+	where, args := conditions(f)
+	args = append(args, f.Limit)
+	rows, err := tx.Query(ctx,
+		`SELECT id::text FROM jobs WHERE `+strings.Join(where, " AND ")+
+			fmt.Sprintf(` ORDER BY seq LIMIT $%d FOR UPDATE SKIP LOCKED`, len(args)),
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: cannot find the jobs to act on: %w", err)
+	}
+
+	var chosen []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("postgres: cannot read a job to act on: %w", err)
+		}
+		chosen = append(chosen, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("postgres: cannot read the jobs to act on: %w", err)
+	}
+
+	moved := 0
+	for _, id := range chosen {
+		// Acting on an earlier job in this batch can have moved a later one:
+		// cancelling a parent cancels the jobs that wait for it, and one of
+		// those may be in this list. transitionIn reads the state again, so
+		// the skip below covers it.
+		_, err := s.transitionIn(ctx, tx, id, actor, next, count)
+		if errors.Is(err, errSkip) || errors.Is(err, store.ErrWrongState) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		moved++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("postgres: cannot commit: %w", err)
+	}
+	return moved, nil
 }
 
 // ExtendLease pushes the expiry of a lease further out.
@@ -156,20 +263,43 @@ func (s *Store) transition(
 	next func(current jobs.Status) (jobs.Status, error),
 	count attempts,
 ) (*store.Job, error) {
-	if _, err := parseID(id); err != nil {
-		return nil, store.ErrNotFound
-	}
-
-	now := s.opts.Now()
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	job, err := s.transitionIn(ctx, tx, id, actor, next, count)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: cannot commit: %w", err)
+	}
+	return job, nil
+}
+
+// transitionIn is transition inside a transaction the caller opened.
+//
+// The bulk actions call it once for each job in a batch, so a job cancelled
+// one at a time and a job cancelled in a thousand are written by the same
+// code.
+func (s *Store) transitionIn(
+	ctx context.Context,
+	tx pgx.Tx,
+	id string,
+	actor string,
+	next func(current jobs.Status) (jobs.Status, error),
+	count attempts,
+) (*store.Job, error) {
+	if _, err := parseID(id); err != nil {
+		return nil, store.ErrNotFound
+	}
+
+	now := s.opts.Now()
+
 	var current string
-	err = tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&current)
+	err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
@@ -253,10 +383,6 @@ func (s *Store) transition(
 	job.After, err = afterOf(ctx, tx, id)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("postgres: cannot commit: %w", err)
 	}
 	return job, nil
 }

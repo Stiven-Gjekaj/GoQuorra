@@ -679,6 +679,181 @@ var cases = []testCase{
 		}
 	}},
 
+	// A dead letter queue is cleared in one request.
+	//
+	// The reason bulk exists. Recovering after fixing what broke is the most
+	// common thing an operator does to a queue, and without this it is a
+	// shell loop that leaves the queue half done if it stops.
+	{"reviving by filter puts back every job it names", func(t *testing.T, s store.Store, clock *Clock) {
+		var buried []string
+		for i := 0; i < 3; i++ {
+			made := create(t, s, store.NewJob{Type: "charge"})
+			failUntilBuried(t, s, clock, made.ID)
+			buried = append(buried, made.ID)
+		}
+
+		// One of another type, which must not move. A bulk action that
+		// ignored the filter would pass every other check in this rule.
+		other := create(t, s, store.NewJob{Type: "email"})
+		failUntilBuried(t, s, clock, other.ID)
+
+		clock.Advance(time.Minute)
+		moved, err := s.ReviveMatching(ctx(), store.Filter{
+			Status: jobs.Dead, Type: "charge", Limit: 100,
+		}, "ops")
+		if err != nil {
+			t.Fatalf("ReviveMatching: %v", err)
+		}
+		if moved != 3 {
+			t.Fatalf("the revive moved %d jobs, want 3", moved)
+		}
+
+		for _, id := range buried {
+			got, err := s.Get(ctx(), id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != jobs.Pending {
+				t.Errorf("a revived job is %q, want pending", got.Status)
+			}
+			if got.Attempts != 0 {
+				t.Errorf("a revived job has %d attempts, want a fresh set", got.Attempts)
+			}
+			// Every one records who did it, the same way a single revive does.
+			if got.ActedBy != "ops" {
+				t.Errorf("a revived job says %q acted on it, want ops", got.ActedBy)
+			}
+		}
+
+		if got, _ := s.Get(ctx(), other.ID); got.Status != jobs.Dead {
+			t.Errorf("a job of another type is %q, and the filter did not name it", got.Status)
+		}
+	}},
+
+	// The limit bounds it, and the oldest go first.
+	//
+	// A bulk action with no bound is one statement that can hold locks over a
+	// year of history. Working from the far end is what lets two runs of the
+	// same bounded command make progress rather than looking at the same rows.
+	{"a bulk action stops at its limit and takes the oldest first", func(t *testing.T, s store.Store, clock *Clock) {
+		var made []string
+		for i := 0; i < 5; i++ {
+			job := create(t, s, store.NewJob{Type: "work"})
+			made = append(made, job.ID)
+		}
+
+		moved, err := s.CancelMatching(ctx(), store.Filter{Status: jobs.Pending, Limit: 2}, "ops")
+		if err != nil {
+			t.Fatalf("CancelMatching: %v", err)
+		}
+		if moved != 2 {
+			t.Fatalf("the cancel moved %d jobs, want the 2 its limit allows", moved)
+		}
+
+		for i, id := range made {
+			got, err := s.Get(ctx(), id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			want := jobs.Pending
+			if i < 2 {
+				want = jobs.Cancelled
+			}
+			if got.Status != want {
+				t.Errorf("job %d is %q, want %q: the oldest two should go first", i, got.Status, want)
+			}
+		}
+	}},
+
+	// A job the filter names that the action does not apply to is skipped.
+	//
+	// A bulk action against a moving queue will always race something, and
+	// failing the whole batch for it would make the operation useless.
+	{"a bulk action skips what it cannot move", func(t *testing.T, s store.Store, clock *Clock) {
+		open := create(t, s, store.NewJob{Type: "work"})
+		done := create(t, s, store.NewJob{Type: "work"})
+
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 10})
+		for _, one := range held {
+			if one.ID != done.ID {
+				continue
+			}
+			if _, err := s.Report(ctx(), store.Report{
+				JobID: one.ID, LeaseID: one.LeaseID, Outcome: jobs.OutcomeDone,
+			}); err != nil {
+				t.Fatalf("Report: %v", err)
+			}
+		}
+
+		// No status in the filter, so it names both, and one of them has
+		// finished.
+		moved, err := s.CancelMatching(ctx(), store.Filter{Limit: 100}, "ops")
+		if err != nil {
+			t.Fatalf("CancelMatching: %v", err)
+		}
+		if moved != 1 {
+			t.Fatalf("the cancel moved %d jobs, want only the one it could", moved)
+		}
+
+		if got, _ := s.Get(ctx(), done.ID); got.Status != jobs.Succeeded {
+			t.Errorf("the finished job is %q, and a bulk cancel must not touch it", got.Status)
+		}
+		if got, _ := s.Get(ctx(), open.ID); got.Status != jobs.Cancelled {
+			t.Errorf("the open job is %q, want cancelled", got.Status)
+		}
+	}},
+
+	// A bulk cancel stops what waits for the jobs it cancels.
+	//
+	// The single path does it, so this one has to as well, or the two write
+	// different things and which one ran decides what the queue holds.
+	{"a bulk cancel stops what waits for it", func(t *testing.T, s store.Store, clock *Clock) {
+		parent := create(t, s, store.NewJob{Type: "extract", Queue: "etl"})
+		child, _, err := s.Create(ctx(), store.NewJob{
+			Type: "load", Queue: "other", After: []string{parent.ID},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// The filter names only the parent's queue, so the child moves
+		// because of the parent and not because it was matched.
+		moved, err := s.CancelMatching(ctx(), store.Filter{Queue: "etl", Limit: 100}, "ops")
+		if err != nil {
+			t.Fatalf("CancelMatching: %v", err)
+		}
+		if moved != 1 {
+			t.Fatalf("the cancel moved %d jobs, want 1", moved)
+		}
+
+		got, err := s.Get(ctx(), child.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Status != jobs.Cancelled {
+			t.Errorf("the waiting job is %q after its parent was cancelled in a batch", got.Status)
+		}
+	}},
+
+	// A filter that names nothing moves nothing, and says so rather than
+	// failing.
+	{"a bulk action over nothing moves nothing", func(t *testing.T, s store.Store, clock *Clock) {
+		moved, err := s.ReviveMatching(ctx(), store.Filter{Status: jobs.Dead, Limit: 100}, "ops")
+		if err != nil {
+			t.Fatalf("ReviveMatching over an empty queue: %v", err)
+		}
+		if moved != 0 {
+			t.Errorf("the revive moved %d jobs from an empty queue", moved)
+		}
+
+		// A limit of zero moves nothing rather than everything, which is the
+		// mistake that costs the most.
+		create(t, s, store.NewJob{Type: "work"})
+		if moved, err := s.CancelMatching(ctx(), store.Filter{Limit: 0}, "ops"); err != nil || moved != 0 {
+			t.Errorf("a limit of zero moved %d jobs: %v", moved, err)
+		}
+	}},
+
 	// A job that waits for another does not run until that one succeeds.
 	//
 	// The whole feature. A job submitted to follow another is not pending,

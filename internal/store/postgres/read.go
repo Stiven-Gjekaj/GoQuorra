@@ -60,29 +60,10 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		return nil, nil
 	}
 
-	// Built with placeholders and never with the values. Three of the four
-	// fields here come straight from a query string.
-	where := []string{"TRUE"}
-	args := []any{}
+	where, args := conditions(f)
 	add := func(clause string, value any) {
 		args = append(args, value)
 		where = append(where, fmt.Sprintf(clause, len(args)))
-	}
-
-	if f.Queue != "" {
-		add("queue = $%d", f.Queue)
-	}
-	if f.Status != "" {
-		add("status = $%d", string(f.Status))
-	}
-	if f.Type != "" {
-		add("type = $%d", f.Type)
-	}
-	if f.Worker != "" {
-		add("leased_by = $%d", f.Worker)
-	}
-	if !f.DueBy.IsZero() {
-		add("run_at <= $%d", f.DueBy)
 	}
 
 	if f.Before != "" {
@@ -270,6 +251,44 @@ func (s *Store) Workers(ctx context.Context) ([]store.Worker, error) {
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// conditions turns the fields of a filter into a WHERE clause.
+//
+// Built with placeholders and never with the values. Three of the fields here
+// come straight from a query string.
+//
+// The cursor is not one of them. A cursor says where a page starts and not
+// which jobs belong in it, and a bulk action has no page.
+//
+// One function, used by the listing and by the bulk actions, so that the jobs
+// a bulk cancel stops are exactly the jobs a listing with the same filter
+// shows. Written twice, the two would answer differently on the first field
+// added to one of them.
+func conditions(f store.Filter) ([]string, []any) {
+	where := []string{"TRUE"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+
+	if f.Queue != "" {
+		add("queue = $%d", f.Queue)
+	}
+	if f.Status != "" {
+		add("status = $%d", string(f.Status))
+	}
+	if f.Type != "" {
+		add("type = $%d", f.Type)
+	}
+	if f.Worker != "" {
+		add("leased_by = $%d", f.Worker)
+	}
+	if !f.DueBy.IsZero() {
+		add("run_at <= $%d", f.DueBy)
+	}
+	return where, args
 }
 
 // Close releases the pool.
