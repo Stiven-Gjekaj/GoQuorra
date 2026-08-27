@@ -50,7 +50,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	jobStore, err := open(ctx, cfg)
+	jobStore, err := open(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -63,8 +63,14 @@ func run() error {
 	return server.New(cfg, jobStore, log).Run(ctx)
 }
 
-func open(ctx context.Context, cfg *config.Server) (store.Store, error) {
-	opts := store.Options{Policy: cfg.Policy}
+func open(ctx context.Context, cfg *config.Server, log *slog.Logger) (store.Store, error) {
+	// The store reports what it cannot return through a function rather than
+	// through a logger, so that this package chooses the logging and that one
+	// holds no library.
+	opts := store.Options{
+		Policy: cfg.Policy,
+		Log:    func(message string, err error) { log.Warn(message, "error", err) },
+	}
 
 	if cfg.UsesMemory() {
 		return memory.New(opts), nil

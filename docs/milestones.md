@@ -39,30 +39,59 @@ Measured, on a real server against PostgreSQL 16:
 
 ## Not built
 
-### Pushing a job to a worker
+### Pushing a job to a worker, built on 27 August 2026
 
-A worker asks, and the server answers with what is ready.
-An idle worker asks once a second by default, so a job submitted into an empty
-queue waits up to a second before it starts.
+A worker asked, and the server answered with what was ready.
+An idle worker asked once a second by default, so a job submitted into an
+empty queue waited up to a second before it started.
 
-The previous version of this project declared `LeaseJobs` as a server stream,
-which looked like a push and was not: it sent whatever was ready and closed.
-Making it a real push needs the server to hold a stream open for every
-connected worker and to learn when a job arrives.
+The gate this entry set was a measured need for latency below a second.
+That is not what happened: it was asked for, and this line records that so the
+file keeps meaning what it says.
 
-Two ways to learn:
+This entry named two ways to learn that a job arrived and picked the second.
+That is what was built, and the three things it said the second one needs are
+all three of them here.
 
-- **Ask the database.** One query for each connected worker, on a short timer.
-  This is the current polling, moved from the worker to the server, and it
-  costs more rather than less.
-- **Be told.** PostgreSQL has `LISTEN` and `NOTIFY`, and a trigger on insert
-  can fire one. That is a real design. It needs a connection held open per
-  server, a fallback for the notifications that are dropped when a listener is
-  slow, and care that a job becoming ready after a backoff also notifies,
-  which no insert trigger sees.
+**A connection held open per server.** The store hijacks one out of the pool
+and `LISTEN`s on it. Hijacked and not borrowed: a `LISTEN` outlives the
+statement that issued it, so a connection released back would put a listening
+one into the pool and hand the next ordinary query the notifications meant for
+a watcher. A contract rule caught that, seeing two hints on a channel nothing
+had notified.
 
-**What would change the answer.** A measured need for latency below a second.
-Nothing in this project has one today, and the polling interval is a setting.
+**A fallback for the notifications that are dropped.** Every worker still
+polls, and waits on whichever comes first. That is what makes a lost hint cost
+latency and nothing else, and it is why nothing anywhere treats a missing one
+as a fault.
+
+**The case this entry warned about**, a job becoming ready after a backoff,
+which no insert trigger sees. It is not covered, and it does not need to be: a
+job waiting out a backoff is deliberately not urgent, and the poll finds it.
+The hint goes out where a job becomes ready *now*, and that is written down
+rather than left to be discovered.
+
+The notify is sent from Go and not from a trigger.
+A trigger would put the rule in a second place that has to agree with the
+first, and it would fire on an insert rather than on a job becoming ready,
+which are not the same event.
+Every hint rides the transaction that produced it, so it is delivered on
+commit: a listener told about a job that was then rolled back would go and
+find nothing.
+
+Measured against a real server and PostgreSQL, submitted to leased, over ten
+jobs with a five second poll: a median of 11ms, a minimum of 9 and a maximum
+of 15.
+The same measurement before this, with a five hundred millisecond poll, was a
+median of 207ms.
+With a five second poll and no push the average wait is half the interval by
+arithmetic, which is two and a half seconds, and that is arithmetic rather
+than a measurement.
+
+**What is not built.** A hint for a job that becomes ready later. It needs a
+timer per job or a query per tick, and both are the first option this entry
+rejected: the polling moved from the worker to the server, costing more rather
+than less.
 
 ### Authenticating a worker, built on 27 August 2026
 
