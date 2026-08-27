@@ -167,6 +167,70 @@ func TestCancelAndRevive(t *testing.T) {
 	}
 }
 
+// A producer can submit a job that follows another.
+//
+// The pipeline case: extract, then load, and the load must not run on a half
+// written table.
+func TestAProducerCanSubmitAJobThatFollowsAnother(t *testing.T) {
+	c, backing := connectWithStore(t)
+	ctx := t.Context()
+
+	first, err := c.Submit(ctx, client.NewJob{Type: "extract"})
+	if err != nil {
+		t.Fatalf("Submit the first: %v", err)
+	}
+
+	second, err := c.Submit(ctx, client.NewJob{Type: "load", After: []string{first.ID}})
+	if err != nil {
+		t.Fatalf("Submit the second: %v", err)
+	}
+	if !second.Waiting() {
+		t.Fatalf("the second job is %q, want it waiting", second.Status)
+	}
+	if second.Finished() {
+		t.Error("a waiting job says it is finished")
+	}
+	if len(second.After) != 1 || second.After[0] != first.ID {
+		t.Errorf("the job waits for %v, want the first job", second.After)
+	}
+
+	held, err := backing.Lease(ctx, store.LeaseRequest{
+		Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+	})
+	if err != nil || len(held) != 1 || held[0].ID != first.ID {
+		t.Fatalf("Lease: %v, %v", err, held)
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: first.ID, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeDone,
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	released, err := c.Get(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if released.Waiting() {
+		t.Errorf("the second job is still %q after its parent succeeded", released.Status)
+	}
+}
+
+// A job that follows one that is not there is refused, and the answer says
+// which one.
+func TestAJobCannotFollowAJobThatIsNotThere(t *testing.T) {
+	c := connect(t)
+
+	_, err := c.Submit(t.Context(), client.NewJob{
+		Type: "load", After: []string{"8de1a3d0-0000-0000-0000-000000000000"},
+	})
+	if err == nil {
+		t.Fatal("a job following a job that is not there was accepted")
+	}
+	if !strings.Contains(err.Error(), "8de1a3d0") {
+		t.Errorf("the error does not name the job that is missing: %v", err)
+	}
+}
+
 // A producer can ask whether anything is out there.
 //
 // Worth checking before waiting on a job. A queue with a thousand waiting

@@ -125,6 +125,14 @@ type NewJob struct {
 	// Use it whenever a submission can be retried, which is whenever the
 	// network can drop an answer.
 	Key string
+
+	// After names jobs this one waits for. It runs when every one of them has
+	// succeeded, and is cancelled when any one of them cannot.
+	//
+	// Every identifier has to name a job that already exists, which is what
+	// makes a cycle impossible: a job cannot be created before itself. A job
+	// naming one that is not there is refused with ErrNotFound.
+	After []string
 }
 
 // Job is a job as the server holds it.
@@ -135,8 +143,15 @@ type Job struct {
 	Queue    string          `json:"queue"`
 	Priority int             `json:"priority"`
 
-	// Status is pending, leased, succeeded, dead or cancelled.
+	// Status is blocked, pending, leased, succeeded, dead or cancelled.
+	//
+	// blocked means the job waits for the jobs in After. It is not pending,
+	// because pending is a claim that the queue will hand the job out.
 	Status string `json:"status"`
+
+	// After names the jobs this one waits for, and is empty for a job that
+	// waits for nothing.
+	After []string `json:"after,omitempty"`
 
 	Attempts   int    `json:"attempts"`
 	MaxRetries int    `json:"max_retries"`
@@ -174,6 +189,13 @@ func (j Job) Finished() bool {
 	}
 }
 
+// Waiting reports whether the job is held back by the jobs it follows.
+//
+// It is not finished and it is not going to run yet, so a caller polling for
+// a result has to tell it apart from pending: a job that stays blocked is
+// waiting on somebody else's work, not on a worker.
+func (j Job) Waiting() bool { return j.Status == "blocked" }
+
 // Decode reads the result into a value.
 func (j Job) Decode(into any) error {
 	if len(j.Result) == 0 {
@@ -187,6 +209,7 @@ type submitted struct {
 	ID     string    `json:"id"`
 	Status string    `json:"status"`
 	Queue  string    `json:"queue"`
+	After  []string  `json:"after"`
 	RunAt  time.Time `json:"run_at"`
 }
 
@@ -224,6 +247,9 @@ func (c *Client) Submit(ctx context.Context, n NewJob) (*Job, error) {
 	if n.Key != "" {
 		body["idempotency_key"] = n.Key
 	}
+	if len(n.After) > 0 {
+		body["after"] = n.After
+	}
 
 	var answer submitted
 	if err := c.call(ctx, http.MethodPost, "/v1/jobs", body, &answer); err != nil {
@@ -235,6 +261,7 @@ func (c *Client) Submit(ctx context.Context, n NewJob) (*Job, error) {
 		Type:   n.Type,
 		Status: answer.Status,
 		Queue:  answer.Queue,
+		After:  answer.After,
 		RunAt:  answer.RunAt,
 	}, nil
 }
