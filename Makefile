@@ -18,11 +18,19 @@ help: ## Show this help
 .PHONY: verify
 verify: fmt-check vet build test proto-check links ## Run everything CI runs
 
+# VERSION is written into the binaries, and every one of them says it.
+#
+# From the git description when there is one, so a build from a tag names the
+# tag and a build after it names the tag and the distance. A tree with no tags
+# and a tree with no git both fall back to dev, which is what the binaries said
+# before this existed.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 .PHONY: build
 build: ## Build the three binaries into bin/
 	@for name in $(BINARIES); do \
-		echo "building $$name"; \
-		go build -o bin/$$name ./cmd/$$name || exit 1; \
+		echo "building $$name $(VERSION)"; \
+		go build -ldflags="-X main.version=$(VERSION)" -o bin/$$name ./cmd/$$name || exit 1; \
 	done
 
 .PHONY: test
