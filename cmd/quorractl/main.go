@@ -34,6 +34,7 @@ Commands:
   queues    Count the jobs in each queue
   cancel    Stop a job that has not finished
   revive    Put a dead or cancelled job back in the queue
+  whoami    Show the name and the scope of the key in use
 
 Options common to every command:
   -server   The server address (default http://localhost:8080,
@@ -73,6 +74,8 @@ func run(args []string, out io.Writer) error {
 		return act(args[1:], out, "cancel", "cancelled")
 	case "revive":
 		return act(args[1:], out, "revive", "put back in the queue")
+	case "whoami":
+		return whoami(args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
@@ -278,6 +281,30 @@ func get(args []string, out io.Writer) error {
 		return err
 	}
 	return print(out, answer)
+}
+
+// whoami says which key this shell holds.
+//
+// A profile that exports QUORRA_API_KEY gives no hint of which key it is,
+// and a key that may only read looks exactly like one that may write until
+// something is refused. Asking is cheaper than finding out from a 403 in the
+// middle of clearing a dead letter queue.
+func whoami(args []string, out io.Writer) error {
+	set := flag.NewFlagSet("whoami", flag.ContinueOnError)
+	c := common(set)
+	if err := set.Parse(reorder(set, args)); err != nil {
+		return err
+	}
+
+	answer, err := c.send(context.Background(), http.MethodGet, "/v1/whoami", nil)
+	if err != nil {
+		return err
+	}
+
+	name, _ := answer["name"].(string)
+	scope, _ := answer["scope"].(string)
+	fmt.Fprintf(out, "%s (may %s)\n", name, scope)
+	return nil
 }
 
 func list(args []string, out io.Writer) error {

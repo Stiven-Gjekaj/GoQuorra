@@ -82,6 +82,26 @@ func TestCreateThenGet(t *testing.T) {
 	}
 }
 
+// whoami answers the name and the scope of the key in use.
+//
+// A profile that exports QUORRA_API_KEY gives no hint of which key it is,
+// and a key that may only read looks exactly like one that may write until
+// something is refused.
+func TestWhoamiNamesTheKeyInUse(t *testing.T) {
+	flags := serve(t)
+
+	printed, err := cli(t, flags, "whoami")
+	if err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if !strings.Contains(printed, "test") {
+		t.Errorf("whoami printed %q, want the name of the key", printed)
+	}
+	if !strings.Contains(printed, "write") {
+		t.Errorf("whoami printed %q, want the scope of the key", printed)
+	}
+}
+
 // The line an action prints names the key the queue recorded.
 //
 // An operator with two keys in a shell profile finds out here that the
