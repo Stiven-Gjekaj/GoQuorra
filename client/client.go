@@ -670,7 +670,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, into any) 
 	}
 
 	if response.StatusCode >= 400 {
-		return statusError(response.StatusCode, raw)
+		return statusError(response.StatusCode, raw, response.Header.Get(requestHeader))
 	}
 	if into == nil {
 		return nil
@@ -681,8 +681,27 @@ func (c *Client) call(ctx context.Context, method, path string, body, into any) 
 	return nil
 }
 
+// requestHeader is where the server puts the identifier of the request.
+//
+// Written out rather than taken from internal/reqid. This package holds
+// nothing from inside the repository on purpose, so that a caller depends on
+// the JSON the API speaks and not on how the server is built, and one header
+// name is a small price for keeping that true.
+const requestHeader = "X-Request-Id"
+
+// mostRequestID is the longest identifier that goes in an error message.
+//
+// The same bound the server puts on what a caller may send, so a value this
+// package refuses is one the server would have refused as well.
+const mostRequestID = 64
+
 // statusError turns a refusal into an error a caller can test.
-func statusError(code int, raw []byte) error {
+//
+// The identifier of the request is put in the message. It is the one string
+// that finds every line the server wrote while it was refusing, so a caller
+// asking somebody to look has something to quote, and the caller does not
+// have to know that such a thing exists to end up holding it.
+func statusError(code int, raw []byte, request string) error {
 	message := strings.TrimSpace(string(raw))
 
 	// The server explains itself in the body, so the sentence it wrote is
@@ -692,6 +711,13 @@ func statusError(code int, raw []byte) error {
 	}
 	if err := json.Unmarshal(raw, &answer); err == nil && answer.Error != "" {
 		message = answer.Error
+	}
+
+	// Left out rather than trimmed when it is longer than the server would
+	// ever send. An error message is read by a person, and a page of
+	// identifier buries the sentence that says what went wrong.
+	if request != "" && len(request) <= mostRequestID {
+		message += " (request " + request + ")"
 	}
 
 	switch code {

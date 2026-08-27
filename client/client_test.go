@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -761,4 +762,51 @@ func testKeys(t *testing.T, secret string) *auth.Set {
 		t.Fatalf("auth.NewSet: %v", err)
 	}
 	return set
+}
+
+// A refusal names the request it came from.
+//
+// The identifier finds every line the server wrote while it was refusing, so
+// a caller asking somebody to look has one string to quote, and does not have
+// to know that such a thing exists to end up holding it.
+func TestARefusalNamesTheRequest(t *testing.T) {
+	c := connect(t)
+
+	_, err := c.Get(t.Context(), "8f14e45f-ceea-467a-9c37-8e8f8f8f8f8f")
+	if err == nil {
+		t.Fatal("a job that is not there was found")
+	}
+
+	if !strings.Contains(err.Error(), "(request ") {
+		t.Errorf("the error is %q, and it names no request", err)
+	}
+}
+
+// An identifier the server would not have sent is left out of the message.
+//
+// An error message is read by a person, and a page of identifier buries the
+// sentence that says what went wrong.
+func TestAnEnormousIdentifierIsLeftOutOfTheMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", strings.Repeat("a", 4096))
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"no job carries that identifier"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := client.New(client.Config{Server: server.URL, APIKey: key})
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+
+	_, err = c.Get(t.Context(), "8f14e45f-ceea-467a-9c37-8e8f8f8f8f8f")
+	if err == nil {
+		t.Fatal("the refusal was not reported")
+	}
+	if len(err.Error()) > 200 {
+		t.Errorf("the message is %d characters long", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "no job carries that identifier") {
+		t.Errorf("the sentence that says what went wrong is gone: %q", err)
+	}
 }
