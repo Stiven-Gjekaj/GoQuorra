@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
@@ -23,8 +24,9 @@ type Options struct {
 	Metrics *metrics.Metrics
 	Log     *slog.Logger
 
-	// APIKey guards every route under /v1.
-	APIKey string
+	// Keys guard every route under /v1. The set names each caller, so an
+	// action can be attributed to one.
+	Keys *auth.Set
 
 	// MaxBodyBytes caps a request body. Without a cap, one client sending an
 	// endless body holds a connection and a goroutine for as long as it
@@ -164,11 +166,15 @@ func (a *API) guard(next http.Handler) http.Handler {
 		// kept in browser history, and sent in the Referer header to any
 		// address a page links to. A key that has been in one is a key that
 		// has to be replaced.
-		if !equalKeys(r.Header.Get("X-API-Key"), a.opts.APIKey) {
+		key, found := a.opts.Keys.Lookup(r.Header.Get("X-API-Key"))
+		if !found {
 			a.fail(w, http.StatusUnauthorized, "the X-API-Key header is missing or wrong")
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		// The caller travels on the request from here, so a handler does not
+		// have to look the key up again and cannot look up a different one.
+		next.ServeHTTP(w, r.WithContext(withCaller(r.Context(), key)))
 	})
 }
 

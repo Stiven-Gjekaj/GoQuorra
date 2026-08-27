@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/config"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb"
@@ -36,7 +37,7 @@ func start(t *testing.T) (*server.Server, store.Store) {
 		HTTPAddr:      "127.0.0.1:0",
 		GRPCAddr:      "127.0.0.1:0",
 		Backend:       "memory",
-		APIKey:        key,
+		Keys:          testKeys(t, key),
 		Policy:        jobs.Policy{MaxRetries: 2, Base: time.Millisecond, Max: 10 * time.Millisecond},
 		ReclaimEvery:  20 * time.Millisecond,
 		ReclaimBatch:  100,
@@ -314,7 +315,7 @@ func TestTheQueueGaugeIsRefreshed(t *testing.T) {
 func TestFinishedJobsAreRemovedOnceTheyAreOldEnough(t *testing.T) {
 	cfg := &config.Server{
 		HTTPAddr: "127.0.0.1:0", GRPCAddr: "127.0.0.1:0",
-		Backend: "memory", APIKey: key,
+		Backend: "memory", Keys: testKeys(t, key),
 		Policy:        jobs.Policy{MaxRetries: 1, Base: time.Millisecond, Max: time.Millisecond},
 		ReclaimEvery:  time.Hour,
 		ReclaimBatch:  100,
@@ -375,4 +376,21 @@ func TestNothingIsRemovedWhenNoRetentionIsSet(t *testing.T) {
 	if _, err := backing.Get(context.Background(), id); err != nil {
 		t.Errorf("a job was removed with no retention set: %v", err)
 	}
+}
+
+// testKeys builds a one key set for a test harness.
+//
+// Named "test" and allowed to write, because these harnesses drive every
+// route. A test about scopes builds its own set rather than using this.
+func testKeys(t *testing.T, secret string) *auth.Set {
+	t.Helper()
+	key, err := auth.NewKey("test", auth.Write, secret)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(key)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+	return set
 }

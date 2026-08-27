@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
@@ -40,7 +41,7 @@ func serve(t *testing.T) (http.Handler, store.Store) {
 		Store:            backing,
 		Metrics:          metrics.New(),
 		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
-		APIKey:           key,
+		Keys:             testKeys(t, key),
 		MaxBodyBytes:     1 << 16,
 		DashboardEnabled: true,
 		Now:              func() time.Time { return frozen },
@@ -710,4 +711,21 @@ func TestJobsWithoutAKeyAreNeverMerged(t *testing.T) {
 	if first == second {
 		t.Fatal("two jobs with no key became one")
 	}
+}
+
+// testKeys builds a one key set for a test harness.
+//
+// Named "test" and allowed to write, because these harnesses drive every
+// route. A test about scopes builds its own set rather than using this.
+func testKeys(t *testing.T, secret string) *auth.Set {
+	t.Helper()
+	key, err := auth.NewKey("test", auth.Write, secret)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(key)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+	return set
 }

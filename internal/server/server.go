@@ -51,7 +51,7 @@ func New(cfg *config.Server, s store.Store, log *slog.Logger) *Server {
 		Store:            s,
 		Metrics:          m,
 		Log:              log,
-		APIKey:           cfg.APIKey,
+		Keys:             cfg.Keys,
 		MaxBodyBytes:     cfg.MaxBodyBytes,
 		DashboardEnabled: true,
 	}).Handler()

@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"strings"
 	"testing"
@@ -107,6 +108,113 @@ func TestTheAPIKeyHasNoDefault(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "QUORRA_API_KEY") {
 		t.Errorf("the error does not name the variable: %v", err)
+	}
+}
+
+// The variable that came before still works, and means one key that may
+// write.
+//
+// A deployment upgrading into named keys should not have to edit its
+// configuration to keep running, and one that never wants more than one key
+// should not have to learn a format to say so.
+func TestTheSingleKeyVariableStillWorks(t *testing.T) {
+	cfg, err := LoadServer(FromMap(minimalServer()))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	if cfg.Keys.Len() != 1 {
+		t.Fatalf("the set holds %d keys, want 1", cfg.Keys.Len())
+	}
+	got, found := cfg.Keys.Lookup("a-key-that-somebody-chose")
+	if !found {
+		t.Fatal("the key from QUORRA_API_KEY was not accepted")
+	}
+	if got.Name != "default" {
+		t.Errorf("the key is named %q, want default", got.Name)
+	}
+	if got.Scope != auth.Write {
+		t.Errorf("the key has scope %s, want write, or an upgrade loses the ability to submit", got.Scope)
+	}
+}
+
+func TestManyKeysAreReadWithTheirNamesAndScopes(t *testing.T) {
+	env := minimalServer()
+	delete(env, "QUORRA_API_KEY")
+	env["QUORRA_API_KEYS"] = "ops:write:a-secret-long-enough-here,dashboard:read:another-secret-long-enough"
+
+	cfg, err := LoadServer(FromMap(env))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.Keys.Len() != 2 {
+		t.Fatalf("the set holds %d keys, want 2", cfg.Keys.Len())
+	}
+
+	ops, found := cfg.Keys.Lookup("a-secret-long-enough-here")
+	if !found || ops.Name != "ops" || ops.Scope != auth.Write {
+		t.Errorf("ops came back as %q/%s, found=%v", ops.Name, ops.Scope, found)
+	}
+	dash, found := cfg.Keys.Lookup("another-secret-long-enough")
+	if !found || dash.Name != "dashboard" || dash.Scope != auth.Read {
+		t.Errorf("dashboard came back as %q/%s, found=%v", dash.Name, dash.Scope, found)
+	}
+}
+
+// The many key form wins when both are set.
+//
+// A deployment that has moved to named keys and left the old variable behind
+// should get the named ones, and not silently keep running on the one it
+// forgot to delete.
+func TestTheNamedKeysWinOverTheSingleOne(t *testing.T) {
+	env := minimalServer()
+	env["QUORRA_API_KEYS"] = "ops:write:a-secret-long-enough-here"
+
+	cfg, err := LoadServer(FromMap(env))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if _, found := cfg.Keys.Lookup("a-key-that-somebody-chose"); found {
+		t.Error("the old single key still works while named keys are set")
+	}
+	if _, found := cfg.Keys.Lookup("a-secret-long-enough-here"); !found {
+		t.Error("the named key does not work")
+	}
+}
+
+func TestABadKeySpecIsRefusedWithAReason(t *testing.T) {
+	bad := map[string]string{
+		"no scope or secret":   "ops",
+		"no secret":            "ops:write",
+		"a scope nobody has":   "ops:admin:a-secret-long-enough-here",
+		"a secret too short":   "ops:write:short",
+		"two names the same":   "ops:write:a-secret-long-enough-here,ops:read:another-secret-long-enough",
+		"two secrets the same": "ops:write:a-secret-long-enough-here,other:read:a-secret-long-enough-here",
+	}
+	for why, spec := range bad {
+		env := minimalServer()
+		delete(env, "QUORRA_API_KEY")
+		env["QUORRA_API_KEYS"] = spec
+
+		if _, err := LoadServer(FromMap(env)); err == nil {
+			t.Errorf("%s was accepted: %q", why, spec)
+		}
+	}
+}
+
+// Neither variable set is refused, and the message names both.
+func TestAServerWithNoKeysAtAllIsRefused(t *testing.T) {
+	env := minimalServer()
+	delete(env, "QUORRA_API_KEY")
+
+	_, err := LoadServer(FromMap(env))
+	if err == nil {
+		t.Fatal("a server started with no keys")
+	}
+	for _, want := range []string{"QUORRA_API_KEYS", "QUORRA_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not name %s: %v", want, err)
+		}
 	}
 }
 

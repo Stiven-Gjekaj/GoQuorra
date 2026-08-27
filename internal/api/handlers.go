@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,21 +13,6 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
-
-// equalKeys compares two keys in constant time.
-//
-// A plain != returns as soon as two bytes differ, so the time it takes says
-// how much of the key was right. That is enough to recover a key one byte at
-// a time over a network, and the fix costs nothing.
-func equalKeys(given, want string) bool {
-	// Both are hashed to a fixed length first. ConstantTimeCompare returns 0
-	// immediately when the lengths differ, so comparing the raw strings still
-	// leaks the length of the key.
-	if want == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare(fold(given), fold(want)) == 1
-}
 
 // createRequest is the body of POST /v1/jobs.
 type createRequest struct {

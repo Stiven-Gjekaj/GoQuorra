@@ -12,6 +12,7 @@ import (
 
 	"github.com/Stiven-Gjekaj/GoQuorra/client"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/api"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store/memory"
@@ -33,7 +34,7 @@ func connect(t *testing.T) *client.Client {
 		Store:   backing,
 		Metrics: metrics.New(),
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		APIKey:  key,
+		Keys:    testKeys(t, key),
 	}).Handler())
 	t.Cleanup(server.Close)
 
@@ -116,7 +117,7 @@ func TestAWrongKeyIsItsOwnError(t *testing.T) {
 		Store:   backing,
 		Metrics: metrics.New(),
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		APIKey:  key,
+		Keys:    testKeys(t, key),
 	}).Handler())
 	t.Cleanup(server.Close)
 
@@ -389,4 +390,21 @@ func TestSubmitNeedsAType(t *testing.T) {
 	if _, err := c.Submit(t.Context(), client.NewJob{}); err == nil {
 		t.Error("a job with no type was submitted")
 	}
+}
+
+// testKeys builds a one key set for a test harness.
+//
+// Named "test" and allowed to write, because these harnesses drive every
+// route. A test about scopes builds its own set rather than using this.
+func testKeys(t *testing.T, secret string) *auth.Set {
+	t.Helper()
+	key, err := auth.NewKey("test", auth.Write, secret)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(key)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+	return set
 }

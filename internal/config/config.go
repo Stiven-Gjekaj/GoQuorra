@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 )
 
@@ -43,11 +44,11 @@ type Server struct {
 	Backend     string
 	DatabaseURL string
 
-	// APIKey guards the REST API. There is no default. The old one shipped
-	// the string "dev-api-key-change-in-production" in the example file, the
-	// compose stack and the README, so every deployment that followed the
-	// quick start was reachable by anybody who had read it.
-	APIKey string
+	// Keys guard the REST API. There is no default. The version before this
+	// shipped the string "dev-api-key-change-in-production" in the example
+	// file, the compose stack and the README, so every deployment that
+	// followed the quick start was reachable by anybody who had read it.
+	Keys *auth.Set
 
 	Policy jobs.Policy
 
@@ -102,7 +103,7 @@ func LoadServer(getenv Getenv) (*Server, error) {
 
 		Backend:     l.choice("QUORRA_STORE", "postgres", "postgres", "memory"),
 		DatabaseURL: l.text("DATABASE_URL", ""),
-		APIKey:      l.required("QUORRA_API_KEY"),
+		Keys:        l.keys("QUORRA_API_KEYS", "QUORRA_API_KEY"),
 
 		Policy: jobs.Policy{
 			MaxRetries: l.number("QUORRA_MAX_RETRIES", 3),
@@ -266,6 +267,81 @@ func (l *loader) required(key string) string {
 		l.problems = append(l.problems, fmt.Errorf("config: %s must be set", key))
 	}
 	return value
+}
+
+// keys reads a set of named keys, and falls back to the single key that came
+// before them.
+//
+// The old variable still works and means one key named "default" that may
+// write. A deployment upgrading into this change should not have to edit its
+// configuration to keep running, and a deployment that never wants more than
+// one key should not have to learn a format to say so.
+//
+// The many key form is name:scope:secret, separated by commas:
+//
+//	QUORRA_API_KEYS=ops:write:<secret>,dashboard:read:<secret>
+//
+// A secret holding a comma or a colon cannot be written this way, and the
+// error says so rather than silently taking the part before the separator.
+func (l *loader) keys(many, one string) *auth.Set {
+	spec, set := l.raw(many)
+	if !set || strings.TrimSpace(spec) == "" {
+		single, had := l.raw(one)
+		if !had || single == "" {
+			l.problems = append(l.problems, fmt.Errorf(
+				"config: %s or %s must be set. Generate a secret rather than typing one: openssl rand -hex 32", many, one))
+			return nil
+		}
+		key, err := auth.NewKey("default", auth.Write, single)
+		if err != nil {
+			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", one, err))
+			return nil
+		}
+		keys, err := auth.NewSet(key)
+		if err != nil {
+			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", one, err))
+			return nil
+		}
+		return keys
+	}
+
+	var built []auth.Key
+	for _, entry := range strings.Split(spec, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 3)
+		if len(parts) != 3 {
+			l.problems = append(l.problems, fmt.Errorf(
+				"config: %s holds %q, and each key is name:scope:secret", many, entry))
+			continue
+		}
+		scope, err := auth.ParseScope(parts[1])
+		if err != nil {
+			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", many, err))
+			continue
+		}
+		key, err := auth.NewKey(parts[0], scope, parts[2])
+		if err != nil {
+			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", many, err))
+			continue
+		}
+		built = append(built, key)
+	}
+
+	if len(built) == 0 {
+		// Every entry was refused, and each one already said why. A second
+		// message here would repeat them.
+		return nil
+	}
+
+	keys, err := auth.NewSet(built...)
+	if err != nil {
+		l.problems = append(l.problems, fmt.Errorf("config: %s: %w", many, err))
+		return nil
+	}
+	return keys
 }
 
 func (l *loader) number(key string, fallback int) int {

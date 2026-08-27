@@ -204,7 +204,7 @@ func TestTheLogoGoesWithTheDashboard(t *testing.T) {
 		Store:            backing,
 		Metrics:          metrics.New(),
 		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
-		APIKey:           key,
+		Keys:             testKeys(t, key),
 		DashboardEnabled: false,
 	}).Handler()
 
