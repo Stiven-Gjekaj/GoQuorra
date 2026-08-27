@@ -141,6 +141,11 @@ make build
 There is no default API key.
 The server refuses to start without one.
 
+`QUORRA_API_KEY` is the short form and means one key named `default` that may
+write, which is why `quorractl whoami` answers `default (may write)` above.
+Set `QUORRA_API_KEYS` instead to give each caller its own name and scope. See
+[The HTTP API](#the-http-api).
+
 ---
 
 ## How it works
