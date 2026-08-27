@@ -34,8 +34,8 @@ Commands:
   queues    Count the jobs in each queue
   history   Show what a job did, run by run
   workers   Show the workers the queue has heard from
-  cancel    Stop a job that has not finished
-  revive    Put a dead or cancelled job back in the queue
+  cancel    Stop a job that has not finished, or -all that a filter names
+  revive    Put a dead or cancelled job back, or -all that a filter names
   whoami    Show the name and the scope of the key in use
 
 Options common to every command:
@@ -584,12 +584,34 @@ func queues(args []string, out io.Writer) error {
 func act(args []string, out io.Writer, verb, done string) error {
 	set := flag.NewFlagSet(verb, flag.ContinueOnError)
 	c := common(set)
+
+	// The bulk form. Named -all rather than being the default when no
+	// identifier is given, so that a command with a typo in its identifier
+	// cannot become one that moves every job in the queue.
+	all := set.Bool("all", false, "act on every job the filters name, rather than on one identifier")
+	queue := set.String("queue", "", "with -all, only this queue")
+	status := set.String("status", "", "with -all, only this status")
+	jobType := set.String("type", "", "with -all, only this job type")
+	worker := set.String("worker", "", "with -all, only the jobs this worker is holding")
+	limit := set.Int("limit", 0, "with -all, the most jobs to move. Required.")
+
 	if err := set.Parse(reorder(set, args)); err != nil {
 		return err
 	}
+
+	if *all {
+		if set.NArg() != 0 {
+			set.Usage()
+			return errors.New("-all acts on the jobs the filters name, so give no identifier")
+		}
+		return actOnMany(c, out, verb, done, map[string]any{
+			"queue": *queue, "status": *status, "type": *jobType, "worker": *worker,
+		}, *limit)
+	}
+
 	if set.NArg() != 1 {
 		set.Usage()
-		return errors.New("give exactly one job identifier")
+		return errors.New("give exactly one job identifier, or -all with filters")
 	}
 
 	id := set.Arg(0)
@@ -598,8 +620,8 @@ func act(args []string, out io.Writer, verb, done string) error {
 		return err
 	}
 
-	status, _ := answer["status"].(string)
-	fmt.Fprintf(out, "%s %s (now %s)", id, done, status)
+	now, _ := answer["status"].(string)
+	fmt.Fprintf(out, "%s %s (now %s)", id, done, now)
 
 	// Which name the queue wrote against the job, and not which key this
 	// shell holds. An operator with several keys in a profile finds out here
@@ -609,6 +631,42 @@ func act(args []string, out io.Writer, verb, done string) error {
 		fmt.Fprintf(out, ", by %s", by)
 	}
 	fmt.Fprintln(out)
+	return nil
+}
+
+// actOnMany runs the bulk form of cancel or revive.
+//
+// The limit is required and has no default here either. A default would make
+// the most dangerous command in this tool the shortest one to type.
+func actOnMany(c *client, out io.Writer, verb, done string, filters map[string]any, limit int) error {
+	if limit < 1 {
+		return errors.New("-limit is required with -all, and it bounds how many jobs this moves")
+	}
+
+	body := map[string]any{"limit": limit}
+	named := 0
+	for name, value := range filters {
+		text, _ := value.(string)
+		if text != "" {
+			body[name] = text
+			named++
+		}
+	}
+
+	// A bulk action with no filter at all moves every job the limit allows.
+	// That is a real thing to want after a bad deployment, and it is not a
+	// thing to do by leaving an option out, so it has to be asked for.
+	if named == 0 {
+		return errors.New(
+			"-all with no filter would move every job the limit allows. Name a -queue, -status, -type or -worker.")
+	}
+
+	answer, err := c.send(context.Background(), http.MethodPost, "/v1/jobs/"+verb, body)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "%d job(s) %s\n", number(answer["moved"]), done)
 	return nil
 }
 

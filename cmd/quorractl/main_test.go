@@ -94,6 +94,63 @@ func TestCreateThenGet(t *testing.T) {
 	}
 }
 
+// A dead letter queue is cleared with one command.
+func TestReviveAllPutsBackEveryJobAFilterNames(t *testing.T) {
+	flags, backing := serveWithStore(t)
+	ctx := t.Context()
+
+	for i := 0; i < 3; i++ {
+		printed, _ := cli(t, flags, "create", "-type", "charge", "-retries", "0")
+		id := strings.TrimSpace(printed)
+
+		held, err := backing.Lease(ctx, store.LeaseRequest{
+			Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute,
+		})
+		if err != nil || len(held) != 1 {
+			t.Fatalf("Lease: %v, %d jobs", err, len(held))
+		}
+		if _, err := backing.Report(ctx, store.Report{
+			JobID: id, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeFailed, Error: "no",
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+	}
+
+	got, err := cli(t, flags, "revive", "-all", "-status", "dead", "-limit", "100")
+	if err != nil {
+		t.Fatalf("revive -all: %v", err)
+	}
+	if !strings.Contains(got, "3 job(s)") {
+		t.Errorf("revive -all printed %q, want it to say three jobs moved", got)
+	}
+}
+
+// The bulk form refuses the two ways it can be used by accident.
+//
+// A default limit would make the most dangerous command in this tool the
+// shortest one to type, and a bulk action with no filter at all would move
+// every job the limit allows by leaving an option out.
+func TestTheBulkFormRefusesWhatWouldBeAnAccident(t *testing.T) {
+	flags := serve(t)
+
+	cases := map[string][]string{
+		"no limit":      {"cancel", "-all", "-status", "pending"},
+		"no filter":     {"cancel", "-all", "-limit", "100"},
+		"an identifier": {"cancel", "-all", "-limit", "100", "-status", "dead", "8de1a3d0-0000-0000-0000-000000000000"},
+	}
+	for name, args := range cases {
+		if _, err := cli(t, flags, args[0], args[1:]...); err == nil {
+			t.Errorf("%s: the command ran", name)
+		}
+	}
+
+	// And the correct form works, so the refusals are not simply always the
+	// answer.
+	if _, err := cli(t, flags, "cancel", "-all", "-status", "pending", "-limit", "100"); err != nil {
+		t.Errorf("the correct form was refused: %v", err)
+	}
+}
+
 // A job can be submitted to follow another.
 func TestCreateCanNameTheJobsToWaitFor(t *testing.T) {
 	flags, backing := serveWithStore(t)
