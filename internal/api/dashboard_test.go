@@ -370,6 +370,32 @@ func TestTheDashboardShowsWhenAJobRuns(t *testing.T) {
 	}
 }
 
+// A cancelled job says who cancelled it.
+//
+// On the status cell and not in a column of its own: only cancel and revive
+// record a name, so a column would be empty on almost every row, and this
+// table is already nine wide.
+func TestTheStatusCellCarriesTheCallerThatActed(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "job.acted_by") {
+		t.Error("the page never reads acted_by, so a cancelled job does not say who stopped it")
+	}
+	if !strings.Contains(page, "job.acted_at") {
+		t.Error("the page never reads acted_at, so the name has no moment beside it")
+	}
+
+	// A tenth column would be the other way to do this, and it is the one
+	// that was not chosen.
+	if strings.Contains(page, `"ACTED BY"`) || strings.Contains(page, "<th>Acted by</th>") {
+		t.Error("the page adds a column that is empty on almost every row")
+	}
+}
+
 // A job that failed and then succeeded shows what it produced, not the
 // failure before it.
 //
