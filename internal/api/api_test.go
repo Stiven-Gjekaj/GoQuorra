@@ -141,6 +141,85 @@ func TestEveryGuardedRouteNeedsTheKey(t *testing.T) {
 	}
 }
 
+// A key that may only read cannot change a job.
+//
+// The scope is named at the route rather than checked inside the handler, so
+// this test walks every route and asserts the whole policy in one place. A
+// route added without a scope is a route anybody can call, and this is what
+// notices.
+func TestAReadKeyCannotChangeAJob(t *testing.T) {
+	backing := memory.New(store.Options{
+		Policy: jobs.Policy{MaxRetries: 2, Base: time.Second, Max: time.Minute},
+		Now:    func() time.Time { return frozen },
+	})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	const readSecret = "a-secret-that-may-only-read"
+	reader, err := auth.NewKey("watcher", auth.Read, readSecret)
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	writer, err := auth.NewKey("ops", auth.Write, key)
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	keys, err := auth.NewSet(reader, writer)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+
+	handler := api.New(api.Options{
+		Store:        backing,
+		Metrics:      metrics.New(),
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Keys:         keys,
+		MaxBodyBytes: 1 << 16,
+		Now:          func() time.Time { return frozen },
+	}).Handler()
+
+	// A job to act on, made with the key that may.
+	made := call(t, handler, "POST", "/v1/jobs", `{"type":"work"}`,
+		map[string]string{"X-API-Key": key, "Content-Type": "application/json"})
+	if made.Code != http.StatusCreated {
+		t.Fatalf("the write key could not create a job: %d %s", made.Code, made.Body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(made.Body.Bytes(), &created)
+
+	changes := []struct{ method, path, body string }{
+		{"POST", "/v1/jobs", `{"type":"work"}`},
+		{"POST", "/v1/jobs/" + created.ID + "/cancel", ""},
+		{"POST", "/v1/jobs/" + created.ID + "/revive", ""},
+	}
+	for _, change := range changes {
+		got := call(t, handler, change.method, change.path, change.body,
+			map[string]string{"X-API-Key": readSecret, "Content-Type": "application/json"})
+
+		// 403 and not 401. The key is real and the server knows whose it is.
+		// Answering 401 sends the caller to check a key that works.
+		if got.Code != http.StatusForbidden {
+			t.Errorf("%s %s with a read key = %d, want 403", change.method, change.path, got.Code)
+		}
+		// The message names the key and both scopes, so the reader learns
+		// what to ask for rather than only that they were refused.
+		for _, want := range []string{"watcher", "read", "write"} {
+			if !strings.Contains(got.Body.String(), want) {
+				t.Errorf("%s %s: the answer does not say %q: %s", change.method, change.path, want, got.Body)
+			}
+		}
+	}
+
+	// And the same key reads everything it should.
+	for _, path := range []string{"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/queues"} {
+		got := call(t, handler, "GET", path, "", map[string]string{"X-API-Key": readSecret})
+		if got.Code != http.StatusOK {
+			t.Errorf("GET %s with a read key = %d, want 200", path, got.Code)
+		}
+	}
+}
+
 // The health routes must not need a key. One that did would have to carry a
 // key in every load balancer and every container definition.
 func TestTheHealthRoutesArePublic(t *testing.T) {

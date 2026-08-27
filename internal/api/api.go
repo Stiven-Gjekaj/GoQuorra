@@ -9,6 +9,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -87,13 +88,18 @@ func (a *API) Handler() http.Handler {
 		mux.HandleFunc("GET /logo.svg", a.logo)
 	}
 
-	// Guarded.
-	mux.Handle("POST /v1/jobs", a.guard(http.HandlerFunc(a.createJob)))
-	mux.Handle("GET /v1/jobs", a.guard(http.HandlerFunc(a.listJobs)))
-	mux.Handle("GET /v1/jobs/{id}", a.guard(http.HandlerFunc(a.getJob)))
-	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(http.HandlerFunc(a.cancelJob)))
-	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(http.HandlerFunc(a.reviveJob)))
-	mux.Handle("GET /v1/queues", a.guard(http.HandlerFunc(a.queueStats)))
+	// Guarded, and each route says the scope it needs.
+	//
+	// The scope is named at the route and not inside the handler, so the
+	// whole policy is one column of this list. A handler that forgot to check
+	// would be a route that anybody could call, and reading the list is how
+	// somebody notices.
+	mux.Handle("POST /v1/jobs", a.guard(auth.Write, http.HandlerFunc(a.createJob)))
+	mux.Handle("GET /v1/jobs", a.guard(auth.Read, http.HandlerFunc(a.listJobs)))
+	mux.Handle("GET /v1/jobs/{id}", a.guard(auth.Read, http.HandlerFunc(a.getJob)))
+	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelJob)))
+	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveJob)))
+	mux.Handle("GET /v1/queues", a.guard(auth.Read, http.HandlerFunc(a.queueStats)))
 
 	return a.observe(mux)
 }
@@ -156,7 +162,7 @@ func (a *API) observe(next http.Handler) http.Handler {
 }
 
 // guard checks the API key.
-func (a *API) guard(next http.Handler) http.Handler {
+func (a *API) guard(needs auth.Scope, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The header only.
 		//
@@ -169,6 +175,15 @@ func (a *API) guard(next http.Handler) http.Handler {
 		key, found := a.opts.Keys.Lookup(r.Header.Get("X-API-Key"))
 		if !found {
 			a.fail(w, http.StatusUnauthorized, "the X-API-Key header is missing or wrong")
+			return
+		}
+
+		// 403 and not 401. The key is real and the server knows whose it is;
+		// what is missing is permission, and answering 401 would send a
+		// caller to check a key that is working correctly.
+		if !key.Scope.Allows(needs) {
+			a.fail(w, http.StatusForbidden, fmt.Sprintf(
+				"the key %q may %s, and this needs %s", key.Name, key.Scope, needs))
 			return
 		}
 
