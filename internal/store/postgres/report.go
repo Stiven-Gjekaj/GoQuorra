@@ -19,17 +19,42 @@ import (
 // lock the reclaimer can take the job back between the first and the third.
 // The job would then be given to another worker and retired by this one.
 func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error) {
-	if err := rep.Validate(); err != nil {
-		return nil, err
-	}
-
-	now := s.opts.Now()
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	job, err := s.ReportIn(ctx, tx, rep)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: cannot commit: %w", err)
+	}
+	return job, nil
+}
+
+// ReportIn records what happened to a leased job, inside a transaction the
+// caller owns.
+//
+// It exists for one caller: a handler whose side effect is a write to this
+// same database. That handler runs in a transaction, writes what it came to
+// write, and records the outcome here, and the two commit together or neither
+// does.
+//
+// That is not exactly once, and it must not be described as though it were.
+// It is one case, the same database one, where the window between the side
+// effect and the acknowledgement closes because the two are one write.
+//
+// The caller commits. This does not, because the point is that the caller has
+// something else in the same transaction.
+func (s *Store) ReportIn(ctx context.Context, tx pgx.Tx, rep store.Report) (*store.Job, error) {
+	if err := rep.Validate(); err != nil {
+		return nil, err
+	}
+
+	now := s.opts.Now()
 
 	var (
 		attempts   int
@@ -38,7 +63,7 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 		leasedBy   *string
 		leasedAt   *time.Time
 	)
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT attempts, max_retries, lease_id::text, leased_by, leased_at
 			FROM jobs WHERE id = $1 FOR UPDATE`,
 		rep.JobID,
@@ -64,20 +89,13 @@ func (s *Store) Report(ctx context.Context, rep store.Report) (*store.Job, error
 		return nil, store.ErrLeaseNotValid
 	}
 
-	job, err := s.applyDecision(ctx, tx, ending{
+	return s.applyDecision(ctx, tx, ending{
 		id:         rep.JobID,
 		attempts:   attempts,
 		maxRetries: maxRetries,
 		worker:     text(leasedBy),
 		startedAt:  leasedAt,
 	}, rep.Outcome, rep.Error, now, rep.Result)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("postgres: cannot commit: %w", err)
-	}
-	return job, nil
 }
 
 // ReclaimExpired returns jobs whose lease has run out.
