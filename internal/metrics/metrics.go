@@ -32,6 +32,7 @@ type Metrics struct {
 	reclaimed prometheus.Counter
 	cancelled *prometheus.CounterVec
 	revived   *prometheus.CounterVec
+	fired     *prometheus.CounterVec
 
 	removed     *prometheus.CounterVec
 	queueLength *prometheus.GaugeVec
@@ -111,6 +112,18 @@ func New() *Metrics {
 			Help: "Jobs put back in the queue by a person, by the key that asked.",
 		}, []string{"caller"}),
 
+		// Labelled by the schedule name, which comes from configuration and
+		// not from a request, so the label has as many values as the
+		// deployment has schedules.
+		//
+		// It counts jobs produced and not ticks of the loop. A schedule
+		// catching up sixty windows raises this sixty times, because sixty
+		// jobs is what happened.
+		fired: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "quorra_schedule_firings_total",
+			Help: "Jobs produced by a repeat schedule, by the name of the schedule.",
+		}, []string{"schedule"}),
+
 		removed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "quorra_jobs_removed_total",
 			Help: "Finished jobs removed by the retention sweep.",
@@ -140,7 +153,7 @@ func New() *Metrics {
 
 	registry.MustRegister(
 		m.created, m.leased, m.succeeded, m.retried, m.dead, m.refused, m.reclaimed,
-		m.cancelled, m.revived, m.removed,
+		m.cancelled, m.revived, m.fired, m.removed,
 		m.queueLength, m.lifetime, m.httpLatency,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -227,6 +240,9 @@ func callerName(caller string) string {
 	}
 	return caller
 }
+
+// ScheduleFired records a job produced by a repeat schedule.
+func (m *Metrics) ScheduleFired(schedule string) { m.fired.WithLabelValues(schedule).Inc() }
 
 // JobsRemoved records jobs taken out by the retention sweep.
 //

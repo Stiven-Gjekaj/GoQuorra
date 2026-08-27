@@ -10,6 +10,24 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
 
+// ticker builds the ticker a background loop runs on, and refuses one it
+// cannot run on.
+//
+// time.NewTicker panics on a non-positive interval, and a panic in a
+// goroutine takes the whole process with it. The configuration validator
+// refuses a zero, so this is only reached from a Server built in code, which
+// is what a test does. A loud line and a loop that does not run is the right
+// answer there: the process keeps serving, and the reason one loop is missing
+// is in the log rather than in a stack trace.
+func ticker(log *slog.Logger, name string, every time.Duration) (*time.Ticker, bool) {
+	if every <= 0 {
+		log.Error("a background loop was given an interval it cannot run on, so it will not run",
+			"loop", name, "every", every)
+		return nil, false
+	}
+	return time.NewTicker(every), true
+}
+
 // reclaim takes back leases that ran out, until the context ends.
 //
 // This loop is the whole reason a crashed worker is survivable. Without it a
@@ -18,8 +36,11 @@ import (
 // it is stuck. The old server had no such loop, and its README said so in one
 // line, under "Fault Tolerance", as though it were a detail.
 func reclaim(ctx context.Context, s store.Store, m *metrics.Metrics, log *slog.Logger, every time.Duration, batch int) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+	tick, ok := ticker(log, "reclaim", every)
+	if !ok {
+		return
+	}
+	defer tick.Stop()
 
 	log.Info("reclaiming expired leases", "every", every, "batch", batch)
 
@@ -28,7 +49,7 @@ func reclaim(ctx context.Context, s store.Store, m *metrics.Metrics, log *slog.L
 		case <-ctx.Done():
 			log.Debug("no longer reclaiming leases")
 			return
-		case <-ticker.C:
+		case <-tick.C:
 		}
 
 		// One batch per tick, on purpose. Draining until empty would let a
@@ -78,14 +99,17 @@ func sweep(
 		return
 	}
 
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+	tick, ok := ticker(log, "sweep", every)
+	if !ok {
+		return
+	}
+	defer tick.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick.C:
 		}
 
 		for status, keep := range wanted {
@@ -140,8 +164,11 @@ func sweep(
 // also write a metric, and the paths that forget are the ones that matter.
 // The lag is named in the help text of the metric.
 func refreshStats(ctx context.Context, s store.Store, m *metrics.Metrics, log *slog.Logger, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+	tick, ok := ticker(log, "stats", every)
+	if !ok {
+		return
+	}
+	defer tick.Stop()
 
 	update := func() {
 		stats, err := s.QueueStats(ctx)
@@ -161,7 +188,7 @@ func refreshStats(ctx context.Context, s store.Store, m *metrics.Metrics, log *s
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick.C:
 			update()
 		}
 	}

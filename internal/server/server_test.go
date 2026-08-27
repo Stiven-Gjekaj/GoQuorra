@@ -14,6 +14,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/config"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/metrics"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/quorrapb"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/server"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
@@ -364,6 +365,159 @@ func TestFinishedJobsAreRemovedOnceTheyAreOldEnough(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if _, err := backing.Get(context.Background(), other); err != nil {
 		t.Errorf("a waiting job was removed: %v", err)
+	}
+}
+
+// A schedule produces a job for each window it is due.
+func TestAScheduleProducesJobs(t *testing.T) {
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	ctx := context.Background()
+	made, err := backing.CreateSchedule(ctx, store.NewSchedule{
+		Name: "hourly", Cron: "0 * * * *", CatchUp: jobs.CatchUpAll,
+		Type: "report", Payload: []byte(`{"kind":"summary"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	start := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+
+	// The first pass produces nothing and marks the schedule at now. A new
+	// schedule that caught up from the year one would be the alternative.
+	if err := server.ProduceOnce(ctx, backing, metrics.New(), quiet, start); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	if page, _ := backing.List(ctx, store.Filter{Limit: 100}); len(page) != 0 {
+		t.Fatalf("a new schedule produced %d jobs on its first pass", len(page))
+	}
+
+	// Three hours later, three windows are due.
+	if err := server.ProduceOnce(ctx, backing, metrics.New(), quiet, start.Add(3*time.Hour)); err != nil {
+		t.Fatalf("the second pass: %v", err)
+	}
+
+	page, err := backing.List(ctx, store.Filter{Limit: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page) != 3 {
+		t.Fatalf("the schedule produced %d jobs, want 3", len(page))
+	}
+	for _, job := range page {
+		if job.ScheduleID != made.ID {
+			t.Errorf("a job says it came from %q", job.ScheduleID)
+		}
+		if job.Type != "report" || string(job.Payload) != `{"kind":"summary"}` {
+			t.Errorf("a job is %+v, and the schedule asked for a report", job)
+		}
+	}
+}
+
+// A pass that runs twice over the same window produces one job.
+//
+// Two servers run this loop, and the idempotency key on each firing is what
+// makes that safe. Without it a two server deployment doubles every schedule.
+func TestTwoPassesOverOneWindowProduceOneJob(t *testing.T) {
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	ctx := context.Background()
+	if _, err := backing.CreateSchedule(ctx, store.NewSchedule{
+		Name: "hourly", Cron: "0 * * * *", CatchUp: jobs.CatchUpAll, Type: "report",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	start := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	_ = server.ProduceOnce(ctx, backing, metrics.New(), quiet, start)
+
+	// The same moment, twice. The mark stops the second pass finding the
+	// window, and the key stops it even if the mark had not been written.
+	at := start.Add(time.Hour)
+	for i := 0; i < 2; i++ {
+		if err := server.ProduceOnce(ctx, backing, metrics.New(), quiet, at); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+
+	page, _ := backing.List(ctx, store.Filter{Limit: 100})
+	if len(page) != 1 {
+		t.Errorf("two passes over one window produced %d jobs, want 1", len(page))
+	}
+}
+
+// A window another server already produced is not produced again.
+//
+// The mark alone stops one server producing a window twice. It does not stop
+// two servers producing the same window at the same moment: both read the
+// same mark, and both decide the window is due. The idempotency key on each
+// firing is what makes that safe, and this is the case that exercises it.
+func TestAWindowAnotherServerProducedIsNotProducedAgain(t *testing.T) {
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	ctx := context.Background()
+	made, err := backing.CreateSchedule(ctx, store.NewSchedule{
+		Name: "hourly", Cron: "0 * * * *", CatchUp: jobs.CatchUpAll, Type: "report",
+	})
+	if err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	start := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	_ = server.ProduceOnce(ctx, backing, metrics.New(), quiet, start)
+
+	// The other server got there first: the job exists and the mark has not
+	// moved, which is exactly the state a race leaves behind.
+	window := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	first, created, err := backing.Create(ctx, store.NewJob{
+		Type: "report", ScheduleID: made.ID,
+		IdempotencyKey: store.FiringKey(made.ID, window),
+	})
+	if err != nil || !created {
+		t.Fatalf("the other server could not submit: %v, created %v", err, created)
+	}
+
+	if err := server.ProduceOnce(ctx, backing, metrics.New(), quiet, window); err != nil {
+		t.Fatalf("ProduceOnce: %v", err)
+	}
+
+	page, _ := backing.List(ctx, store.Filter{Limit: 100})
+	if len(page) != 1 {
+		t.Fatalf("the window was produced %d times, want 1", len(page))
+	}
+	if page[0].ID != first.ID {
+		t.Errorf("the job is %s, want the one the other server submitted", page[0].ID)
+	}
+}
+
+// A schedule that is switched off produces nothing.
+func TestAScheduleThatIsOffProducesNothing(t *testing.T) {
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	ctx := context.Background()
+	if _, err := backing.CreateSchedule(ctx, store.NewSchedule{
+		Name: "hourly", Cron: "0 * * * *", CatchUp: jobs.CatchUpAll, Type: "report",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	if _, err := backing.SetScheduleEnabled(ctx, "hourly", false); err != nil {
+		t.Fatalf("SetScheduleEnabled: %v", err)
+	}
+
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	start := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	_ = server.ProduceOnce(ctx, backing, metrics.New(), quiet, start)
+	_ = server.ProduceOnce(ctx, backing, metrics.New(), quiet, start.Add(5*time.Hour))
+
+	if page, _ := backing.List(ctx, store.Filter{Limit: 100}); len(page) != 0 {
+		t.Errorf("a schedule that is off produced %d jobs", len(page))
 	}
 }
 

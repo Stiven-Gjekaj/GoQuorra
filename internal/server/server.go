@@ -135,7 +135,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	var loops sync.WaitGroup
-	loops.Add(3)
+	loops.Add(4)
 	go func() {
 		defer loops.Done()
 		reclaim(background, s.store, s.metrics, s.log, s.cfg.ReclaimEvery, s.cfg.ReclaimBatch)
@@ -148,6 +148,10 @@ func (s *Server) Run(ctx context.Context) error {
 		defer loops.Done()
 		sweep(background, s.store, s.metrics, s.log,
 			s.cfg.RetentionEvery, s.cfg.RetentionBatch, s.cfg.Retention, s.cfg.WorkerRetention)
+	}()
+	go func() {
+		defer loops.Done()
+		produce(background, s.store, s.metrics, s.log, s.cfg.ScheduleEvery)
 	}()
 
 	// A listener that dies is reported through this channel rather than

@@ -71,6 +71,14 @@ type Server struct {
 	RetentionEvery time.Duration
 	RetentionBatch int
 
+	// ScheduleEvery is how often the server looks at the repeat schedules.
+	//
+	// A minute, because a schedule fires on a minute and a loop that ran less
+	// often would make every schedule late by up to the difference. Running
+	// more often than that costs one query per tick and buys nothing: there
+	// is no window between two minutes.
+	ScheduleEvery time.Duration
+
 	// WorkerRetention says how long to keep a worker that has stopped asking
 	// for work.
 	//
@@ -143,6 +151,7 @@ func LoadServer(getenv Getenv) (*Server, error) {
 		RetentionEvery: l.duration("QUORRA_RETENTION_EVERY", time.Hour),
 		RetentionBatch: l.number("QUORRA_RETENTION_BATCH", 1000),
 
+		ScheduleEvery:   l.duration("QUORRA_SCHEDULE_EVERY", time.Minute),
 		WorkerRetention: l.duration("QUORRA_WORKER_RETENTION", 24*time.Hour),
 
 		ShutdownGrace: l.duration("QUORRA_SHUTDOWN_GRACE", 15*time.Second),
@@ -181,6 +190,10 @@ func (c *Server) validate() error {
 	}
 	if c.RetentionEvery <= 0 {
 		problems = append(problems, fmt.Errorf("config: QUORRA_RETENTION_EVERY is %s, and a ticker cannot run on it", c.RetentionEvery))
+	}
+	if c.ScheduleEvery <= 0 {
+		problems = append(problems, fmt.Errorf(
+			"config: QUORRA_SCHEDULE_EVERY is %s, and a ticker cannot run on it", c.ScheduleEvery))
 	}
 	if c.WorkerRetention < 0 {
 		problems = append(problems, fmt.Errorf(
