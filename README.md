@@ -1122,8 +1122,8 @@ reads no clock.
 A table test drives every state a job reaches with nothing installed.
 
 **Two stores answer to one suite.**
-[`internal/store/storetest`](internal/store/storetest) holds one hundred and eight
-rules.
+[`internal/store/storetest`](internal/store/storetest) holds one hundred and
+eight rules.
 The in-memory store passes them with nothing installed and the PostgreSQL
 store passes them against a real database.
 A store with its own private tests agrees only with itself, and then it stands
@@ -1131,24 +1131,33 @@ in for a database it does not behave like.
 
 | Area | Lines | Holds |
 | ---- | ----- | ----- |
-| `internal/jobs` | 264 | The states, the retry decision, the backoff. Standard library only. |
-| `internal/store` | 461 | The interface, the errors, the defaults |
-| `internal/store/memory` | 557 | Jobs in a map |
-| `internal/store/postgres` | 867 | Jobs in PostgreSQL |
-| `internal/api` | 700 | The REST routes and the dashboard |
-| `internal/rpc` | 297 | The worker protocol |
-| `internal/server` | 352 | Assembly, the background loops, shutdown |
-| `internal/config` | 375 | Reading the environment |
-| `internal/metrics` | 241 | What the server publishes |
-| `worker` | 660 | The package a consumer imports |
-| `client` | 428 | The package a producer imports |
-| `cmd` | 665 | Three binaries |
-| **Total** | **5930** | 50 Go files, not counting 6847 lines of tests or 995 of generated code |
+| `internal/jobs` | 823 | The states, the retry decision, the backoff, the cron rule. Standard library only. |
+| `internal/store` | 942 | The interface, the errors, the defaults |
+| `internal/store/memory` | 1247 | Jobs in a map |
+| `internal/store/postgres` | 1925 | Jobs in PostgreSQL |
+| `internal/api` | 1279 | The REST routes and the dashboard |
+| `internal/rpc` | 665 | The worker protocol, the guard and the timing |
+| `internal/server` | 577 | Assembly, the background loops, shutdown |
+| `internal/config` | 499 | Reading the environment |
+| `internal/metrics` | 422 | What the server publishes |
+| `internal/auth` | 243 | The keys and what each may do |
+| `internal/reqid` | 83 | The identifier every request carries |
+| `worker` | 873 | The package a consumer imports |
+| `worker/pgtx` | 151 | A handler in the transaction its report commits in |
+| `client` | 733 | The package a producer imports |
+| `cmd` | 1241 | Three binaries |
+| **Total** | **11703** | 45 Go files, not counting 9811 lines of tests, 3294 of test support or 1339 of generated code |
+
+`internal/store/storetest` is 3153 lines of that test support and
+`internal/pgtest` is 141.
+They are counted apart because they run no server: one is the suite both
+stores answer to and the other is how a suite reaches a real database without
+walking into another suite.
 
 ```
 proto/quorra/v1/       the worker protocol
 internal/quorrapb/     generated from it, and checked by CI
-migrations/            five files, applied in name order and embedded so the
+migrations/            ten files, applied in name order and embedded so the
                        tests apply the same bytes an operator reads
 deployments/           the compose stack and the Kubernetes manifests
 scripts/               generation, the link check, the smoke test
@@ -1169,15 +1178,23 @@ Five, directly.
 | `github.com/google/uuid` | Identifiers |
 
 Five, after adding a job lifecycle, filtering, heartbeats, idempotency,
-retention, results and a client package. None of those needed a new one.
+retention, results, a client package, named keys, attempt history, a worker
+registry, job relationships, repeat schedules, push instead of poll, and a
+handler that runs in the transaction its report commits in. None of those
+needed a new one.
+
+The cron parser is the clearest case. The standard library has none, and
+writing a five field parser here cost less than a sixth dependency and its
+upgrade path.
 
 Seventy three modules in the whole graph, most of them beneath those five.
 
 Two dependencies the previous version carried are gone.
 `chi` went because Go 1.22 gave `net/http` the method and wildcard patterns it
 was there for.
-`cobra` went because `quorractl` is four verbs with a handful of options each,
-and the standard library covers that in less code than the dependency.
+`cobra` went because `quorractl` was four verbs with a handful of options
+each, and the standard library covers that in less code than the dependency.
+It is ten verbs now and the answer has not changed.
 
 Redis went as well.
 The old server published a message to a channel on every submission, and
@@ -1194,10 +1211,12 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**497 cases pass. 388 of them need nothing installed.**
+**529 cases pass. 415 of them need nothing installed.**
 
-The other 66 need a database. Sixty five of them are the store contract suite,
-and the sixty sixth is the test that holds the suite, which skips without one:
+The other 114 need a database. One hundred and eight are the store contract
+suite, five are `worker/pgtx`, which is one transaction covering a handler's
+writes and the record of the job and so has nothing to test without a real
+one, and the last is the test that holds the contract suite:
 
 ```
 export QUORRA_TEST_DATABASE_URL="postgres://quorra:quorra@localhost:5432/quorra_test?sslmode=disable"
