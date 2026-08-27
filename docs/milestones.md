@@ -99,18 +99,58 @@ worker holding a `write` key is refused with
 `PermissionDenied: the key "ops" may write, and the worker protocol needs
 worker`.
 
-### A repeat schedule
+### A repeat schedule, built on 27 August 2026
 
-A job runs once, at or after a time.
-There is no repeat rule and no calendar.
+A job ran once, at or after a time.
+There was no repeat rule and no calendar.
 
-A cron style schedule is a different object from a job: it has to survive a
-missed window, decide whether to catch up or skip, and hold a time zone,
-because "every day at nine" moves twice a year and a queue that stores UTC
-alone gets it wrong both times.
+The gate this entry set was somebody wanting it enough to specify the catch up
+behaviour.
+That is what happened: it was asked for, and the behaviour was written down
+before any code was, which is the order this entry asked for.
 
-**What would change the answer.** Somebody wanting it enough to specify the
-catch up behaviour, which is the part everybody forgets and then argues about.
+A schedule is a different object from a job.
+It holds a rule, a zone and a catch up policy, it produces jobs, and it is
+never handed to a worker.
+
+**The catch up policy**, which is the part this entry named.
+The case is a server down from Friday to Monday and a schedule that should
+have fired seventy two times.
+There is no answer that is right for every schedule, so there is no default
+and the field is required:
+
+| Policy | Does |
+| ------ | ---- |
+| `skip` | Fires once, at the most recent missed window, and forgets the rest. What almost every schedule means: a report that runs every hour does not want seventy two reports. |
+| `all` | Fires every missed window, oldest first, bounded at a hundred. For a schedule where each firing does different work, keyed on the window. |
+| `none` | Fires nothing until the next scheduled moment. For a schedule where a late firing is worse than a missed one. |
+
+Measured against a real server and PostgreSQL, with an outage of seventy two
+hours set on three hourly schedules: `all` produced 72 jobs, `skip` produced 1
+and logged 71 dropped, and `none` produced 0 and logged 72 dropped.
+
+The bound is real too.
+A ten day outage, which is 240 windows, produced the hundred jobs the bound
+allows and reported 140 dropped.
+Enqueueing nine thousand jobs because somebody restored an old backup is not
+recovery.
+
+**The time zone** is an IANA name and never an offset, because an offset is
+what the zone was on the day it was written down.
+Measured: `0 3 * * *` in `Europe/Berlin` fires at 01:00 UTC in August and the
+same rule in `UTC` fires at 03:00, which is the two hours a queue storing UTC
+alone gets wrong.
+
+**The cron parser is written here** rather than taken from a library.
+This project has five direct dependencies and a rule about adding a sixth, and
+the standard library has no cron parser at all.
+Five fields and not six, because a queue that hands a job to a worker over a
+network cannot honour a seconds field.
+
+**What is not built.** A calendar with holidays, and a rule that says "the
+last working day of the month".
+Both need a source of truth about days that this project does not have and
+should not invent.
 
 ---
 
