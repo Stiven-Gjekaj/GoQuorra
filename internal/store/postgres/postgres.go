@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,7 +87,74 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 		key = &n.IdempotencyKey
 	}
 
-	row := s.pool.QueryRow(ctx, `
+	// A transaction, because a job that waits for another is two writes: the
+	// row and the list of what it waits for. A job stored without its list
+	// would run at once, which is the one thing the feature exists to stop.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("postgres: cannot begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The parents are read and locked first. Locking them is what stops a
+	// parent succeeding between the read and the write, which would leave
+	// this job blocked for ever on a job that is already done.
+	//
+	// ORDER BY id, so that two submissions naming the same parents take the
+	// rows in the same order and cannot hold one each.
+	if len(n.After) > 0 {
+		rows, err := tx.Query(ctx,
+			`SELECT id::text, status FROM jobs WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+			n.After)
+		if err != nil {
+			return nil, false, notAJobIdentifier(err)
+		}
+
+		found := map[string]jobs.Status{}
+		for rows.Next() {
+			var id, status string
+			if err := rows.Scan(&id, &status); err != nil {
+				rows.Close()
+				return nil, false, fmt.Errorf("postgres: cannot read a job it waits for: %w", err)
+			}
+			parsed, err := jobs.ParseStatus(status)
+			if err != nil {
+				rows.Close()
+				return nil, false, fmt.Errorf("postgres: the table holds %w", err)
+			}
+			found[id] = parsed
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			// The type conversion arrives here rather than from Query,
+			// because pgx does not send the statement until the rows are
+			// read. Both places go through one function so that neither can
+			// answer differently.
+			return nil, false, notAJobIdentifier(err)
+		}
+
+		// Every one has to be here already. That is what makes a cycle
+		// impossible, and it is the honest answer to a caller naming a job
+		// that never existed: the queue cannot say when a job it has never
+		// heard of will succeed.
+		parents := make([]jobs.Status, 0, len(n.After))
+		for _, id := range n.After {
+			status, here := found[id]
+			if !here {
+				return nil, false, fmt.Errorf(
+					"%w: the job waits for %s, and there is no such job", store.ErrNotFound, id)
+			}
+			parents = append(parents, status)
+		}
+
+		job.After = append([]string(nil), n.After...)
+		job.Status = jobs.AfterState(parents)
+		if job.Status == jobs.Cancelled {
+			job.LastError = afterMessage(n.After, found)
+		}
+	}
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO jobs (id, type, payload, queue, priority, status,
 		                  attempts, max_retries, last_error,
 		                  idempotency_key, run_at, created_at, updated_at)
@@ -102,6 +170,9 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 	if errors.Is(err, pgx.ErrNoRows) {
 		// DO NOTHING returns no row, which here can only mean the key was
 		// already claimed.
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			return nil, false, fmt.Errorf("postgres: cannot roll back: %w", err)
+		}
 		existing, err := s.byIdempotencyKey(ctx, n.IdempotencyKey)
 		if err != nil {
 			return nil, false, err
@@ -111,7 +182,53 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 	if err != nil {
 		return nil, false, fmt.Errorf("postgres: cannot store the job: %w", err)
 	}
+
+	for _, id := range n.After {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO job_after (job_id, after_id) VALUES ($1, $2)
+				ON CONFLICT DO NOTHING`,
+			job.ID, id,
+		); err != nil {
+			return nil, false, fmt.Errorf("postgres: cannot record what the job waits for: %w", err)
+		}
+	}
+	stored.After = append([]string(nil), n.After...)
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("postgres: cannot commit: %w", err)
+	}
 	return stored, true, nil
+}
+
+// notAJobIdentifier turns PostgreSQL refusing to read text as a UUID into a
+// missing job.
+//
+// A job cannot wait for something that is not a job identifier, and that is
+// the caller's mistake rather than a fault underneath. Passing the type
+// conversion on gives an error naming a database type, which sends the reader
+// to the wrong place.
+func notAJobIdentifier(err error) error {
+	if isInvalidUUID(err) {
+		return fmt.Errorf(
+			"%w: the job waits for something that is not a job identifier", store.ErrNotFound)
+	}
+	return fmt.Errorf("postgres: cannot read the jobs it waits for: %w", err)
+}
+
+// afterMessage says which of the jobs a job waited for stopped it.
+//
+// The identifier and the state, because "a job it waited for failed" sends
+// somebody to read every one of them. Only the first is named: one parent
+// that cannot succeed is the whole reason, and listing the rest would suggest
+// they all have to be fixed.
+func afterMessage(after []string, parents map[string]jobs.Status) string {
+	for _, id := range after {
+		status, here := parents[id]
+		if here && status.Terminal() && status != jobs.Succeeded {
+			return "the job it waits for, " + id + ", is " + status.String()
+		}
+	}
+	return "a job it waits for cannot succeed"
 }
 
 // byIdempotencyKey reads the job that claimed a key.
@@ -149,6 +266,16 @@ func (s *Store) Get(ctx context.Context, id string) (*store.Job, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot read the job: %w", err)
+	}
+
+	// Only for a job that is waiting. Reading one job is the path a person
+	// takes to find out why it has not run, and every other status waits for
+	// nothing that still matters.
+	if job.Status == jobs.Blocked {
+		job.After, err = afterOf(ctx, s.pool, id)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return job, nil
 }

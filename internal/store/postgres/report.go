@@ -215,7 +215,129 @@ func (s *Store) applyDecision(
 		return nil, fmt.Errorf("postgres: cannot write the attempt: %w", err)
 	}
 
+	if err := settleAfter(ctx, tx, end.id, now); err != nil {
+		return nil, err
+	}
+
 	return job, nil
+}
+
+// settleAfter moves the jobs that were waiting for one that has stopped.
+//
+// Called from every path that puts a job into a state it will not leave:
+// reporting, a lease running out, a cancel and a revive. A revive is in the
+// list because it takes a job out of a terminal state, and a child cancelled
+// because its parent died has to be able to come back the same way.
+//
+// It runs in the caller's transaction, so a job that succeeds and the jobs it
+// releases commit together. A release that could commit without the success
+// that caused it would hand out work for a job that had not finished.
+func settleAfter(ctx context.Context, tx pgx.Tx, parentID string, now time.Time) error {
+	// Only the jobs that are waiting, and only the ones waiting for this one.
+	// The index on after_id is what makes this a lookup rather than a scan.
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT a.job_id::text FROM job_after a
+		JOIN jobs j ON j.id = a.job_id
+		WHERE a.after_id = $1 AND j.status = 'blocked'
+		ORDER BY 1`, parentID)
+	if err != nil {
+		return fmt.Errorf("postgres: cannot find what was waiting: %w", err)
+	}
+
+	var waiting []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("postgres: cannot read what was waiting: %w", err)
+		}
+		waiting = append(waiting, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("postgres: cannot read what was waiting: %w", err)
+	}
+
+	for _, id := range waiting {
+		wanted, message, err := afterStateOf(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if wanted == jobs.Blocked {
+			continue
+		}
+
+		if wanted == jobs.Pending {
+			// Ready now and not at the time it was submitted. A job held for
+			// an hour by its parent is not an hour late.
+			if _, err := tx.Exec(ctx,
+				`UPDATE jobs SET status = 'pending', run_at = $1, updated_at = $1 WHERE id = $2`,
+				now, id,
+			); err != nil {
+				return fmt.Errorf("postgres: cannot release the waiting job: %w", err)
+			}
+		} else {
+			if _, err := tx.Exec(ctx,
+				`UPDATE jobs SET status = 'cancelled', last_error = $1, updated_at = $2 WHERE id = $3`,
+				message, now, id,
+			); err != nil {
+				return fmt.Errorf("postgres: cannot stop the waiting job: %w", err)
+			}
+		}
+
+		// The jobs waiting for this one, if it was itself a parent. A chain of
+		// three where the first dies has to stop both of the others, and only
+		// the second is reached by the query above.
+		if err := settleAfter(ctx, tx, id, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// afterStateOf works out what one waiting job should be, and why.
+func afterStateOf(ctx context.Context, tx pgx.Tx, jobID string) (jobs.Status, string, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT a.after_id::text, j.status FROM job_after a
+		LEFT JOIN jobs j ON j.id = a.after_id
+		WHERE a.job_id = $1 ORDER BY a.after_id`, jobID)
+	if err != nil {
+		return "", "", fmt.Errorf("postgres: cannot read what the job waits for: %w", err)
+	}
+	defer rows.Close()
+
+	var order []string
+	states := map[string]jobs.Status{}
+	for rows.Next() {
+		var id string
+		var status *string
+		if err := rows.Scan(&id, &status); err != nil {
+			return "", "", fmt.Errorf("postgres: cannot read a job it waits for: %w", err)
+		}
+		// A parent the retention sweep removed succeeded long enough ago to
+		// be forgotten. Treating it as still waiting would hold the job for
+		// ever with nothing to explain it. The cascade means this cannot
+		// happen today, and reading it as succeeded is the answer that stays
+		// right if it ever can.
+		parsed := jobs.Succeeded
+		if status != nil {
+			parsed, err = jobs.ParseStatus(*status)
+			if err != nil {
+				return "", "", fmt.Errorf("postgres: the table holds %w", err)
+			}
+		}
+		order = append(order, id)
+		states[id] = parsed
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", fmt.Errorf("postgres: cannot read what the job waits for: %w", err)
+	}
+
+	parents := make([]jobs.Status, 0, len(order))
+	for _, id := range order {
+		parents = append(parents, states[id])
+	}
+	return jobs.AfterState(parents), afterMessage(order, states), nil
 }
 
 // ending is the attempt that is finishing.

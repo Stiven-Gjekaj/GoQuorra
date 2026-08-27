@@ -187,6 +187,23 @@ func (s *Store) transition(
 		return nil, err
 	}
 
+	// A revived job goes back to waiting when it still waits.
+	//
+	// Sending it to pending would run it before the job it was submitted to
+	// follow, which is the one thing the whole feature exists to stop. A job
+	// whose parents have since succeeded is pending, and one whose parent is
+	// still dead cannot be revived until that parent is.
+	if wanted == jobs.Pending {
+		back, message, err := afterStateOf(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if back == jobs.Cancelled {
+			return nil, fmt.Errorf("%w: %s", store.ErrWrongState, message)
+		}
+		wanted = back
+	}
+
 	// The lease is cleared whatever the transition. A job that is no longer
 	// leased must hold none of the three lease columns, and the constraint in
 	// the schema enforces it.
@@ -225,6 +242,19 @@ func (s *Store) transition(
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot write the job: %w", err)
 	}
+
+	// What was waiting for this job, in the same transaction. A cancel stops
+	// them and a revive can release them, and either one committing without
+	// the job that caused it would leave the two disagreeing.
+	if err := settleAfter(ctx, tx, id, now); err != nil {
+		return nil, err
+	}
+
+	job.After, err = afterOf(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("postgres: cannot commit: %w", err)
 	}

@@ -47,8 +47,8 @@ CREATE INDEX IF NOT EXISTS job_after_parent_idx ON job_after (after_id);
 --
 -- Dropped and written again, which is what makes it safe to apply twice. This
 -- is the second migration to do it: 0002 added cancelled the same way.
-ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
-ALTER TABLE jobs ADD CONSTRAINT jobs_status_check
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_known;
+ALTER TABLE jobs ADD CONSTRAINT jobs_status_known
     CHECK (status IN ('pending', 'leased', 'succeeded', 'dead', 'cancelled', 'blocked'));
 
 -- A blocked job holds no lease, the same way every other unleased state does.

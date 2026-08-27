@@ -679,6 +679,275 @@ var cases = []testCase{
 		}
 	}},
 
+	// A job that waits for another does not run until that one succeeds.
+	//
+	// The whole feature. A job submitted to follow another is not pending,
+	// because pending is a claim that the queue will hand it out, and this
+	// job must not be handed out yet.
+	{"a job that waits for another is not handed out", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "extract"})
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "load", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		if second.Status != jobs.Blocked {
+			t.Fatalf("the second job is %q, want blocked", second.Status)
+		}
+		if len(second.After) != 1 || second.After[0] != first.ID {
+			t.Errorf("the job waits for %v, want the first job", second.After)
+		}
+
+		// The queue hands out the first and not the second, however long it
+		// is asked.
+		handed := lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 10})
+		if len(handed) != 1 || handed[0].ID != first.ID {
+			t.Fatalf("the queue handed out %v, want only the first job", ids(handed))
+		}
+
+		// Finish the first, and the second is ready.
+		clock.Advance(time.Minute)
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: first.ID, LeaseID: handed[0].LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		released, err := s.Get(ctx(), second.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if released.Status != jobs.Pending {
+			t.Fatalf("the second job is %q after its parent succeeded, want pending", released.Status)
+		}
+
+		// Ready now and not at the moment it was submitted. A job held for a
+		// minute by its parent is not a minute late.
+		requireTime(t, "run at", released.RunAt, Start.Add(time.Minute))
+
+		if after := lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 10}); len(after) != 1 || after[0].ID != second.ID {
+			t.Errorf("the queue handed out %v, want the second job", ids(after))
+		}
+	}},
+
+	// A job that waits for a job that is already done is ready at once.
+	//
+	// A caller submitting a chain after the fact should not have to know
+	// whether the parent has finished, and a job that waited for ever on a
+	// job that had already succeeded would be the worst kind of stuck.
+	{"a job that waits for a finished job is ready at once", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "extract"})
+		held := lease(t, s, store.LeaseRequest{WorkerID: "w1"})[0]
+		if _, err := s.Report(ctx(), store.Report{
+			JobID: first.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone,
+		}); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "load", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if second.Status != jobs.Pending {
+			t.Errorf("the job is %q, and the job it waits for has already succeeded", second.Status)
+		}
+	}},
+
+	// Every one of them, and not the first.
+	{"a job waits for all of the jobs it names", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "a"})
+		second := create(t, s, store.NewJob{Type: "b"})
+		third, _, err := s.Create(ctx(), store.NewJob{
+			Type: "c", After: []string{first.ID, second.ID},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// Finish the first only.
+		for _, held := range lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 1}) {
+			if _, err := s.Report(ctx(), store.Report{
+				JobID: held.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone,
+			}); err != nil {
+				t.Fatalf("Report: %v", err)
+			}
+		}
+
+		half, err := s.Get(ctx(), third.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if half.Status != jobs.Blocked {
+			t.Fatalf("the job is %q with one of two parents done, want blocked", half.Status)
+		}
+
+		// And the second.
+		for _, held := range lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 1}) {
+			if _, err := s.Report(ctx(), store.Report{
+				JobID: held.ID, LeaseID: held.LeaseID, Outcome: jobs.OutcomeDone,
+			}); err != nil {
+				t.Fatalf("Report: %v", err)
+			}
+		}
+
+		whole, err := s.Get(ctx(), third.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if whole.Status != jobs.Pending {
+			t.Errorf("the job is %q with both parents done, want pending", whole.Status)
+		}
+	}},
+
+	// A parent that will never succeed stops the job, and says which one.
+	//
+	// Cancelled and not dead: dead means the job used every attempt it had,
+	// and this job used none. A person who fixes the parent revives the
+	// child, which is a path they already know.
+	{"a job whose parent dies is cancelled and told why", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "extract"})
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "load", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		failUntilBuried(t, s, clock, first.ID)
+
+		stopped, err := s.Get(ctx(), second.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if stopped.Status != jobs.Cancelled {
+			t.Fatalf("the job is %q after its parent died, want cancelled", stopped.Status)
+		}
+		if !strings.Contains(stopped.LastError, first.ID) {
+			t.Errorf("the job says %q, and it does not name the job that stopped it", stopped.LastError)
+		}
+
+		// Nobody cancelled it, so nobody is recorded as having done so.
+		if stopped.ActedBy != "" {
+			t.Errorf("the queue recorded %q as the person who cancelled it", stopped.ActedBy)
+		}
+	}},
+
+	// Cancelling a parent stops what waits for it, for the same reason.
+	{"cancelling a job stops what waits for it", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "extract"})
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "load", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		if _, err := s.Cancel(ctx(), first.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		stopped, err := s.Get(ctx(), second.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if stopped.Status != jobs.Cancelled {
+			t.Errorf("the job is %q after its parent was cancelled, want cancelled", stopped.Status)
+		}
+	}},
+
+	// A chain of three, where the first one dies.
+	//
+	// Only the second waits for the first, so a store that looked one step
+	// out would leave the third waiting for ever on a job that had already
+	// been cancelled.
+	{"a chain is stopped all the way down", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "a"})
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "b", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create the second: %v", err)
+		}
+		third, _, err := s.Create(ctx(), store.NewJob{Type: "c", After: []string{second.ID}})
+		if err != nil {
+			t.Fatalf("Create the third: %v", err)
+		}
+
+		if _, err := s.Cancel(ctx(), first.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		for name, id := range map[string]string{"the second": second.ID, "the third": third.ID} {
+			got, err := s.Get(ctx(), id)
+			if err != nil {
+				t.Fatalf("Get %s: %v", name, err)
+			}
+			if got.Status != jobs.Cancelled {
+				t.Errorf("%s job is %q, want cancelled", name, got.Status)
+			}
+		}
+	}},
+
+	// A revived job goes back to waiting when it still waits.
+	//
+	// Sending it to pending would run it before the job it was submitted to
+	// follow, which is the one thing this feature exists to stop.
+	{"reviving a waiting job returns it to waiting", func(t *testing.T, s store.Store, clock *Clock) {
+		first := create(t, s, store.NewJob{Type: "extract"})
+		second, _, err := s.Create(ctx(), store.NewJob{Type: "load", After: []string{first.ID}})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// A person cancels the waiting job, then changes their mind.
+		if _, err := s.Cancel(ctx(), second.ID, "ops"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		back, err := s.Revive(ctx(), second.ID, "ops")
+		if err != nil {
+			t.Fatalf("Revive: %v", err)
+		}
+		if back.Status != jobs.Blocked {
+			t.Fatalf("the revived job is %q, and the job it waits for has not run", back.Status)
+		}
+
+		// And it is still not handed out.
+		for _, handed := range lease(t, s, store.LeaseRequest{WorkerID: "w1", Limit: 10}) {
+			if handed.ID == second.ID {
+				t.Fatal("the revived job was handed to a worker before the job it waits for")
+			}
+		}
+	}},
+
+	// A job that waits for something that is not there is refused.
+	//
+	// This is what makes a cycle impossible: a job may only wait for one that
+	// already exists, and a job cannot be created before itself. There is no
+	// cycle check anywhere, and there is none to forget.
+	{"a job cannot wait for a job that does not exist", func(t *testing.T, s store.Store, clock *Clock) {
+		_, _, err := s.Create(ctx(), store.NewJob{
+			Type: "load", After: []string{"8de1a3d0-0000-0000-0000-000000000000"},
+		})
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Create gave %v, want ErrNotFound", err)
+		}
+
+		// Text that is not an identifier at all is the same answer.
+		if _, _, err := s.Create(ctx(), store.NewJob{
+			Type: "load", After: []string{"not-a-uuid"},
+		}); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("Create with a malformed identifier gave %v, want ErrNotFound", err)
+		}
+	}},
+
+	// A job that waits for nothing is what it always was.
+	//
+	// Every caller that exists was written before there was anything to wait
+	// for, so the empty list has to keep meaning what those callers get.
+	{"a job that waits for nothing is pending", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		if made.Status != jobs.Pending {
+			t.Errorf("a job with no After is %q, want pending", made.Status)
+		}
+		if len(made.After) != 0 {
+			t.Errorf("a job with no After waits for %v", made.After)
+		}
+	}},
+
 	// A worker that asks for work is remembered, even when there is none.
 	//
 	// This is the whole point. leased_by names the worker holding a job and

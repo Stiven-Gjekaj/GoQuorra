@@ -144,7 +144,27 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 		}
 		out = append(out, job)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// The list each job waits for, after the rows are read rather than during.
+	// pgx holds one query open on a connection at a time, so asking inside the
+	// loop above would need a second connection for every page.
+	//
+	// Only for the jobs that are waiting. Every other job waits for nothing in
+	// almost every case, and a listing of fifty would otherwise be fifty one
+	// queries to fill a field that is empty on all of them.
+	for _, job := range out {
+		if job.Status != jobs.Blocked {
+			continue
+		}
+		job.After, err = afterOf(ctx, s.pool, job.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Attempts lists the finished runs of one job, oldest run first.
@@ -205,6 +225,30 @@ func (s *Store) Attempts(ctx context.Context, jobID string) ([]store.Attempt, er
 	return out, rows.Err()
 }
 
+// after reads what one job waits for, oldest first.
+//
+// A separate read and not a join on the job query. A job waits for nothing in
+// almost every case, so joining would put an outer join and a group on every
+// listing to carry a column that is empty on nearly every row.
+func afterOf(ctx context.Context, q querier, jobID string) ([]string, error) {
+	rows, err := q.Query(ctx,
+		`SELECT after_id::text FROM job_after WHERE job_id = $1 ORDER BY after_id`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot read what the job waits for: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: cannot read a job it waits for: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // Workers lists the workers that have asked for work, most recently first.
 func (s *Store) Workers(ctx context.Context) ([]store.Worker, error) {
 	rows, err := s.pool.Query(ctx, `
@@ -237,6 +281,15 @@ func (s *Store) Close() error {
 // row is what both pgx.Row and pgx.Rows offer.
 type row interface {
 	Scan(dest ...any) error
+}
+
+// querier is what both the pool and a transaction offer.
+//
+// A read inside an open transaction has to go through that transaction: the
+// pool would hand out a second connection, which cannot see the writes the
+// transaction has not committed.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // scanJob builds a job from one row, and returns its sequence number for the

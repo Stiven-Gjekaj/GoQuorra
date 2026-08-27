@@ -95,6 +95,10 @@ type Job struct {
 	ActedBy string     `json:"acted_by,omitempty"`
 	ActedAt *time.Time `json:"acted_at,omitempty"`
 
+	// After names the jobs this one waits for, oldest first. It is empty for
+	// a job that waits for nothing, which is almost every job.
+	After []string `json:"after,omitempty"`
+
 	// LeasedAt is when the worker now holding this job took it, and is nil
 	// when nobody holds it.
 	//

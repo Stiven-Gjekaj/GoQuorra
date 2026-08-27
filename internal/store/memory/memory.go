@@ -104,10 +104,46 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 		s.byKey[n.IdempotencyKey] = job.ID
 	}
 
+	// Every job it waits for has to be here already. That is what makes a
+	// cycle impossible, and it is also the honest answer to a caller that
+	// names a job that never existed: the queue cannot say when a job it has
+	// never heard of will succeed.
+	parents := make([]jobs.Status, 0, len(n.After))
+	for _, id := range n.After {
+		parent, found := s.records[id]
+		if !found {
+			return nil, false, fmt.Errorf(
+				"%w: the job waits for %s, and there is no such job", store.ErrNotFound, id)
+		}
+		parents = append(parents, parent.job.Status)
+	}
+
+	job.After = append([]string(nil), n.After...)
+	job.Status = jobs.AfterState(parents)
+	if job.Status == jobs.Cancelled {
+		job.LastError = afterMessage(n.After, s.records)
+	}
+
 	s.next++
 	s.records[job.ID] = &record{job: *job, seq: s.next}
 
 	return clone(job), true, nil
+}
+
+// afterMessage says which of the jobs a job waited for stopped it.
+//
+// The identifier and the state, because "a job it waited for failed" sends
+// somebody to read every one of them. Only the first is named: one parent
+// that cannot succeed is the whole reason, and listing the rest would suggest
+// they all have to be fixed.
+func afterMessage(after []string, records map[string]*record) string {
+	for _, id := range after {
+		parent, found := records[id]
+		if found && parent.job.Status.Terminal() && parent.job.Status != jobs.Succeeded {
+			return "the job it waits for, " + id + ", is " + parent.job.Status.String()
+		}
+	}
+	return "a job it waits for cannot succeed"
 }
 
 // Get returns one job.
@@ -306,6 +342,9 @@ func (s *Store) Cancel(ctx context.Context, id, actor string) (*store.Job, error
 	rec.job.UpdatedAt = now
 	recordAction(&rec.job, actor, now)
 
+	// What was waiting for this job will never run either.
+	s.settleAfter(rec.job.ID, now)
+
 	return clone(&rec.job), nil
 }
 
@@ -332,7 +371,27 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	// A fresh set of attempts, and ready now. The last error stays on the
 	// row, because the thing that went wrong before is what somebody looking
 	// at the job afterwards wants to see.
-	rec.job.Status = jobs.Pending
+	// A revived job goes back to waiting when it still waits.
+	//
+	// Sending it to pending would run it before the parent it was submitted
+	// to follow, which is the one thing the whole feature exists to stop. A
+	// job whose parents have since succeeded is pending, and one whose parent
+	// is still dead cannot be revived until that parent is.
+	parents := make([]jobs.Status, 0, len(rec.job.After))
+	for _, id := range rec.job.After {
+		if parent, found := s.records[id]; found {
+			parents = append(parents, parent.job.Status)
+			continue
+		}
+		parents = append(parents, jobs.Succeeded)
+	}
+	back := jobs.AfterState(parents)
+	if back == jobs.Cancelled {
+		return nil, fmt.Errorf(
+			"%w: %s", store.ErrWrongState, afterMessage(rec.job.After, s.records))
+	}
+
+	rec.job.Status = back
 	rec.job.Attempts = 0
 	rec.job.RunAt = now
 	rec.job.UpdatedAt = now
@@ -341,6 +400,10 @@ func (s *Store) Revive(ctx context.Context, id, actor string) (*store.Job, error
 	rec.job.LeaseExpiresAt = nil
 	rec.job.LeasedAt = nil
 	recordAction(&rec.job, actor, now)
+
+	// A job that was itself a parent releases what waited for it, because a
+	// revive can take a chain out of cancelled.
+	s.settleAfter(rec.job.ID, now)
 
 	return clone(&rec.job), nil
 }
@@ -424,6 +487,71 @@ func (s *Store) apply(rec *record, outcome jobs.Outcome, message string, now tim
 	if outcome != jobs.OutcomeDone {
 		rec.job.LastError = message
 	}
+
+	s.settleAfter(rec.job.ID, now)
+}
+
+// settleAfter moves the jobs that were waiting for one that has stopped.
+//
+// Called from every path that puts a job into a state it will not leave:
+// reporting, a lease running out, a cancel and a revive. A revive is in the
+// list because it takes a job out of a terminal state, and a child cancelled
+// because its parent died has to be able to come back the same way.
+//
+// It walks the whole table. A store that holds a hundred thousand jobs in
+// memory has already chosen this trade, and the store that does not is the
+// one behind PostgreSQL, which answers the same question with an index.
+func (s *Store) settleAfter(parentID string, now time.Time) {
+	for _, rec := range s.records {
+		if rec.job.Status != jobs.Blocked {
+			continue
+		}
+		if !waitsFor(rec.job.After, parentID) {
+			continue
+		}
+
+		parents := make([]jobs.Status, 0, len(rec.job.After))
+		for _, id := range rec.job.After {
+			if parent, found := s.records[id]; found {
+				parents = append(parents, parent.job.Status)
+				continue
+			}
+			// A parent the retention sweep removed succeeded long enough ago
+			// to be forgotten. Treating it as still waiting would hold the
+			// child for ever with nothing to explain it.
+			parents = append(parents, jobs.Succeeded)
+		}
+
+		wanted := jobs.AfterState(parents)
+		if wanted == jobs.Blocked {
+			continue
+		}
+
+		rec.job.Status = wanted
+		rec.job.UpdatedAt = now
+		if wanted == jobs.Pending {
+			// Ready now and not at the time it was submitted. A job held for
+			// an hour by its parent is not an hour late.
+			rec.job.RunAt = now
+		} else {
+			rec.job.LastError = afterMessage(rec.job.After, s.records)
+		}
+
+		// The children of this one, if it was itself a parent. A chain of
+		// three jobs where the first dies has to cancel both of the others,
+		// and only the second is reached by the loop above.
+		s.settleAfter(rec.job.ID, now)
+	}
+}
+
+// waitsFor reports whether a job waits for one named job.
+func waitsFor(after []string, id string) bool {
+	for _, one := range after {
+		if one == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Attempts lists the finished runs of one job, oldest run first.
@@ -727,6 +855,9 @@ func clone(job *store.Job) *store.Job {
 	if job.LeasedAt != nil {
 		at := *job.LeasedAt
 		out.LeasedAt = &at
+	}
+	if job.After != nil {
+		out.After = append([]string(nil), job.After...)
 	}
 
 	return &out
