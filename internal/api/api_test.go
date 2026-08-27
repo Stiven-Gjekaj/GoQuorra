@@ -212,7 +212,9 @@ func TestAReadKeyCannotChangeAJob(t *testing.T) {
 	}
 
 	// And the same key reads everything it should.
-	for _, path := range []string{"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/queues"} {
+	for _, path := range []string{
+		"/v1/jobs", "/v1/jobs/" + created.ID, "/v1/jobs/" + created.ID + "/attempts", "/v1/queues",
+	} {
 		got := call(t, handler, "GET", path, "", map[string]string{"X-API-Key": readSecret})
 		if got.Code != http.StatusOK {
 			t.Errorf("GET %s with a read key = %d, want 200", path, got.Code)
@@ -430,6 +432,79 @@ func TestAJobIsCancelledOverHTTP(t *testing.T) {
 	}
 	if got := statusOf(t, handler, id); got != "cancelled" {
 		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+// The history of a job is its own route.
+//
+// It is not a field on the job: the history of a job that retried all day is
+// longer than the job, and every listing carries jobs.
+func TestTheHistoryOfAJobIsReadOverHTTP(t *testing.T) {
+	handler, backing := serve(t)
+	ctx := t.Context()
+
+	id := submit(t, handler, `{"type":"work"}`)
+
+	// A job that has not run answers 200 with an empty list, and not 404.
+	empty := withKey(t, handler, "GET", "/v1/jobs/"+id+"/attempts", "")
+	if empty.Code != http.StatusOK {
+		t.Fatalf("the attempts of a job that has not run = %d, body %s", empty.Code, empty.Body)
+	}
+	if !strings.Contains(empty.Body.String(), `"attempts":[]`) {
+		t.Errorf("the answer is %s, want an empty list rather than null", empty.Body)
+	}
+
+	// Run it once and fail it, through the store, because the HTTP API has no
+	// route that leases a job. That is the gRPC side.
+	held, err := backing.Lease(ctx, store.LeaseRequest{Queue: "default", WorkerID: "w1", Limit: 1, TTL: time.Minute})
+	if err != nil || len(held) != 1 {
+		t.Fatalf("Lease: %v, %d jobs", err, len(held))
+	}
+	if _, err := backing.Report(ctx, store.Report{
+		JobID: id, LeaseID: held[0].LeaseID, Outcome: jobs.OutcomeFailed, Error: "upstream said no",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	got := withKey(t, handler, "GET", "/v1/jobs/"+id+"/attempts", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("attempts = %d, body %s", got.Code, got.Body)
+	}
+
+	var answer struct {
+		Attempts []struct {
+			Number  int    `json:"attempt"`
+			Worker  string `json:"worker"`
+			Outcome string `json:"outcome"`
+			Error   string `json:"error"`
+		} `json:"attempts"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if len(answer.Attempts) != 1 {
+		t.Fatalf("the answer holds %d runs, want 1: %s", len(answer.Attempts), got.Body)
+	}
+
+	run := answer.Attempts[0]
+	if run.Number != 1 || run.Worker != "w1" || run.Error != "upstream said no" {
+		t.Errorf("the run is %+v", run)
+	}
+
+	// The outcome is its name and not its number, so a client does not have
+	// to carry a copy of the order the constants are declared in.
+	if run.Outcome != "failed" {
+		t.Errorf("the outcome is %q, want failed", run.Outcome)
+	}
+}
+
+// A job that is not there is 404, and a job that has not run is not.
+func TestTheHistoryOfAMissingJobIsNotFound(t *testing.T) {
+	handler, _ := serve(t)
+
+	got := withKey(t, handler, "GET", "/v1/jobs/8de1a3d0-0000-0000-0000-000000000000/attempts", "")
+	if got.Code != http.StatusNotFound {
+		t.Errorf("the attempts of an unknown job = %d, want 404, body %s", got.Code, got.Body)
 	}
 }
 

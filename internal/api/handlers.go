@@ -134,6 +134,30 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 	a.send(w, http.StatusOK, job)
 }
 
+// jobAttempts handles GET /v1/jobs/{id}/attempts.
+//
+// A route under the job rather than a field on it. The history of a job that
+// has retried for a day is longer than the job, and every listing carries
+// jobs, so folding it into the job would make every page of every list carry
+// it for nothing.
+//
+// A job that has not finished a run answers 200 with an empty list. Only a
+// job that is not there is 404.
+func (a *API) jobAttempts(w http.ResponseWriter, r *http.Request) {
+	found, err := a.opts.Store.Attempts(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(w, err, "cannot read what the job did")
+		return
+	}
+
+	// An empty slice and not a nil one. JSON renders nil as null, and a
+	// client that walks the answer then has to test for it.
+	if found == nil {
+		found = []store.Attempt{}
+	}
+	a.send(w, http.StatusOK, map[string]any{"attempts": found})
+}
+
 // cancelJob handles POST /v1/jobs/{id}/cancel.
 //
 // A POST to a verb under the job, rather than a PATCH of its status. The
