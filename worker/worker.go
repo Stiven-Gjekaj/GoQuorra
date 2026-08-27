@@ -143,6 +143,21 @@ func withKey(ctx context.Context, key string) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "x-api-key", key)
 }
 
+// ErrAlreadyReported says that a handler recorded the outcome itself.
+//
+// A handler that returns it has succeeded, and the worker sends no report.
+// Returning it after a failure would be wrong: a failure that was not
+// recorded is one the worker still has to report, and a handler whose
+// transaction rolled back recorded nothing.
+//
+// It exists for one caller, worker/pgtx, whose handlers write their result
+// and their report in one transaction. That is the only way a side effect in
+// the same database as the queue can happen effectively once, and it needs
+// the worker to keep its hands off the job afterwards. Nothing else should
+// return this: a handler that says it reported and did not leaves a job
+// leased until its lease runs out.
+var ErrAlreadyReported = errors.New("worker: the handler recorded the outcome itself")
+
 // Worker takes jobs from a server and runs them.
 type Worker struct {
 	cfg    Config
@@ -499,6 +514,15 @@ func (w *Worker) run(ctx context.Context, job Job) {
 	}
 
 	if err != nil {
+		// A handler that recorded the outcome itself has succeeded, and the
+		// job is already written. Reporting would be a second write of a row
+		// whose lease this worker no longer holds, and the refusal would
+		// read as a fault.
+		if errors.Is(err, ErrAlreadyReported) {
+			log.Info("job done, and the handler recorded it", "took", took)
+			return
+		}
+
 		// A handler that wrapped ErrPermanent has read the job and says no
 		// attempt will finish it. The server buries it at once rather than
 		// spending the remaining attempts, and every wait between them, to

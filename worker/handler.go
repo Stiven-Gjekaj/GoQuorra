@@ -77,11 +77,31 @@ type Job struct {
 	RunAt     time.Time
 	CreatedAt time.Time
 
-	// leaseID is not exported. A handler has no use for it, and a handler
-	// that could read it could report on its own job behind the worker's
-	// back.
+	// leaseID is not a field a handler can reach by accident.
+	//
+	// It was unexported outright, with the reason that a handler which could
+	// read it could report on its own job behind the worker's back. That is
+	// still the reason, and there is now one caller that has to: worker/pgtx
+	// records the outcome in the same transaction as the handler's writes,
+	// which is the only way a side effect in this database happens
+	// effectively once.
+	//
+	// So it is reachable through a method rather than a field. A handler that
+	// calls it and reports has to also return ErrAlreadyReported, or the
+	// worker reports again and the second report is refused.
 	leaseID string
 }
+
+// LeaseID is the lease this job is held under.
+//
+// A handler has no use for it. It is here for worker/pgtx, which records the
+// outcome of a job in the transaction the handler wrote in, and needs the
+// lease to do it.
+//
+// A handler that reports on its own job must return ErrAlreadyReported, so
+// that the worker knows to keep its hands off. One that reports and does not
+// leaves a job leased until its lease runs out.
+func (j Job) LeaseID() string { return j.leaseID }
 
 // Decode reads the payload into a value.
 func (j Job) Decode(into any) error {

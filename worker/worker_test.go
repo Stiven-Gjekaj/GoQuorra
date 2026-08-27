@@ -857,3 +857,95 @@ func TestTheHandlerContextDoesNotEndAtTheFirstLeaseExpiry(t *testing.T) {
 		t.Errorf("the handler finished before the expiry it was given (%s), so it never crossed it", given)
 	}
 }
+
+// A handler that recorded the outcome itself stops the worker reporting.
+//
+// The handler here records nothing, because a memory store gives it no way
+// to. That is the point: the job is left exactly as the handler left it, and
+// a worker that had reported anyway would have moved it. Leaving a job leased
+// is the cost of returning ErrAlreadyReported without having earned it, and
+// the documentation on that error says so.
+func TestAHandlerThatSaysItReportedStopsTheWorkerReporting(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	ran := make(chan struct{})
+	var once sync.Once
+	w.Handle("charge", func(context.Context, worker.Job) error {
+		once.Do(func() { close(ran) })
+		return worker.ErrAlreadyReported
+	})
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "charge"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never ran")
+	}
+
+	// Stopped before reading, so the worker has finished whatever it was
+	// going to do with the job.
+	stop()
+
+	job, err := backing.Get(t.Context(), made.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if job.Status != jobs.Leased {
+		t.Errorf("the job is %q, and a job nobody reported on stays leased", job.Status)
+	}
+	if job.LastError != "" {
+		t.Errorf("the worker reported a failure: %q", job.LastError)
+	}
+}
+
+// A handler can read the lease its job is held under.
+//
+// It is read inside the handler and compared with the row, because the lease
+// is cleared when the job ends. worker/pgtx is the reason the accessor
+// exists: it reports in the handler's own transaction, and a report needs the
+// lease.
+func TestAHandlerSeesTheLeaseItsJobIsHeldUnder(t *testing.T) {
+	backing, dial := serve(t)
+	w := newWorker(t, dial)
+
+	type seen struct {
+		handler string
+		row     string
+	}
+	saw := make(chan seen, 1)
+	w.Handle("charge", func(ctx context.Context, job worker.Job) error {
+		row, err := backing.Get(ctx, job.ID)
+		if err != nil {
+			return err
+		}
+		saw <- seen{handler: job.LeaseID(), row: row.LeaseID}
+		return nil
+	})
+
+	if _, _, err := backing.Create(t.Context(), store.NewJob{Type: "charge"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stop := run(t, w)
+	defer stop()
+
+	var got seen
+	select {
+	case got = <-saw:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never ran")
+	}
+
+	if got.handler == "" {
+		t.Fatal("the handler was given no lease")
+	}
+	if got.handler != got.row {
+		t.Errorf("the handler holds lease %q and the row says %q", got.handler, got.row)
+	}
+}
