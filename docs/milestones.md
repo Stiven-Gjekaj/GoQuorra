@@ -24,7 +24,7 @@ Measured, on a real server against PostgreSQL 16:
 
 | Check | Result |
 | ----- | ------ |
-| Test cases | 497, of which 388 need nothing installed |
+| Test cases | 529, of which 415 need nothing installed |
 | Store contract rules | 108, and both stores pass all of them |
 | A worker stopped with SIGKILL while holding a job | The lease was taken back ten seconds later, the row named the worker that died, and the counter moved from 0 to 1 |
 | A job with `max_retries: 2` whose handler always fails | Ran three times, then `dead`, with the last error on the row |
@@ -33,7 +33,11 @@ Measured, on a real server against PostgreSQL 16:
 | A handler running for two and a half times its lease | Finished once, because the heartbeat held the lease. With the heartbeat off it ran twice. |
 | A handler refusing a job, against one that only fails, both with `max_retries: 3` | The refused one was buried on attempt 1 and the failing one on attempt 4. `quorra_jobs_refused_total` moved to 1 inside a `quorra_jobs_dead_total` of 2 |
 | Forty jobs over five `run_at` moments, paged seven at a time in the soonest order | Six pages, forty rows, no repeat and nothing missing |
-| Direct dependencies | Five, unchanged across nine features |
+| A handler that wrote a row and then failed once, five jobs of each kind | Ten rows through an ordinary handler and five through a `worker/pgtx` one |
+| Sixty three job types against a label bounded at fifty | Fifty one rows, `quorra_job_types_tracked` at 50, `other` holding 13, and a sum over the label of 90 against 68 dead and 22 succeeded |
+| The worker protocol, timed for the first time | 610 `Lease` calls at OK and 25 at `Unauthenticated`, 90 `Report` calls of which 88 answered inside 5ms |
+| An identifier `quorractl` printed for a job that was not there | The same string found the line the server wrote, which it did not before |
+| Direct dependencies | Five, unchanged from the first commit to this one |
 
 ---
 
