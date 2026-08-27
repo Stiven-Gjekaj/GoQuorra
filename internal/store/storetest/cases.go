@@ -679,6 +679,225 @@ var cases = []testCase{
 		}
 	}},
 
+	// A schedule is stored and read back as it was written.
+	{"a schedule is stored and read back", func(t *testing.T, s store.Store, clock *Clock) {
+		made, err := s.CreateSchedule(ctx(), store.NewSchedule{
+			Name: "nightly", Cron: "0 3 * * *", Timezone: "Europe/Berlin",
+			CatchUp: jobs.CatchUpSkip, Type: "report", Queue: "reports", Priority: 5,
+		})
+		if err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+		if made.ID == "" {
+			t.Error("the schedule has no identifier")
+		}
+		if !made.Enabled {
+			t.Error("a new schedule is switched off, and nothing asked for that")
+		}
+		if made.LastFiredAt != nil {
+			t.Errorf("a new schedule claims it last fired at %s", made.LastFiredAt)
+		}
+
+		read, err := s.Schedule(ctx(), "nightly")
+		if err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if read.Cron != "0 3 * * *" || read.Timezone != "Europe/Berlin" {
+			t.Errorf("the schedule came back as %+v", read)
+		}
+		if read.CatchUp != jobs.CatchUpSkip || read.Type != "report" || read.Queue != "reports" {
+			t.Errorf("the schedule came back as %+v", read)
+		}
+		if read.Priority != 5 {
+			t.Errorf("the priority came back as %d", read.Priority)
+		}
+
+		// An absent payload is an empty object, the same way a job's is.
+		if string(read.Payload) != "{}" {
+			t.Errorf("the payload came back as %s", read.Payload)
+		}
+	}},
+
+	// A name that is taken is refused rather than replacing what is there.
+	//
+	// A schedule is something somebody refers to by name in a change request,
+	// and quietly replacing one is how a rule nobody agreed to starts
+	// producing jobs.
+	{"a schedule name cannot be taken twice", func(t *testing.T, s store.Store, clock *Clock) {
+		first := store.NewSchedule{
+			Name: "nightly", Cron: "0 3 * * *", CatchUp: jobs.CatchUpSkip, Type: "report",
+		}
+		if _, err := s.CreateSchedule(ctx(), first); err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+
+		second := first
+		second.Cron = "0 4 * * *"
+		if _, err := s.CreateSchedule(ctx(), second); err == nil {
+			t.Fatal("a second schedule took a name that was in use")
+		}
+
+		// And the first one is untouched, which is the point.
+		read, err := s.Schedule(ctx(), "nightly")
+		if err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if read.Cron != "0 3 * * *" {
+			t.Errorf("the stored rule is %q, and the refused one replaced it", read.Cron)
+		}
+	}},
+
+	// A schedule the store cannot run is refused where it is written.
+	{"a schedule that cannot work is refused", func(t *testing.T, s store.Store, clock *Clock) {
+		good := store.NewSchedule{
+			Name: "ok", Cron: "0 3 * * *", CatchUp: jobs.CatchUpSkip, Type: "report",
+		}
+		bad := map[string]func(store.NewSchedule) store.NewSchedule{
+			"no name":                   func(n store.NewSchedule) store.NewSchedule { n.Name = ""; return n },
+			"a rule that is not a rule": func(n store.NewSchedule) store.NewSchedule { n.Cron = "every night"; return n },
+			"a rule with four fields":   func(n store.NewSchedule) store.NewSchedule { n.Cron = "0 3 * *"; return n },
+			"a zone that is not a zone": func(n store.NewSchedule) store.NewSchedule { n.Timezone = "Mars/Olympus"; return n },
+			"a catch up nobody knows":   func(n store.NewSchedule) store.NewSchedule { n.CatchUp = "maybe"; return n },
+			"no catch up at all":        func(n store.NewSchedule) store.NewSchedule { n.CatchUp = ""; return n },
+			"no job type":               func(n store.NewSchedule) store.NewSchedule { n.Type = ""; return n },
+		}
+
+		for name, change := range bad {
+			if _, err := s.CreateSchedule(ctx(), change(good)); err == nil {
+				t.Errorf("%s was accepted", name)
+			}
+		}
+
+		// And the good one is stored, so the refusals are not simply always
+		// the answer.
+		if _, err := s.CreateSchedule(ctx(), good); err != nil {
+			t.Errorf("a good schedule was refused: %v", err)
+		}
+	}},
+
+	// A schedule is switched off rather than deleted, and it keeps what it
+	// knows.
+	{"a schedule can be switched off and on", func(t *testing.T, s store.Store, clock *Clock) {
+		made, err := s.CreateSchedule(ctx(), store.NewSchedule{
+			Name: "nightly", Cron: "0 3 * * *", CatchUp: jobs.CatchUpSkip, Type: "report",
+		})
+		if err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+
+		off, err := s.SetScheduleEnabled(ctx(), "nightly", false)
+		if err != nil {
+			t.Fatalf("SetScheduleEnabled: %v", err)
+		}
+		if off.Enabled {
+			t.Error("the schedule is still on")
+		}
+
+		// The producing loop asks for the ones that are on, and does not see
+		// it.
+		running, err := s.Schedules(ctx(), true, 100)
+		if err != nil {
+			t.Fatalf("Schedules: %v", err)
+		}
+		if len(running) != 0 {
+			t.Errorf("a schedule that is off is offered to the producing loop: %+v", running)
+		}
+
+		// Everything else still sees it, because a schedule that is off is
+		// still one somebody wants to look at.
+		all, err := s.Schedules(ctx(), false, 100)
+		if err != nil {
+			t.Fatalf("Schedules: %v", err)
+		}
+		if len(all) != 1 || all[0].ID != made.ID {
+			t.Errorf("a schedule that is off has disappeared: %+v", all)
+		}
+
+		if on, err := s.SetScheduleEnabled(ctx(), "nightly", true); err != nil || !on.Enabled {
+			t.Errorf("the schedule could not be switched back on: %v", err)
+		}
+	}},
+
+	// The window a schedule has fired up to only ever moves forward.
+	//
+	// Two servers running the producing loop can mark the same schedule, and
+	// the later window is the true one. Moving it back would catch up windows
+	// that have already been caught.
+	{"the window a schedule fired up to never moves backwards", func(t *testing.T, s store.Store, clock *Clock) {
+		made, err := s.CreateSchedule(ctx(), store.NewSchedule{
+			Name: "hourly", Cron: "0 * * * *", CatchUp: jobs.CatchUpSkip, Type: "report",
+		})
+		if err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+
+		later := Start.Add(3 * time.Hour)
+		if err := s.MarkScheduleFired(ctx(), made.ID, later); err != nil {
+			t.Fatalf("MarkScheduleFired: %v", err)
+		}
+
+		// An earlier window, which is the second server catching up.
+		if err := s.MarkScheduleFired(ctx(), made.ID, Start.Add(time.Hour)); err != nil {
+			t.Fatalf("MarkScheduleFired with an earlier window: %v", err)
+		}
+
+		read, err := s.Schedule(ctx(), "hourly")
+		if err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if read.LastFiredAt == nil {
+			t.Fatal("the schedule has no last window")
+		}
+		requireTime(t, "last fired at", *read.LastFiredAt, later)
+	}},
+
+	// Deleting a schedule leaves the jobs it produced.
+	//
+	// They are work that happened. The identifier on them is a record of
+	// where they came from, and not a pointer to something that has to still
+	// exist.
+	{"deleting a schedule leaves the jobs it produced", func(t *testing.T, s store.Store, clock *Clock) {
+		made, err := s.CreateSchedule(ctx(), store.NewSchedule{
+			Name: "nightly", Cron: "0 3 * * *", CatchUp: jobs.CatchUpSkip, Type: "report",
+		})
+		if err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+
+		produced := create(t, s, store.NewJob{Type: "report", ScheduleID: made.ID})
+		if produced.ScheduleID != made.ID {
+			t.Fatalf("the job says it came from %q, want the schedule", produced.ScheduleID)
+		}
+
+		if err := s.DeleteSchedule(ctx(), "nightly"); err != nil {
+			t.Fatalf("DeleteSchedule: %v", err)
+		}
+		if _, err := s.Schedule(ctx(), "nightly"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("the schedule is still there: %v", err)
+		}
+
+		left, err := s.Get(ctx(), produced.ID)
+		if err != nil {
+			t.Fatalf("the job the schedule produced went with it: %v", err)
+		}
+		if left.ScheduleID != made.ID {
+			t.Errorf("the job forgot where it came from: %q", left.ScheduleID)
+		}
+	}},
+
+	// A schedule that is not there is ErrNotFound and not an empty one.
+	{"a schedule that is not there is reported as missing", func(t *testing.T, s store.Store, clock *Clock) {
+		if _, err := s.Schedule(ctx(), "nothing"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("Schedule of an unknown name gave %v, want ErrNotFound", err)
+		}
+		if _, err := s.SetScheduleEnabled(ctx(), "nothing", false); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("SetScheduleEnabled of an unknown name gave %v, want ErrNotFound", err)
+		}
+		if err := s.DeleteSchedule(ctx(), "nothing"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("DeleteSchedule of an unknown name gave %v, want ErrNotFound", err)
+		}
+	}},
+
 	// A dead letter queue is cleared in one request.
 	//
 	// The reason bulk exists. Recovering after fixing what broke is the most

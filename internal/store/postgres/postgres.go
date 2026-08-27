@@ -27,7 +27,8 @@ import (
 // six queries that read a job cannot fall out of step with the scanner.
 const columns = `id, seq, type, payload, queue, priority, status, attempts,
 	max_retries, last_error, lease_id, leased_by, lease_expires_at,
-	idempotency_key, result, acted_by, acted_at, leased_at, run_at, created_at, updated_at`
+	idempotency_key, result, acted_by, acted_at, leased_at, schedule_id,
+	run_at, created_at, updated_at`
 
 // Store keeps jobs in PostgreSQL.
 type Store struct {
@@ -85,6 +86,10 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 	var key *string
 	if n.IdempotencyKey != "" {
 		key = &n.IdempotencyKey
+	}
+	var schedule *string
+	if n.ScheduleID != "" {
+		schedule = &n.ScheduleID
 	}
 
 	// A transaction, because a job that waits for another is two writes: the
@@ -157,13 +162,13 @@ func (s *Store) Create(ctx context.Context, n store.NewJob) (*store.Job, bool, e
 	row := tx.QueryRow(ctx, `
 		INSERT INTO jobs (id, type, payload, queue, priority, status,
 		                  attempts, max_retries, last_error,
-		                  idempotency_key, run_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                  idempotency_key, schedule_id, run_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+columns,
 		job.ID, job.Type, []byte(job.Payload), job.Queue, job.Priority,
 		string(job.Status), job.Attempts, job.MaxRetries, job.LastError,
-		key, job.RunAt, job.CreatedAt, job.UpdatedAt,
+		key, schedule, job.RunAt, job.CreatedAt, job.UpdatedAt,
 	)
 
 	stored, _, err := scanJob(row)

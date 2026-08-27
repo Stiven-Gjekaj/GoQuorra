@@ -42,6 +42,11 @@ type Store struct {
 	// worker and the queue it asked about.
 	workers map[workerKey]store.Worker
 
+	// schedules holds the repeat schedules, keyed by name. By name and not
+	// by identifier, because the name is what a caller asks for and what has
+	// to be unique.
+	schedules map[string]*store.Schedule
+
 	next uint64
 }
 
@@ -73,10 +78,11 @@ type record struct {
 // New makes an empty store.
 func New(opts store.Options) *Store {
 	return &Store{
-		opts:    opts.WithDefaults(),
-		records: make(map[string]*record),
-		byKey:   make(map[string]string),
-		workers: make(map[workerKey]store.Worker),
+		opts:      opts.WithDefaults(),
+		records:   make(map[string]*record),
+		byKey:     make(map[string]string),
+		workers:   make(map[workerKey]store.Worker),
+		schedules: make(map[string]*store.Schedule),
 	}
 }
 

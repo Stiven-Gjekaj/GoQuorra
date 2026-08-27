@@ -99,6 +99,14 @@ type Job struct {
 	// a job that waits for nothing, which is almost every job.
 	After []string `json:"after,omitempty"`
 
+	// ScheduleID names the schedule that produced this job, and is empty for
+	// one a caller submitted.
+	//
+	// It is an identifier and not a pointer to a row that has to still
+	// exist. A schedule that is deleted does not take the jobs it produced
+	// with it: they are work that happened.
+	ScheduleID string `json:"schedule_id,omitempty"`
+
 	// LeasedAt is when the worker now holding this job took it, and is nil
 	// when nobody holds it.
 	//
@@ -134,6 +142,10 @@ type NewJob struct {
 	// An empty key means the caller is not asking for that, and two jobs
 	// submitted without one are two jobs.
 	IdempotencyKey string
+
+	// ScheduleID names the schedule that produced this job. The producing
+	// loop sets it, and a caller leaves it empty.
+	ScheduleID string
 
 	// After names jobs this one waits for. It runs when every one of them has
 	// succeeded, and is cancelled when any one of them cannot.
@@ -521,6 +533,42 @@ type Store interface {
 	// An empty list means the job has not finished a run yet, and is not the
 	// same as a job that is not there, which is ErrNotFound.
 	Attempts(ctx context.Context, jobID string) ([]Attempt, error)
+
+	// CreateSchedule stores a repeat schedule.
+	//
+	// A name that is taken is refused rather than replacing what is there. A
+	// schedule is something somebody refers to by name in a change request,
+	// and quietly replacing one is how a rule nobody agreed to starts
+	// producing jobs.
+	CreateSchedule(ctx context.Context, n NewSchedule) (*Schedule, error)
+
+	// Schedules lists the schedules, by name.
+	//
+	// enabledOnly is what the producing loop asks for. Everything else asks
+	// for all of them, because a schedule that is switched off is still one
+	// somebody wants to see.
+	Schedules(ctx context.Context, enabledOnly bool, limit int) ([]*Schedule, error)
+
+	// Schedule reads one by name.
+	Schedule(ctx context.Context, name string) (*Schedule, error)
+
+	// SetScheduleEnabled switches a schedule on or off, and returns it.
+	//
+	// Switching off rather than deleting, because deleting takes the reason
+	// the schedule existed with it.
+	SetScheduleEnabled(ctx context.Context, name string, enabled bool) (*Schedule, error)
+
+	// DeleteSchedule removes a schedule. The jobs it produced stay: they are
+	// work that happened.
+	DeleteSchedule(ctx context.Context, name string) error
+
+	// MarkScheduleFired records the window a schedule has produced jobs up
+	// to.
+	//
+	// The window and not the moment the loop noticed. Two servers running
+	// the loop a second apart would otherwise record two different answers
+	// for the same missed hour.
+	MarkScheduleFired(ctx context.Context, id string, window time.Time) error
 
 	// QueueStats counts the jobs by queue and by status.
 	QueueStats(ctx context.Context) ([]QueueStat, error)

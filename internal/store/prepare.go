@@ -53,6 +53,7 @@ func (o Options) Prepare(n NewJob, id string, now time.Time) *Job {
 	return &Job{
 		ID:             id,
 		IdempotencyKey: n.IdempotencyKey,
+		ScheduleID:     n.ScheduleID,
 		Type:           n.Type,
 		Payload:        payload,
 		Queue:          queue,
