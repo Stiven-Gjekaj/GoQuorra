@@ -19,7 +19,7 @@ func TestAllHoldsEveryValidStatus(t *testing.T) {
 	// The other direction, over every status this package could name. The
 	// list is short and closed, so writing it out is honest. Deriving it from
 	// All would make the test agree with itself.
-	for _, s := range []Status{Pending, Leased, Succeeded, Dead, Cancelled} {
+	for _, s := range []Status{Blocked, Pending, Leased, Succeeded, Dead, Cancelled} {
 		found := false
 		for _, listed := range All() {
 			if listed == s {
@@ -51,6 +51,10 @@ func TestTheRemovedStatesAreNotStatuses(t *testing.T) {
 
 func TestTerminal(t *testing.T) {
 	cases := map[Status]bool{
+		// A job waiting for another one is not finished. A parent that
+		// succeeds moves it on, and a parent that never will moves it to
+		// cancelled. Calling it terminal would stop both.
+		Blocked:   false,
 		Pending:   false,
 		Leased:    false,
 		Succeeded: true,
@@ -96,5 +100,30 @@ func TestCancelledIsItsOwnEnding(t *testing.T) {
 	}
 	if !Cancelled.Valid() {
 		t.Error("cancelled is not a valid status")
+	}
+}
+
+// A blocked job is not a pending one, and the difference is the point.
+//
+// Pending is a claim: the queue will hand this job to the next worker that
+// asks, once RunAt has passed. A job waiting for a parent is not that.
+// Calling it pending would make the queue length, the dashboard and every
+// listing count work as ready when it is not.
+func TestBlockedIsItsOwnStateAndNotPending(t *testing.T) {
+	if Blocked == Pending {
+		t.Fatal("blocked and pending are the same value")
+	}
+	if !Blocked.Valid() {
+		t.Error("blocked is not a status")
+	}
+	if Blocked.Terminal() {
+		t.Error("blocked is terminal, so nothing could ever release the job")
+	}
+
+	// It survives being written down and read back, which is what the store
+	// depends on.
+	got, err := ParseStatus("blocked")
+	if err != nil || got != Blocked {
+		t.Errorf(`ParseStatus("blocked") = %q, %v`, got, err)
 	}
 }

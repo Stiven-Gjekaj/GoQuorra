@@ -4,9 +4,9 @@ import "fmt"
 
 // Status is the state a job is in.
 //
-// There are four, and there used to be six. The two that went are recorded
-// here because the documentation described both and no code ever wrote
-// either.
+// There are six. Two of an earlier six went, and two arrived since, and both
+// halves of that are recorded here: a state that was removed for a reason
+// still holds that reason against being added back.
 //
 // "processing" went because the server cannot observe it. A worker holds the
 // job between the lease and the acknowledgement, and the server hears nothing
@@ -41,6 +41,23 @@ const (
 	// whether the queue gave up or somebody decided. An operator counting
 	// failures wants one number and not the other.
 	Cancelled Status = "cancelled"
+
+	// Blocked means the job waits for another job to succeed.
+	//
+	// It is separate from Pending because Pending is a claim: it says the
+	// queue will hand this job to the next worker that asks, once RunAt has
+	// passed. A job waiting for a parent is not that, and calling it pending
+	// would make the queue length, the dashboard and every listing count work
+	// as ready when it is not.
+	//
+	// The alternative that was considered and refused was a RunAt far in the
+	// future. It needs no new state, and it lies in a worse way: the job then
+	// says it runs in the year nine thousand, which is what the soonest order
+	// and the ready filter would show.
+	//
+	// It is not terminal. A parent that succeeds moves the job to Pending,
+	// and a parent that will never succeed moves it to Cancelled.
+	Blocked Status = "blocked"
 )
 
 // All lists every status, in the order a job meets them.
@@ -48,7 +65,7 @@ const (
 // The dashboard and the queue statistics both walk this, so a status added
 // here appears in both without a second edit.
 func All() []Status {
-	return []Status{Pending, Leased, Succeeded, Dead, Cancelled}
+	return []Status{Blocked, Pending, Leased, Succeeded, Dead, Cancelled}
 }
 
 // Valid reports whether s is a status this package knows.
@@ -59,7 +76,7 @@ func All() []Status {
 // nothing.
 func (s Status) Valid() bool {
 	switch s {
-	case Pending, Leased, Succeeded, Dead, Cancelled:
+	case Blocked, Pending, Leased, Succeeded, Dead, Cancelled:
 		return true
 	default:
 		return false
