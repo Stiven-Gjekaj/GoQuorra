@@ -301,6 +301,57 @@ The producer could already ask for this with `max_retries: 0`, and that is the
 wrong actor at the wrong moment: the producer does not know which failures are
 permanent, and the handler is the only thing that does.
 
+### Running a job on a repeat
+
+```sh
+quorractl schedule add \
+  -name nightly -cron "0 3 * * *" -timezone Europe/Berlin \
+  -catch-up skip -type report
+```
+
+A schedule is not a job.
+It holds a rule, a zone and a catch up policy, it produces jobs, and it is
+never handed to a worker.
+
+**The time zone is an IANA name and never an offset.**
+"Every day at nine" moves twice a year, and an offset is what the zone was on
+the day it was written down.
+Measured: `0 3 * * *` in `Europe/Berlin` fires at 01:00 UTC in August, and the
+same rule in `UTC` fires at 03:00.
+
+**`catch-up` is required and has no default.**
+A server down from Friday to Monday misses seventy two windows of an hourly
+schedule, and there is no answer that is right for every schedule.
+
+| Policy | Does |
+| ------ | ---- |
+| `skip` | Fires once, at the most recent missed window. What almost every schedule means: a report that runs every hour does not want seventy two reports. |
+| `all` | Fires every missed window, oldest first, bounded at a hundred. For a schedule where each firing does different work, keyed on its window. |
+| `none` | Fires nothing until the next scheduled moment. For a schedule where a late firing is worse than a missed one. |
+
+Measured against a real server, with a seventy two hour outage on three hourly
+schedules: `all` produced 72 jobs, `skip` produced 1 and logged 71 dropped,
+and `none` produced 0 and logged 72 dropped.
+A ten day outage on the `all` one produced the hundred the bound allows and
+reported 140 dropped.
+
+A firing carries the window it belongs to and not the moment the loop woke up,
+so a handler keyed on an hour gets that hour.
+Each one is submitted under an idempotency key built from the schedule and the
+window, so two servers running the loop produce one job.
+
+The rule is five fields: minute, hour, day of month, month, day of week.
+Numbers only, and no seconds field: a queue that hands a job to a worker over
+a network cannot honour a second.
+The two day columns are an `OR` when both name specific days, which is what
+every cron does and what nobody believes without being told.
+
+```sh
+quorractl schedule list
+quorractl schedule off nightly     # keeps it, produces nothing
+quorractl schedule remove nightly  # the jobs it produced are kept
+```
+
 ### Clearing a dead letter queue
 
 Recovering after fixing what broke is the most common thing an operator does
@@ -783,6 +834,12 @@ before.
 | `POST /v1/jobs/bulk` | Submits many jobs in one request. Answers for each on its own, so one bad row does not lose the others. |
 | `POST /v1/jobs/cancel` | Stops every job a filter names, up to a required `limit`. |
 | `POST /v1/jobs/revive` | Puts back every job a filter names, up to a required `limit`. |
+| `POST /v1/schedules` | Stores a repeat schedule. `catch_up` is required. |
+| `GET /v1/schedules` | The schedules, with when each one fires next. |
+| `GET /v1/schedules/{name}` | One schedule. |
+| `POST /v1/schedules/{name}/enable` | Switches it on. |
+| `POST /v1/schedules/{name}/disable` | Switches it off. It keeps its history and produces nothing. |
+| `DELETE /v1/schedules/{name}` | Removes it. The jobs it produced are kept. |
 | `GET /healthz` | `200` while the process is running. Public. |
 | `GET /readyz` | `200` while the store can be reached. Public. |
 | `GET /metrics` | Prometheus. Public. |
@@ -836,6 +893,7 @@ outage worse.
 | `quorra_leases_reclaimed_total` | counter | Leases taken back after they ran out |
 | `quorra_jobs_cancelled_total{caller}` | counter | Jobs stopped by a person, by the key that asked |
 | `quorra_jobs_revived_total{caller}` | counter | Jobs put back in the queue by a person, by the key that asked |
+| `quorra_schedule_firings_total{schedule}` | counter | Jobs produced by a repeat schedule |
 | `quorra_jobs_removed_total{status}` | counter | Jobs taken out by the retention sweep |
 | `quorra_queue_length{queue,status}` | gauge | Jobs in each queue, refreshed on a timer |
 | `quorra_job_lifetime_seconds{queue,status}` | histogram | Acceptance to final state, so the waiting and the retries are in it |
