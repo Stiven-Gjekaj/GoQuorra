@@ -492,6 +492,29 @@ The key is not accepted in the query string, because a query string is written
 to the access log of every proxy in front of the server, kept in browser
 history, and sent on in the `Referer` header.
 
+Each key has a name and a scope.
+Set them in `QUORRA_API_KEYS`, as a comma separated list of
+`name:scope:secret`:
+
+```sh
+export QUORRA_API_KEYS="ops:write:$(openssl rand -hex 32),reports:read:$(openssl rand -hex 32)"
+```
+
+The scope is `read` or `write`.
+A `read` key asks questions and changes nothing.
+A `write` key does both, because there is no action that writes without
+reading first.
+A key that may only read gets `403` from a route that changes a job, and not
+`401`: the key is real and the server knows whose it is, and `401` would send
+somebody to check a key that is working correctly.
+
+`QUORRA_API_KEY` still works and means one key named `default` that may write.
+
+The name is what the server records against a cancel or a revive.
+Names tell services apart, not people.
+There is no user model here, and a key shared by four people on a team is a
+key that names the team.
+
 ### `POST /v1/jobs`
 
 ```json
@@ -523,6 +546,7 @@ before.
 | `POST /v1/jobs/{id}/cancel` | Stops a job that has not finished. `409` when it already has. |
 | `POST /v1/jobs/{id}/revive` | Puts a dead or cancelled job back with a fresh set of attempts. `409` for any other state. |
 | `GET /v1/queues` | A count for each queue and status. |
+| `GET /v1/whoami` | The name and the scope of the key that asked. Needs `read`, because a key that changes nothing still has to be able to ask what it is. |
 | `GET /healthz` | `200` while the process is running. Public. |
 | `GET /readyz` | `200` while the store can be reached. Public. |
 | `GET /metrics` | Prometheus. Public. |
@@ -542,6 +566,13 @@ and the row sequence rather than `run_at` alone.
 `run_at` is not unique: a burst of submissions shares one value and every job
 a reclaim sweep returns shares one, so a cursor on it alone would repeat rows
 or skip them.
+
+A job that has been cancelled or revived carries `acted_by` and `acted_at`.
+They name the key that acted last, and the moment it acted.
+A job nobody has acted on carries neither.
+Only cancel and revive set them: the queue leasing, retrying or burying a job
+is not a person acting, and recording the queue as an actor would make the
+field useless for the question it exists to answer.
 
 A job in the wrong state answers `409` and not `400`.
 The request is well formed and would be correct against the same job a moment
