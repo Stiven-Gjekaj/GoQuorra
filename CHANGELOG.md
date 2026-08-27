@@ -13,6 +13,66 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The three the record was waiting for
+
+`docs/milestones.md` parked three features behind written conditions. All
+three were asked for, and each entry now records that the gate was met by
+request rather than by the condition it named, so the file keeps meaning what
+it says.
+
+**Added**
+
+- **A worker presents a key.** The gRPC port had no authentication at all: a
+  process that could reach it could lease from any queue. It takes a key in
+  the call metadata now, checked on both the unary and the streaming path.
+
+  A worker key holds the `worker` scope and nothing else. That is why the
+  permissions stopped being an ordered number and became a set: leasing work
+  off the queue is not more than changing a job, so a key an operator keeps in
+  a shell profile cannot lease the queue empty and a worker cannot cancel
+  anything.
+
+  `QUORRA_API_KEY` now means one key that may do everything, so a deployment
+  that sets one key keeps working. A deployment that sets `QUORRA_API_KEYS`
+  needs a `worker` entry, and its workers need `QUORRA_API_KEY` set to that
+  entry's secret.
+- **Repeat schedules.** `POST /v1/schedules`, `client` and
+  `quorractl schedule`. A schedule holds a five field rule, an IANA time zone
+  and a catch up policy, produces jobs, and is never handed to a worker.
+
+  `catch_up` is required and has no default, because the record called it the
+  part everybody forgets and then argues about. Measured against a real server
+  with a seventy two hour outage on three hourly schedules: `all` produced 72
+  jobs, `skip` produced 1 and logged 71 dropped, and `none` produced 0 and
+  logged 72 dropped.
+
+  The cron parser is written here rather than taken from a library: this
+  project has five direct dependencies and the standard library has no cron
+  parser at all.
+- **A job does not wait out a poll.** The server holds a stream open for every
+  worker and sends queue names down it, and the worker waits on whichever
+  comes first, the hint or its own poll.
+
+  Measured, submitted to leased, over ten jobs with a five second poll: a
+  median of 11ms. The same measurement before this, with a five hundred
+  millisecond poll, was 207ms.
+
+  A hint that is lost costs one poll interval, which is what makes this safe
+  to add to a protocol whose correctness already worked without it. A job that
+  becomes ready later, with a delay or after a backoff, sends no hint and is
+  found by the poll.
+
+**Fixed**
+
+- **A schedule reported the wrong number of windows it missed.** The walk
+  stopped at the bound on what is kept, so the count came back as the overflow
+  of that bound. A ten day outage of an hourly schedule produced the right
+  hundred jobs and reported one missed window instead of a hundred and forty.
+  Found by driving the outage against a running server.
+- **Every background loop refuses an interval it cannot run on.**
+  `time.NewTicker` panics on a zero, and a panic in a goroutine takes the whole
+  process with it.
+
 ### Reach
 
 Recovering a large dead letter queue was a scripting exercise: no bulk revive,
