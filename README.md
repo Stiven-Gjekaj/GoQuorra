@@ -213,6 +213,32 @@ That needs no new state and lies in a worse way: the job then says it runs in
 the year nine thousand, which is what `order=soonest` and the ready filter
 would show.
 
+### A job does not wait out a poll
+
+A worker asks for work, and the server also tells it when there may be some.
+The worker waits on whichever comes first.
+
+Measured against PostgreSQL, submitted to leased, over ten jobs with a five
+second poll: a median of 11ms, a minimum of 9 and a maximum of 15.
+With a five second poll and nothing telling the worker, the average wait is
+half the interval.
+
+The poll is what makes this correct and the hint is what makes it quick.
+A hint that is lost costs one poll interval, so a worker whose stream never
+connects behaves exactly as it did before this existed.
+Nothing anywhere treats a missing hint as a fault.
+
+A hint goes out where a job becomes ready **now**: a submission with no delay,
+a revive, a job released by the job it was waiting for, and a schedule firing.
+A job that becomes ready **later**, which is one with a delay or one waiting
+out a backoff, sends none and is found by the poll.
+That is deliberate: a job serving a backoff is not urgent, and waking every
+worker for it would cost more than the wait.
+
+The hint carries a queue name and never a job.
+Handing a job down that stream would make it a second way to lease one, with
+its own rules about leases and its own way to go wrong.
+
 ### Two workers never get the same job
 
 The lease is one statement.
