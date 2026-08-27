@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -46,6 +47,52 @@ func (o Outcome) String() string {
 	default:
 		return fmt.Sprintf("Outcome(%d)", int(o))
 	}
+}
+
+// Outcomes lists every outcome, in the order they are declared.
+func Outcomes() []Outcome {
+	return []Outcome{OutcomeDone, OutcomeFailed, OutcomeExpired, OutcomeRefused}
+}
+
+// ParseOutcome reads an outcome from its name.
+//
+// The pair to String, so that an outcome survives being written down and read
+// back. The type is an int, and writing the number instead would tie every
+// stored row and every answer to the order the constants happen to be
+// declared in: adding one in the middle would silently change what every
+// older row means.
+func ParseOutcome(text string) (Outcome, error) {
+	for _, o := range Outcomes() {
+		if o.String() == text {
+			return o, nil
+		}
+	}
+	return 0, fmt.Errorf("jobs: %q is not an outcome", text)
+}
+
+// MarshalJSON writes the name and not the number.
+//
+// Without this an outcome reaches a client as 0, 1, 2 or 3, and the client
+// has to carry a copy of the order these are declared in to read it.
+func (o Outcome) MarshalJSON() ([]byte, error) {
+	if _, err := ParseOutcome(o.String()); err != nil {
+		return nil, fmt.Errorf("jobs: cannot write %s as JSON: %w", o, err)
+	}
+	return []byte(`"` + o.String() + `"`), nil
+}
+
+// UnmarshalJSON reads the name.
+func (o *Outcome) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return fmt.Errorf("jobs: an outcome is a name in JSON: %w", err)
+	}
+	parsed, err := ParseOutcome(text)
+	if err != nil {
+		return err
+	}
+	*o = parsed
+	return nil
 }
 
 // Policy holds the retry rules.

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -266,5 +267,61 @@ func TestOutcomeString(t *testing.T) {
 		if got := outcome.String(); got != want {
 			t.Errorf("Outcome(%d).String() = %q, want %q", int(outcome), got, want)
 		}
+	}
+}
+
+// An outcome is written down as its name and not as its number.
+//
+// The type is an int. Writing the number would tie every stored row and every
+// answer to the order the constants happen to be declared in, so adding one
+// in the middle would silently change what every older row means.
+func TestAnOutcomeSurvivesBeingWrittenDownAndReadBack(t *testing.T) {
+	for _, want := range Outcomes() {
+		encoded, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("Marshal(%s): %v", want, err)
+		}
+		if string(encoded) != `"`+want.String()+`"` {
+			t.Errorf("%s was written as %s, want its name", want, encoded)
+		}
+
+		var got Outcome
+		if err := json.Unmarshal(encoded, &got); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", encoded, err)
+		}
+		if got != want {
+			t.Errorf("%s came back as %s", want, got)
+		}
+	}
+}
+
+// A name the package does not know is refused rather than read as done.
+//
+// done is the zero value, so a parser that gave up quietly would turn a
+// misspelt outcome into a job that succeeded.
+func TestAnOutcomeThePackageDoesNotKnowIsRefused(t *testing.T) {
+	if _, err := ParseOutcome("finished"); err == nil {
+		t.Error("an unknown name was accepted")
+	}
+
+	var got Outcome = OutcomeRefused
+	if err := json.Unmarshal([]byte(`"finished"`), &got); err == nil {
+		t.Error("an unknown name was read from JSON")
+	}
+	if got != OutcomeRefused {
+		t.Errorf("a refused read changed the value to %s", got)
+	}
+
+	// A number is not an outcome either, which is what stops an older client
+	// sending 0 and being understood.
+	if err := json.Unmarshal([]byte(`0`), &got); err == nil {
+		t.Error("a number was read as an outcome")
+	}
+}
+
+// A value outside the four cannot be written at all.
+func TestAnOutcomeOutsideTheFourCannotBeWritten(t *testing.T) {
+	if _, err := json.Marshal(Outcome(99)); err == nil {
+		t.Error("Outcome(99) was written as JSON")
 	}
 }
