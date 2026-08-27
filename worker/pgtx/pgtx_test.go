@@ -300,6 +300,85 @@ func TestAHandlerThatFailsLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// A handler whose lease went away while it worked leaves nothing behind.
+//
+// This is the case the package documentation calls the one worth knowing
+// about. The report is refused inside the transaction, so the handler's
+// writes roll back with it. The work is undone, which is better than
+// committing it against a job somebody else now owns.
+func TestAHandlerThatLostItsLeaseLeavesNothingBehind(t *testing.T) {
+	r := harness(t)
+	ctx := context.Background()
+
+	runner, _ := pgtx.New(r.pool)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	r.worker.HandleResult("charge", runner.Handle(
+		func(ctx context.Context, tx pgx.Tx, job worker.Job) error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO pgtx_side_effect (job_id, note) VALUES ($1, $2)`, job.ID, "charged")
+			once.Do(func() { close(started) })
+			<-release
+			return err
+		}))
+
+	made, _, err := r.store.Create(ctx, store.NewJob{Type: "charge", Queue: r.queue})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stopped := make(chan struct{})
+	running, stop := context.WithCancel(ctx)
+	go func() {
+		defer close(stopped)
+		_ = r.worker.Run(running)
+	}()
+	defer func() {
+		stop()
+		<-stopped
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the handler never ran")
+	}
+
+	// Taken away while the handler holds its transaction open. The row it
+	// wrote is in that transaction and nowhere else yet.
+	if _, err := r.store.Cancel(ctx, made.ID, "somebody"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	close(release)
+
+	// Stopped before counting, and not polled for a count of zero. Zero is
+	// also what the table holds before the handler commits, so a poll passes
+	// the moment it starts and says nothing. The worker waits for the job it
+	// is running, so once it has stopped, whatever the handler was going to
+	// commit is committed.
+	stop()
+	<-stopped
+
+	var count int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pgtx_side_effect WHERE job_id = $1`, made.ID).Scan(&count); err != nil {
+		t.Fatalf("cannot count the side effect: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("a handler that lost its lease left %d rows behind", count)
+	}
+
+	stored, err := r.store.Get(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Status != jobs.Cancelled {
+		t.Errorf("the job is %q, want cancelled", stored.Status)
+	}
+}
+
 // What a handler produces is kept on the job.
 func TestWhatTheHandlerProducesIsKept(t *testing.T) {
 	r := harness(t)
