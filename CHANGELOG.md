@@ -13,6 +13,67 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The schema learns three things
+
+The jobs table held one row per job and nothing else. That is three tables
+that do not exist, not three features: what each run of a job did, which
+workers are out there, and which job waits for which.
+
+**Added**
+
+- **One row for each finished run.** `GET /v1/jobs/{id}/attempts`,
+  `client.Attempts` and `quorractl history`. Each row names the worker, the
+  outcome, what went wrong and how long the run took. A job that failed four
+  times and then worked carried one error before this, from whichever attempt
+  wrote last.
+
+  The row is written where the job is retired, so a worker reporting and a
+  lease running out write the same history through one path, and it commits
+  in the same transaction as the job. Nothing is written when a run starts: a
+  running attempt is already fully visible on the job, and an insert there
+  would be a second write on the busiest statement in the system.
+
+  The job gains `leased_at`, so a run has a start to measure from and
+  somebody looking for a job that is stuck can see how long it has been
+  going.
+- **The workers the queue has heard from.** `GET /v1/workers`,
+  `client.Workers` and `quorractl workers`. A row is written where a worker
+  asks for work, and whether or not any job comes back: `leased_by` is
+  cleared when a job ends, so a fleet with nothing to do left no trace, and
+  an empty queue looked exactly like a fleet that had stopped.
+
+  Workers nobody has seen for `QUORRA_WORKER_RETENTION` are removed, a day
+  by default. A worker identifier is usually the name of a container, so a
+  deployment retires every row and writes a new set.
+- **A job that runs after another job.** The `after` field on a submission,
+  `NewJob.After` and `quorractl create -after`. A job runs when every job it
+  waits for has succeeded.
+
+  It sits in a new state, `blocked`, and not in `pending`. Pending is a claim
+  that the queue will hand the job out. Holding it back with a run time far
+  in the future was the alternative and lies in a worse way: the job then
+  says it runs in the year nine thousand.
+
+  A parent that will never succeed cancels what waits for it, naming the job
+  that stopped it. Cancelled and not dead, because dead means the job used
+  every attempt it had and a waiting job used none.
+
+  There is no cycle check. A job may only wait for a job that already exists,
+  and a job cannot be created before itself, so the graph is acyclic by
+  construction.
+
+**Fixed**
+
+- **A waiting job had no cancel button on the dashboard.** The buttons were
+  decided from a list of the states that can be cancelled, and the list went
+  stale on the first state added after it. Found by loading the page against
+  a real server. The page reads the states a job never leaves now, so the
+  next state added needs no edit there.
+- **quorractl printed the word nil in the error column of a run that
+  worked.** The field is absent on a run that finished, and printing the
+  missing value put a word that reads as an error nobody can look up on every
+  one of those rows.
+
 ### A caller has a name
 
 One shared secret guarded every route, so the queue could count that forty
