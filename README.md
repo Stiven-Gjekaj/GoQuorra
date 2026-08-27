@@ -301,6 +301,56 @@ The producer could already ask for this with `max_retries: 0`, and that is the
 wrong actor at the wrong moment: the producer does not know which failures are
 permanent, and the handler is the only thing that does.
 
+### Clearing a dead letter queue
+
+Recovering after fixing what broke is the most common thing an operator does
+to a queue.
+
+```sh
+quorractl revive -all -status dead -queue billing -limit 1000
+```
+
+One request and one transaction, rather than one of each per job.
+Measured against PostgreSQL: five hundred dead jobs revived in 513ms in one
+command, and `quorra_jobs_revived_total{caller="ops"}` moved to 500.
+The same five hundred through one request each takes about five seconds.
+
+`cancel -all` is the same shape.
+Both take the filters `list` takes, so an operator narrows a listing until it
+shows what they mean and repeats the options.
+
+Two things are refused on purpose.
+`-limit` is required, because a default would make the most dangerous command
+in this tool the shortest one to type.
+`-all` with no filter at all is refused, because moving every job the limit
+allows is a real thing to want after a bad deployment and is not a thing to do
+by leaving an option out.
+
+A job the filter names that the action does not apply to is skipped rather
+than refused.
+A bulk action against a moving queue will always race something, and failing
+the whole batch for it would make the operation useless.
+
+### Submitting many jobs at once
+
+```sh
+quorractl create -file jobs.ndjson
+```
+
+One JSON object per line, or a dash for standard input.
+Not one JSON array: a file of a million jobs read as an array has to be held
+whole before the first one can be checked, and what a queue is fed from is
+almost always a log or an export, which is already one record per line.
+
+Measured: five hundred jobs in 523ms, against about five seconds for the same
+five hundred one request at a time.
+
+Each job is stored on its own and the answer says what happened to each.
+One transaction for the batch would mean one bad payload losing the nine
+hundred and ninety nine good ones, and jobs are independent.
+The identifiers come first, one per line, so the output feeds a pipe the same
+way one submission does, and every refusal names the job it came from.
+
 ### What a job did, run by run
 
 The jobs table holds one row for each job, so a job that failed four times and
@@ -683,6 +733,9 @@ before.
 | `GET /v1/whoami` | The name and the scope of the key that asked. Needs `read`, because a key that changes nothing still has to be able to ask what it is. |
 | `GET /v1/jobs/{id}/attempts` | What the job did, one row for each finished run. `200` with an empty list for a job that has not run, and `404` only when the job is not there. |
 | `GET /v1/workers` | The workers the queue has heard from, most recently first, with how long each has been quiet. |
+| `POST /v1/jobs/bulk` | Submits many jobs in one request. Answers for each on its own, so one bad row does not lose the others. |
+| `POST /v1/jobs/cancel` | Stops every job a filter names, up to a required `limit`. |
+| `POST /v1/jobs/revive` | Puts back every job a filter names, up to a required `limit`. |
 | `GET /healthz` | `200` while the process is running. Public. |
 | `GET /readyz` | `200` while the store can be reached. Public. |
 | `GET /metrics` | Prometheus. Public. |
