@@ -598,8 +598,8 @@ outage worse.
 | `quorra_jobs_dead_total` | counter | Jobs in the dead letter queue, however they got there |
 | `quorra_jobs_refused_total` | counter | Jobs a handler refused, a part of the line above |
 | `quorra_leases_reclaimed_total` | counter | Leases taken back after they ran out |
-| `quorra_jobs_cancelled_total` | counter | Jobs stopped by a person |
-| `quorra_jobs_revived_total` | counter | Jobs put back in the queue by a person |
+| `quorra_jobs_cancelled_total{caller}` | counter | Jobs stopped by a person, by the key that asked |
+| `quorra_jobs_revived_total{caller}` | counter | Jobs put back in the queue by a person, by the key that asked |
 | `quorra_jobs_removed_total{status}` | counter | Jobs taken out by the retention sweep |
 | `quorra_queue_length{queue,status}` | gauge | Jobs in each queue, refreshed on a timer |
 | `quorra_job_lifetime_seconds{queue,status}` | histogram | Acceptance to final state, so the waiting and the retries are in it |
@@ -620,6 +620,16 @@ Cancelling and reviving are counted apart from everything else, because both
 are a person acting.
 A rise in either says something about the operators rather than about the
 work, and folding them into the job counters would hide that.
+
+Both carry the name of the key that asked.
+One number for the whole deployment says that somebody cancelled forty jobs
+this morning, and on a queue two teams share the only part worth acting on is
+which team.
+The label is safe to add without a bound: the names come from the server
+configuration and not from a request, so it has as many values as the
+deployment has keys.
+A key that did not name itself is counted as `unknown`, because an empty
+label value reads as a fault in the exporter.
 
 ---
 
