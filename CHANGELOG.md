@@ -13,6 +13,54 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### A side effect that happens once
+
+`docs/milestones.md` parked exactly once delivery and named one thing that
+would be worth building: a way for a handler to be handed the transaction its
+report commits in. That is built. The queue still delivers at least once, and
+this changes nothing about that claim.
+
+**Added**
+
+- **`worker/pgtx`.** A handler is given a `pgx.Tx` on the database the queue
+  is in, and the outcome of the job is recorded in that same transaction. The
+  handler's writes and the record of the job commit together or neither does,
+  so a side effect in that database happens effectively once.
+
+  **It is not exactly once.** A handler that calls another service, writes to
+  another database, or sends an email has the window it always had and has to
+  survive running twice. What this removes is that window for one case, by
+  turning two writes into one write.
+
+  Measured against a live server. Five jobs whose handler wrote its row and
+  then failed once wrote ten rows through an ordinary handler and five through
+  a transaction one. Over fifty jobs that succeeded first time, an attempt
+  took a median of 2.70ms through the transaction against 3.51ms through an
+  ordinary report.
+
+  Its own package, because a handler there takes a `pgx.Tx`. A consumer that
+  only submits and runs jobs should not start compiling a database driver.
+- **`worker.ErrAlreadyReported`.** A handler that recorded the outcome of its
+  own job returns it, and the worker sends no report. Without it the second
+  report is refused, because the row no longer carries the lease the worker
+  holds, and the refusal reads in the log as a fault when nothing is wrong.
+
+  `worker.Job.LeaseID` comes with it, for the same one caller. The field stays
+  unexported: a handler that could read it by accident could report on its own
+  job behind the worker's back.
+
+**Fixed**
+
+- **Two test suites emptied each other's tables.** The store contract suite
+  and `worker/pgtx` both test against one real database, and go test runs
+  packages at the same time. Every test that wants the database now takes one
+  advisory lock, in `internal/pgtest`, so the two suites wait for each other.
+
+  The lock and not a flag on the go test command, because a flag helps only
+  the command that carries it and CI runs go test directly. Both suites still
+  run at the same time: 14.3 seconds for the whole suite with the lock,
+  against 41.4 seconds with `-p 1`.
+
 ### The three the record was waiting for
 
 `docs/milestones.md` parked three features behind written conditions. All
