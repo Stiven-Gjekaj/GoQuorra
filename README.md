@@ -858,7 +858,7 @@ The key is not accepted in the query string, because a query string is written
 to the access log of every proxy in front of the server, kept in browser
 history, and sent on in the `Referer` header.
 
-Each key has a name and a scope.
+Each key has a name, a scope and the queues it may act on.
 Set them in `QUORRA_API_KEYS`, as a comma separated list of
 `name:scope:secret`:
 
@@ -890,6 +890,57 @@ The worker protocol answers the same way, as `PermissionDenied` rather than
 `QUORRA_API_KEY` still works and means one key named `default` that may do
 everything, because a deployment that sets one key is saying it does not want
 to divide anything yet.
+
+**A key may be limited to queues.**
+Write them after the scope, with an at sign, joined by a plus:
+
+```sh
+export QUORRA_API_KEYS="billing:write@invoices+receipts:$(openssl rand -hex 32)"
+```
+
+A key that names no queue holds every queue, so nothing changes for a
+deployment that has not divided anything.
+
+The queues go in the scope field and not in a fourth one, so that the secret
+stays the whole of the rest of the entry.
+A secret holding a colon is written correctly, and a fourth field would take
+that away.
+A queue whose name holds `:`, `,`, `@` or `+` cannot be named in a key, and
+the server says so at startup rather than holding a queue nobody meant.
+
+| The key asks to | And gets |
+| ---- | ---- |
+| List, count, or read one job in a queue it does not hold | Nothing. A listing skips it, the counts skip it, and one job by identifier is `404`. |
+| Cancel or revive one job in a queue it does not hold | `404`, the same as a job that is not there. |
+| Cancel or revive by filter | Only the jobs in the queues it holds. |
+| Submit into a queue it does not hold | `403`, naming the queues it holds. |
+| Lease or watch a queue it does not hold | `PermissionDenied`. |
+
+`404` on the read side and `403` on the write side, on purpose.
+A caller that names a queue to write to already knows the name it asked for,
+so there is nothing to hide, and being told is the only useful answer.
+A caller holding a job identifier learns nothing from `404`, and would learn
+from `403` that the job exists.
+
+Measured against a live server, with `billing` holding two queues of three and
+`ops` holding every queue:
+
+| Asked | `billing` | `ops` |
+| ---- | ---- | ---- |
+| List every job | 7 jobs, in 2 queues | 10 jobs, in 3 queues |
+| Count the queues | 2 | 3 |
+| Read one job in the third queue | `404` | `200` |
+| Cancel by filter, no queue named | 7 stopped, the third queue untouched | every one |
+
+A worker key limited to `invoices` leased from it, and was refused `payroll`
+and the default queue with `PermissionDenied`.
+
+`quorractl whoami` says which queues a key holds:
+
+```
+$ quorractl whoami
+billing (may write, on invoices, receipts)
+```
 
 The name is what the server records against a cancel or a revive.
 Names tell services apart, not people.
