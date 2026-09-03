@@ -829,6 +829,66 @@ var cases = []testCase{
 		}
 	}},
 
+	// A filter that names several queues keeps those and nothing else.
+	//
+	// It narrows on top of Queue rather than replacing it, because the two
+	// answer different questions: one is what a caller asked for and the
+	// other is what a caller is allowed.
+	//
+	// The bulk actions are checked with the same filter, because in both
+	// stores one piece of code turns a filter into a condition. If that ever
+	// stops being true, a listing and a cancel would disagree about which
+	// jobs a filter names, and the cancel is the one that cannot be undone.
+	{"a filter that names several queues keeps those and nothing else", func(t *testing.T, s store.Store, clock *Clock) {
+		for _, queue := range []string{"invoices", "receipts", "payroll"} {
+			if _, _, err := s.Create(ctx(), store.NewJob{Type: "work", Queue: queue}); err != nil {
+				t.Fatalf("Create in %s: %v", queue, err)
+			}
+		}
+
+		held := store.Filter{Queues: []string{"invoices", "receipts"}, Limit: 50}
+		listed, err := s.List(ctx(), held)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(listed) != 2 {
+			t.Fatalf("the listing holds %d jobs, want the two in the named queues", len(listed))
+		}
+		for _, job := range listed {
+			if job.Queue == "payroll" {
+				t.Errorf("the listing holds a job from %s", job.Queue)
+			}
+		}
+
+		// Queue and Queues together, and not one replacing the other.
+		both, err := s.List(ctx(), store.Filter{
+			Queue: "payroll", Queues: []string{"invoices", "receipts"}, Limit: 50,
+		})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(both) != 0 {
+			t.Errorf("asking for payroll while holding two other queues gave %d jobs", len(both))
+		}
+
+		// The same filter, through the action that cannot be undone.
+		stopped, err := s.CancelMatching(ctx(), held, "ops")
+		if err != nil {
+			t.Fatalf("CancelMatching: %v", err)
+		}
+		if stopped != 2 {
+			t.Errorf("the bulk cancel stopped %d jobs, want the two in the named queues", stopped)
+		}
+
+		left, err := s.List(ctx(), store.Filter{Queue: "payroll", Limit: 50})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(left) != 1 || left[0].Status != jobs.Pending {
+			t.Errorf("the job outside the named queues came back as %+v", left)
+		}
+	}},
+
 	// A schedule that crossed the day the clock goes back fires once.
 	//
 	// The rule about which moment a reading names lives in internal/jobs and

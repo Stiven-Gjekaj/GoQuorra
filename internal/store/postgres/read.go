@@ -276,6 +276,12 @@ func conditions(f store.Filter) ([]string, []any) {
 	if f.Queue != "" {
 		add("queue = $%d", f.Queue)
 	}
+	if len(f.Queues) > 0 {
+		// ANY of an array rather than an IN list built by hand. The list is
+		// as long as the queues a key holds, and building the placeholders
+		// puts a loop between the caller and the query for no gain.
+		add("queue = ANY($%d)", f.Queues)
+	}
 	if f.Status != "" {
 		add("status = $%d", string(f.Status))
 	}

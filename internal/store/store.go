@@ -270,6 +270,15 @@ type Filter struct {
 	Status jobs.Status
 	Type   string
 
+	// Queues keeps only the jobs in one of these queues. An empty list keeps
+	// every queue.
+	//
+	// Separate from Queue and narrowing on top of it, because the two answer
+	// different questions. Queue is what a caller asked for. Queues is what a
+	// caller is allowed, which is not the caller's to choose, and a single
+	// field would let the second overwrite the first.
+	Queues []string
+
 	// Limit is how many to return.
 	Limit int
 

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -937,6 +938,9 @@ func (s *Store) List(ctx context.Context, f store.Filter) ([]*store.Job, error) 
 // added to one of them.
 func matches(job *store.Job, f store.Filter) bool {
 	if f.Queue != "" && job.Queue != f.Queue {
+		return false
+	}
+	if len(f.Queues) > 0 && !slices.Contains(f.Queues, job.Queue) {
 		return false
 	}
 	if f.Status != "" && job.Status != f.Status {
