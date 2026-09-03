@@ -13,6 +13,50 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The dashboard shows what the API knows
+
+The API serves eighteen routes and the page used four of them. Two whole
+resources were invisible, and the one action that arc was built for was still
+a shell loop.
+
+**Added**
+
+- **A workers view.** A queue filling up because no worker has asked for work
+  looks exactly like a queue filling up because the work is slow. Grouped by
+  worker, because one worker asking about two queues is one process. A minute
+  of silence is coloured like a job that stopped.
+- **A schedules view, with a switch.** A schedule that is switched off
+  produces nothing, and from the jobs table that looks exactly like one that
+  is working with nothing due. A switched off schedule is dimmed rather than
+  hidden: somebody switched it, and hiding it would leave them looking for it.
+  The next firing comes from the server, because a page that worked it out in
+  a browser would answer in whatever zone the reader's machine is set to.
+- **Cancel or revive everything the filter names.** Clearing a dead letter
+  queue was a shell loop: the routes existed and only `quorractl` could reach
+  them.
+
+  Offered only when a status is chosen, because the filter that names every
+  job is the one nobody means to act on. Bounded by what is on the page and
+  asked about before it runs, so nothing moves that the reader has not seen. A
+  finished status offers revive and an unfinished one offers cancel.
+- **The key the page is holding, in the header.** A key limited to queues
+  shows an empty listing for a queue it cannot reach, which reads exactly like
+  an empty queue.
+
+  Driven over the browser: the badge read `ops (may write)`, one worker card,
+  both schedules with the enabled one showing its next firing and the switched
+  off one showing `off`, no bulk button while the filter was `all`, and
+  `Revive these 4` once `cancelled` was chosen. Pressing it moved four jobs
+  back to pending. Zero console messages, zero policy refusals, zero failed
+  requests.
+
+**Fixed**
+
+- **The rule about the empty row spanning the table measured the wrong
+  table.** It counted the first heading row on the page, which stopped being
+  the jobs table when the schedules table went above it. It names the table it
+  means now, and checks both.
+
 ### A key is limited to its queues
 
 `SECURITY.md` said twice that there are no per queue permissions, and that a
