@@ -11,6 +11,39 @@ project aims to follow semantic versioning.
 A commit carries no version prefix and changes no version.
 A version moves only when something is released.
 
+## Unreleased
+
+### The two days the clock changes
+
+**Fixed**
+
+- **A repeat schedule fired twice on the day the clock goes back, and not at
+  all on the day it goes forward.** The walk that finds the next firing added
+  an hour to an instant and read the wall clock off the answer, which is the
+  same thing only in a zone that never changes its clock.
+
+  Measured before the fix, `0 2 * * *` in `Europe/Berlin`: it answered 25
+  October 2026 02:00 twice, an hour apart, and it stepped from 28 March to 30
+  March. Two windows means two jobs, and the idempotency key cannot stop them,
+  because they are two different windows. A daily invoice run billed twice.
+
+  The walk now goes over wall clock readings, which is what a cron rule is
+  about, and converts once at the end.
+
+  Two answers are chosen rather than inherited, and both are written down. A
+  reading that happens twice names the first of the two, which keeps a daily
+  schedule twenty four hours from the day before. A reading that does not
+  happen names the first moment after the gap.
+
+  Measured after, on a real server and PostgreSQL 16, a daily schedule
+  catching up with `skip`: `Europe/Berlin` from 28 March to 3 September 2026
+  walked 159 windows against 158 before, and `Pacific/Auckland` from 4 April
+  to 3 September 2026 walked 152 against 153. One window each way.
+
+  The store contract suite gains a rule, so both stores agree that a schedule
+  marked at a reading which happens twice does not fire again. It holds a
+  hundred and nine rules now.
+
 ## 1.0.0 - 2026-08-27
 
 The first release. Everything below it happened before there was a version to
