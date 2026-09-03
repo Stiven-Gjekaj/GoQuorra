@@ -426,6 +426,47 @@ pending means.
 A test refuses both by name, so that somebody reading old documentation cannot
 quietly put one back.
 
+### A cron rule is about a clock on a wall, and the wall clock changes
+
+The walk that finds the next firing added an hour to an instant and read the
+wall clock off the answer. In a zone that never changes its clock those are
+the same thing. In a zone that does, they are not, and the difference is two
+days a year.
+
+Measured before it was fixed, `0 2 * * *` in `Europe/Berlin`:
+
+- It answered 25 October 2026 02:00 twice, an hour apart, because that reading
+  happens twice on the day the clock goes back. The two are different windows,
+  so the idempotency key that stops a double submission does not stop them.
+- It stepped from 28 March to 30 March, because 02:00 does not happen at all
+  on the day the clock goes forward.
+
+The walk now goes over wall clock readings and converts once at the end. Every
+reading is visited once, and a reading that does not exist converts to the
+first moment after the gap. Neither is a special case: both fall out of
+walking the thing the rule is about.
+
+**Two choices that are not forced.** A reading that happens twice names the
+first of the two, because that keeps a daily schedule twenty four hours from
+the day before, where the second puts twenty five hours between them. A
+reading that does not happen names the first moment after the gap, because a
+schedule that silently skipped a day once a year is found in the ledger and
+not in the log. Somebody may disagree with either; the reasoning is here so
+that the disagreement is with a decision and not with an accident.
+
+Measured after, against a real server and PostgreSQL 16, a daily schedule
+catching up with `skip`: `0 2 * * *` in `Europe/Berlin` from 28 March to 3
+September 2026 walked 159 windows against 158 before, and `30 2 * * *` in
+`Pacific/Auckland` from 4 April to 3 September 2026 walked 152 against 153.
+
+**Auckland is in the tests as well as Berlin.** A test written only against
+Europe passes against code that assumes the clock goes forward in March and
+back in October.
+
+**What would change the answer.** A zone whose clock moves by something other
+than a whole number of minutes, or a rule that has to name one of two
+identical readings. Neither exists.
+
 ### Why no query calls NOW()
 
 Every time in this project comes from `Options.Now` and travels as a
