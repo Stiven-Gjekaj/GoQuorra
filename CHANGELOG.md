@@ -13,6 +13,62 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### A key is limited to its queues
+
+`SECURITY.md` said twice that there are no per queue permissions, and that a
+`write` key may cancel or revive a job in any queue. The named keys built the
+identity that every per caller rule needs, and this is the first rule built on
+it.
+
+**Added**
+
+- **A key may name the queues it may act on**, written after the scope with an
+  at sign and joined by a plus:
+
+      QUORRA_API_KEYS=billing:write@invoices+receipts:<secret>
+
+  A key that names none holds every queue, so a deployment that has not
+  divided anything keeps working unchanged.
+
+  The queues go in the scope field and not a fourth one, so that the secret
+  stays the whole of the rest of the entry. A secret holding a colon is
+  written correctly today, and a fourth field would take that away. A queue
+  whose name holds `:`, `,`, `@` or `+` cannot be named in a key, and the
+  server says so at startup.
+
+- **A limited key sees only what is in its queues.** A listing, the queue
+  counts, the worker list, one job by identifier, and both bulk actions.
+
+  `404` on the read side and `403` on the write side. A caller that names a
+  queue to write to already knows the name it asked for, so there is nothing
+  to hide. A caller holding a job identifier learns nothing from `404` and
+  would learn from `403` that the job exists.
+
+- **A worker key may be limited too.** Without it a worker key opened every
+  queue, so a fleet run by one team could lease and finish another team's
+  work. A watch on a queue the key does not hold is refused rather than
+  quietly narrowed, because a worker whose watch was narrowed would wait for a
+  hint that never comes and never learn why.
+
+- **`whoami` and `quorractl whoami` say which queues a key holds.** A key that
+  cannot reach a queue and does not know it reads an empty listing as an empty
+  queue.
+
+  Measured against a live server, `billing` holding two queues of three
+  against `ops` holding every queue: `billing` listed 7 jobs in 2 queues where
+  `ops` listed 10 in 3, counted 2 queues against 3, was answered `404` for a
+  job in the third, and stopped 7 jobs with a filter naming no queue while the
+  third queue kept all of its own. A worker key limited to `invoices` leased
+  from it and was refused `payroll` and the default queue.
+
+**Changed**
+
+- **A filter may name several queues.** `Queues` narrows on top of `Queue`
+  rather than replacing it, because what a caller asked for and what a caller
+  is allowed are different questions. Both stores turn a filter into a
+  condition in one place, so the bulk actions narrow with it. The contract
+  suite holds a hundred and ten rules now.
+
 ### The two days the clock changes
 
 **Fixed**
