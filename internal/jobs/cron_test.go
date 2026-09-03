@@ -242,3 +242,113 @@ func TestAScheduleSurvivesBeingWrittenDownAndReadBack(t *testing.T) {
 		}
 	}
 }
+
+// A schedule fires once on the day the clock goes back.
+//
+// The walk used to add an hour to an instant and read the wall clock off it.
+// A reading that happens twice was then two firings, an hour apart, and the
+// idempotency key does not stop them because they are different windows. A
+// daily invoice run billed twice.
+//
+// The instants are pinned in UTC and not only on the clock, because both
+// answers read 02:00 and only one of them is right.
+func TestAScheduleFiresOnceOnTheDayTheClockGoesBack(t *testing.T) {
+	berlin := place(t, "Europe/Berlin")
+	rule := mustCron(t, "0 2 * * *")
+
+	// 25 October 2026: 03:00 CEST becomes 02:00 CET, so 02:00 happens twice.
+	at := time.Date(2026, 10, 24, 12, 0, 0, 0, berlin)
+
+	want := []string{
+		"2026-10-25 00:00", // 02:00 CEST, the first of the two readings
+		"2026-10-26 01:00", // 02:00 CET, the day after
+		"2026-10-27 01:00",
+	}
+	for _, expected := range want {
+		next, found := rule.Next(at)
+		if !found {
+			t.Fatalf("no firing after %s", at)
+		}
+		if got := next.UTC().Format("2006-01-02 15:04"); got != expected {
+			t.Errorf("fired at %s UTC, want %s", got, expected)
+		}
+		if next.Hour() != 2 {
+			t.Errorf("the clock reads %02d:00 and the schedule says 02:00", next.Hour())
+		}
+		at = next
+	}
+}
+
+// A schedule fires on the day the clock goes forward, at the first moment
+// that exists.
+//
+// 02:00 does not happen on that day. The walk used to step over the whole
+// day, so a daily schedule did not run, and nothing said so. A day missing
+// once a year is found in the ledger and not in the log.
+func TestAScheduleFiresOnTheDayTheClockGoesForward(t *testing.T) {
+	berlin := place(t, "Europe/Berlin")
+	rule := mustCron(t, "0 2 * * *")
+
+	// 29 March 2026: 02:00 CET becomes 03:00 CEST.
+	next, found := rule.Next(time.Date(2026, 3, 28, 12, 0, 0, 0, berlin))
+	if !found {
+		t.Fatal("no firing")
+	}
+
+	if got := next.Format("2006-01-02 15:04"); got != "2026-03-29 03:00" {
+		t.Errorf("fired at %s, want the first moment after the gap", got)
+	}
+	if got := next.UTC().Format("2006-01-02 15:04"); got != "2026-03-29 01:00" {
+		t.Errorf("fired at %s UTC, want 2026-03-29 01:00", got)
+	}
+}
+
+// The same two days in a zone that changes its clock in the other order.
+//
+// A test written only against Europe would pass against code that assumed the
+// clock goes forward in March and back in October. Auckland does the reverse.
+func TestTheClockChangesBothWaysBelowTheEquator(t *testing.T) {
+	auckland := place(t, "Pacific/Auckland")
+	rule := mustCron(t, "30 2 * * *")
+
+	// 5 April 2026: 03:00 NZDT becomes 02:00 NZST, so 02:30 happens twice.
+	//
+	// Walked twice and not once. One call lands on the first reading whether
+	// or not the second is suppressed, so a single call cannot tell a fixed
+	// walk from a broken one.
+	at := time.Date(2026, 4, 4, 12, 0, 0, 0, auckland)
+	for _, expected := range []string{"2026-04-04 13:30", "2026-04-05 14:30"} {
+		back, found := rule.Next(at)
+		if !found {
+			t.Fatal("no firing in April")
+		}
+		if got := back.UTC().Format("2006-01-02 15:04"); got != expected {
+			t.Errorf("fired at %s UTC, want %s", got, expected)
+		}
+		at = back
+	}
+
+	// 27 September 2026: 02:00 NZST becomes 03:00 NZDT, so 02:30 is missing.
+	forward, found := rule.Next(time.Date(2026, 9, 26, 12, 0, 0, 0, auckland))
+	if !found {
+		t.Fatal("no firing in September")
+	}
+	if got := forward.Format("2006-01-02 15:04"); got != "2026-09-27 03:30" {
+		t.Errorf("fired at %s, want the first moment after the gap", got)
+	}
+}
+
+// place loads a zone, and fails the test rather than skipping when the
+// machine has no zone database.
+//
+// A skip here would be a test that reports success having checked nothing,
+// which is the failure this project was rebuilt to stop.
+func place(t *testing.T, name string) *time.Location {
+	t.Helper()
+
+	loaded, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatalf("cannot load %s, so the rules about the clock changing cannot be checked: %v", name, err)
+	}
+	return loaded
+}

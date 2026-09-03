@@ -219,44 +219,123 @@ func (c Cron) Matches(at time.Time) bool {
 // the honest answer to when it next fires is never. Walking for ever looking
 // for it is how a background loop stops doing its other work.
 func (c Cron) Next(after time.Time) (time.Time, bool) {
-	// From the start of the next minute. A schedule fires on a minute, and
-	// the seconds and smaller parts of the moment asked about are not part of
-	// the question.
-	at := after.Truncate(time.Minute).Add(time.Minute)
-	limit := after.AddDate(5, 0, 0)
+	place := after.Location()
 
-	for at.Before(limit) {
+	// The walk is over wall clock readings, and not over instants.
+	//
+	// A cron rule is a rule about what a clock on a wall says. Adding an hour
+	// to an instant and then reading the wall off it gives the same answer in
+	// a zone that never changes, and a wrong answer in a zone that does.
+	//
+	// Measured before this was written, "0 2 * * *" in Europe/Berlin: the
+	// walk answered 25 October 2026 02:00 twice, an hour apart, because that
+	// reading happens twice on the day the clock goes back. It also stepped
+	// from 28 March to 30 March, because 02:00 does not happen at all on the
+	// day the clock goes forward.
+	//
+	// Reading first and converting once at the end makes both of those fall
+	// out of the representation rather than out of a special case. Every
+	// reading is visited once, so a schedule fires once on the day the clock
+	// goes back. A reading that does not exist converts to the first instant
+	// after the gap, so a schedule fires once on the other day as well.
+	//
+	// A UTC time carries the reading. It is not a moment in UTC. It is five
+	// numbers, and time.Time is the type in the standard library that holds
+	// those five numbers and knows how many days April has.
+	local := after.In(place)
+	civil := time.Date(
+		local.Year(), local.Month(), local.Day(),
+		local.Hour(), local.Minute(), 0, 0, time.UTC,
+	).Add(time.Minute)
+	limit := civil.AddDate(5, 0, 0)
+
+	for civil.Before(limit) {
 		// A whole month that cannot match is skipped as a month rather than
 		// as forty thousand minutes.
 		//
-		// Measured, because this is the only line here that is an
-		// optimisation rather than a rule, and one of those has to earn its
-		// place. "0 0 29 2 *" asked in March: 7.9us with this line and 19.6ms
-		// without it. "0 0 30 2 *", which never fires and walks the whole
-		// five year limit: 41us against 49ms.
+		// Measured again after the walk moved to wall clock readings,
+		// because this is the only line here that is an optimisation rather
+		// than a rule, and one of those has to earn its place.
 		//
-		// Fifty milliseconds inside the loop that also sweeps and reclaims,
-		// on every tick, for a schedule that never fires, is the thing this
-		// stops. cron_bench_test.go holds the measurement.
-		if !c.month.has(int(at.Month())) {
-			at = time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, at.Location()).AddDate(0, 1, 0)
+		// "0 0 29 2 *" asked in March: 7.5us with this line and 15.4ms
+		// without it. "0 0 30 2 *", which never fires and walks the whole
+		// five year limit: 24.5us against 37.4ms.
+		//
+		// "Without it" keeps the month test and steps a minute at a time.
+		// Deleting the block measures something else: the month column stops
+		// being tested, and the walk then answers with the twenty ninth of
+		// March. That mistake was made once while taking these numbers.
+		//
+		// Thirty seven milliseconds inside the loop that also sweeps and
+		// reclaims, on every tick, for a schedule that never fires, is the
+		// thing this stops. cron_bench_test.go holds the measurement.
+		if !c.month.has(int(civil.Month())) {
+			civil = time.Date(civil.Year(), civil.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 			continue
 		}
-		if !c.matchesDay(at) {
-			at = time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, at.Location()).AddDate(0, 0, 1)
+		if !c.matchesDay(civil) {
+			civil = time.Date(civil.Year(), civil.Month(), civil.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 			continue
 		}
-		if !c.hour.has(at.Hour()) {
-			at = time.Date(at.Year(), at.Month(), at.Day(), at.Hour(), 0, 0, 0, at.Location()).Add(time.Hour)
+		if !c.hour.has(civil.Hour()) {
+			civil = time.Date(civil.Year(), civil.Month(), civil.Day(), civil.Hour(), 0, 0, 0, time.UTC).Add(time.Hour)
 			continue
 		}
-		if !c.minute.has(at.Minute()) {
-			at = at.Add(time.Minute)
+		if !c.minute.has(civil.Minute()) {
+			civil = civil.Add(time.Minute)
 			continue
 		}
-		return at, true
+
+		// Strictly after, in real time and not only on the clock. The two
+		// come apart on the day the clock goes back, where a later reading
+		// can name an earlier instant.
+		if fires := instantOf(civil, place); fires.After(after) {
+			return fires, true
+		}
+		civil = civil.Add(time.Minute)
 	}
 	return time.Time{}, false
+}
+
+// instantOf gives the moment that a wall clock reading names in a place.
+//
+// A reading that happens twice names the first of the two. time.Date is
+// allowed to answer with either and answers with the second, so the first is
+// found here. The reason to prefer it is one an operator can check: a daily
+// schedule then stays twenty four hours from the day before, where the second
+// reading puts twenty five hours between them.
+//
+// A reading that does not happen at all names the first moment after the gap,
+// which is what time.Date already answers. A daily schedule that skipped a
+// day once a year would be found in the ledger and not in the log.
+func instantOf(civil time.Time, place *time.Location) time.Time {
+	at := time.Date(
+		civil.Year(), civil.Month(), civil.Day(),
+		civil.Hour(), civil.Minute(), 0, 0, place,
+	)
+
+	// Three hours covers every change any zone has made, and is short enough
+	// that it cannot reach a second one.
+	_, offset := at.Zone()
+	_, before := at.Add(-3 * time.Hour).Zone()
+	if before == offset {
+		return at
+	}
+
+	moved := at.Add(time.Duration(offset-before) * time.Second)
+	if moved.Before(at) && reads(moved, civil) {
+		return moved
+	}
+	return at
+}
+
+// reads reports whether a moment shows the same wall clock as a reading.
+func reads(at time.Time, civil time.Time) bool {
+	return at.Year() == civil.Year() &&
+		at.Month() == civil.Month() &&
+		at.Day() == civil.Day() &&
+		at.Hour() == civil.Hour() &&
+		at.Minute() == civil.Minute()
 }
 
 // matchesDay is the day half of Matches, which Next needs on its own.

@@ -15,7 +15,12 @@ import (
 //
 //	go test -run XXX -bench BenchmarkNext ./internal/jobs/
 //
-// With the skip: about 7.9us and 41us. Without it: about 19.6ms and 49ms.
+// With the skip: about 7.5us and 24.5us. Without it: about 15.4ms and 37.4ms.
+//
+// "Without it" means the month is still tested and the walk steps a minute at
+// a time. Deleting the block instead stops the month column being tested at
+// all, and both benchmarks then answer with a date in March, quickly and
+// wrongly.
 func BenchmarkNextOnAScheduleTwoYearsAway(b *testing.B) {
 	c, err := ParseCron("0 0 29 2 *")
 	if err != nil {
