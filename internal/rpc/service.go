@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
@@ -92,6 +93,15 @@ func (s *Service) Lease(ctx context.Context, req *quorrapb.LeaseRequest) (*quorr
 	queue := req.GetQueue()
 	if queue == "" {
 		queue = store.DefaultQueue
+	}
+
+	// A worker key may be limited to queues, the same way an operator's key
+	// is. Resolved first, so that a key holding the default queue may lease
+	// from it without naming it.
+	if caller := CallerOf(ctx); !caller.MayUse(queue) {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"the key %q may lease from %s, and this asks for %s",
+			caller.Name, strings.Join(caller.Queues(), ", "), queue)
 	}
 
 	limit := int(req.GetMaxJobs())

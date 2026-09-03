@@ -43,6 +43,20 @@ func (s *Service) Watch(req *quorrapb.WatchRequest, stream quorrapb.QueueService
 	}
 
 	ctx := stream.Context()
+
+	// A watch on a queue the key does not hold is refused rather than
+	// dropped, because a worker whose watch was quietly narrowed would wait
+	// for a hint that never comes and never learn why.
+	if caller := CallerOf(ctx); len(caller.Queues()) > 0 {
+		for queue := range wanted {
+			if !caller.MayUse(queue) {
+				return status.Errorf(codes.PermissionDenied,
+					"the key %q may watch %s, and this asks for %s",
+					caller.Name, strings.Join(caller.Queues(), ", "), queue)
+			}
+		}
+	}
+
 	hints, err := s.store.Watch(ctx)
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "cannot watch for work: %v", err)

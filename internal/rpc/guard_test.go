@@ -230,3 +230,104 @@ func TestEveryCallOnTheWorkerProtocolIsGuarded(t *testing.T) {
 		}
 	}
 }
+
+// A worker key may be limited to queues, the same way an operator's key is.
+//
+// Without this a worker key is a key to every queue, so a fleet run by one
+// team could lease and finish another team's work.
+func TestAWorkerKeyLimitedToQueuesLeasesOnlyFromThem(t *testing.T) {
+	client := guardedForQueues(t, "invoices")
+	ctx := withSecret(fleetSecret)
+
+	if _, err := client.Lease(ctx, &quorrapb.LeaseRequest{
+		WorkerId: "w1", Queue: "invoices", MaxJobs: 1,
+		LeaseTtl: durationpb.New(time.Minute),
+	}); err != nil {
+		t.Fatalf("leasing from a held queue: %v", err)
+	}
+
+	_, err := client.Lease(ctx, &quorrapb.LeaseRequest{
+		WorkerId: "w1", Queue: "payroll", MaxJobs: 1,
+		LeaseTtl: durationpb.New(time.Minute),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("leasing from another queue gave %v, want PermissionDenied", err)
+	}
+
+	// The queue nobody names is the default one, which this key does not
+	// hold either.
+	_, err = client.Lease(ctx, &quorrapb.LeaseRequest{
+		WorkerId: "w1", MaxJobs: 1, LeaseTtl: durationpb.New(time.Minute),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("leasing with no queue named gave %v, want PermissionDenied", err)
+	}
+}
+
+// A watch outside the key's queues is refused rather than quietly narrowed.
+//
+// A worker whose watch was narrowed would wait for a hint that never comes
+// and never learn why.
+func TestAWorkerKeyLimitedToQueuesCannotWatchAnother(t *testing.T) {
+	client := guardedForQueues(t, "invoices")
+
+	// A deadline, because a watch that is allowed stays open and sends
+	// nothing. Without one this test hangs the suite against a build that
+	// stopped refusing, instead of failing it.
+	ctx, stop := context.WithTimeout(withSecret(fleetSecret), 3*time.Second)
+	defer stop()
+
+	stream, err := client.Watch(ctx, &quorrapb.WatchRequest{
+		WorkerId: "w1", Queues: []string{"invoices", "payroll"},
+	})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("watching another queue gave %v, want PermissionDenied", err)
+	}
+}
+
+// guardedForQueues builds a server whose worker key holds the named queues.
+func guardedForQueues(t *testing.T, queues ...string) quorrapb.QueueServiceClient {
+	t.Helper()
+
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	fleet, err := auth.NewKey("fleet", auth.Worker, fleetSecret, queues...)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	keys, err := auth.NewSet(fleet)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+
+	guard := rpc.NewGuard(keys)
+	listener := bufconn.Listen(1 << 20)
+	server := grpc.NewServer(
+		grpc.UnaryInterceptor(guard.Unary()),
+		grpc.StreamInterceptor(guard.Stream()),
+	)
+	quorrapb.RegisterQueueServiceServer(server, rpc.New(
+		backing, metrics.New(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		rpc.DefaultLimits(), time.Now,
+	))
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	return quorrapb.NewQueueServiceClient(conn)
+}
