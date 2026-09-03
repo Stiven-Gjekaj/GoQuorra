@@ -54,6 +54,12 @@ func (a *API) createSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A schedule produces jobs into a queue, so it is a way of writing to
+	// one and answers the same rule.
+	if !a.mayWriteTo(w, r, req.Queue) {
+		return
+	}
+
 	made, err := a.opts.Store.CreateSchedule(r.Context(), store.NewSchedule{
 		Name:       req.Name,
 		Cron:       req.Cron,

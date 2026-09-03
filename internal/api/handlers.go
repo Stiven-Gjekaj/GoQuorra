@@ -64,6 +64,10 @@ func (a *API) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.mayWriteTo(w, r, req.Queue) {
+		return
+	}
+
 	job, created, err := a.opts.Store.Create(r.Context(), store.NewJob{
 		Type:       req.Type,
 		Payload:    req.Payload,
@@ -168,6 +172,12 @@ func (a *API) createMany(w http.ResponseWriter, r *http.Request) {
 	failed := 0
 
 	for i, one := range req.Jobs {
+		if refusal := refusedQueue(r, one.Queue); refusal != "" {
+			results = append(results, map[string]any{"index": i, "error": refusal})
+			failed++
+			continue
+		}
+
 		job, made, err := a.opts.Store.Create(r.Context(), store.NewJob{
 			Type:           one.Type,
 			Payload:        one.Payload,
@@ -262,6 +272,43 @@ func (a *API) heldByCaller(w http.ResponseWriter, r *http.Request, queue string)
 	}
 	a.fail(w, http.StatusNotFound, "no job carries that identifier")
 	return false
+}
+
+// mayWriteTo reports whether the caller may put work in a queue, and answers
+// the request when it may not.
+//
+// 403 and not the 404 the read side gives. The caller named this queue, so
+// there is nothing to hide: it already knows the name it asked for, and being
+// told that the key does not hold it is the only useful answer.
+//
+// The empty name is resolved first. A key limited to queues refuses the empty
+// string on purpose, so a route that forgot to resolve would refuse a
+// submission to the default queue rather than allow one anywhere.
+func (a *API) mayWriteTo(w http.ResponseWriter, r *http.Request, queue string) bool {
+	if refusal := refusedQueue(r, queue); refusal != "" {
+		a.fail(w, http.StatusForbidden, refusal)
+		return false
+	}
+	return true
+}
+
+// refusedQueue gives the sentence to answer with when the caller may not put
+// work in a queue, and an empty string when it may.
+//
+// Split from mayWriteTo because the bulk submit reports a bad row beside the
+// others rather than ending the request, and one row naming the wrong queue
+// is a bad row and not a bad request.
+func refusedQueue(r *http.Request, queue string) string {
+	if queue == "" {
+		queue = store.DefaultQueue
+	}
+
+	caller := callerOf(r.Context())
+	if caller.MayUse(queue) {
+		return ""
+	}
+	return fmt.Sprintf("the key %q may act on %s, and this names %s",
+		caller.Name, strings.Join(caller.Queues(), ", "), queue)
 }
 
 // queuesOfCaller gives the queues a filter has to be narrowed to.

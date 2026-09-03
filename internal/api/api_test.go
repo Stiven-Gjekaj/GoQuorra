@@ -1764,3 +1764,105 @@ func serveLimited(t *testing.T, queues ...string) (http.Handler, store.Store) {
 		Now:              func() time.Time { return frozen },
 	}).Handler(), backing
 }
+
+// A key limited to its queues may not put work in another one.
+//
+// 403 and not the 404 the read side gives. The caller named this queue, so
+// there is nothing to hide, and being told that the key does not hold it is
+// the only useful answer.
+func TestAKeyLimitedToItsQueuesMayNotWriteToAnother(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	refused := withKey(t, handler, "POST", "/v1/jobs", `{"type":"pay","queue":"payroll"}`)
+	if refused.Code != http.StatusForbidden {
+		t.Errorf("submitting to a queue the key does not hold answered %d, want 403", refused.Code)
+	}
+	if !strings.Contains(refused.Body.String(), "payroll") {
+		t.Errorf("the refusal does not name the queue: %s", refused.Body)
+	}
+
+	allowed := withKey(t, handler, "POST", "/v1/jobs", `{"type":"bill","queue":"invoices"}`)
+	if allowed.Code != http.StatusCreated {
+		t.Errorf("submitting to a held queue answered %d: %s", allowed.Code, allowed.Body)
+	}
+
+	// The queue nobody named is the default one, and this key does not hold
+	// it either.
+	unnamed := withKey(t, handler, "POST", "/v1/jobs", `{"type":"bill"}`)
+	if unnamed.Code != http.StatusForbidden {
+		t.Errorf("submitting with no queue named answered %d, want 403", unnamed.Code)
+	}
+
+	listed, err := backing.List(t.Context(), store.Filter{Limit: 50})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Queue != "invoices" {
+		t.Errorf("the store holds %d jobs: %+v", len(listed), listed)
+	}
+}
+
+// A key limited to the default queue may submit without naming one.
+//
+// The empty name is resolved before the key is asked. Without that, a key
+// holding "default" is refused a submission that names no queue, which is the
+// commonest way to submit anything.
+func TestAKeyHoldingTheDefaultQueueMaySubmitWithoutNamingIt(t *testing.T) {
+	handler, backing := serveLimited(t, store.DefaultQueue)
+
+	made := withKey(t, handler, "POST", "/v1/jobs", `{"type":"work"}`)
+	if made.Code != http.StatusCreated {
+		t.Fatalf("submitting with no queue named answered %d: %s", made.Code, made.Body)
+	}
+
+	listed, err := backing.List(t.Context(), store.Filter{Limit: 50})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Queue != store.DefaultQueue {
+		t.Errorf("the store holds %+v", listed)
+	}
+}
+
+// A bad row in a bulk submit is reported beside the others.
+//
+// The route already answers that way for a job the store refuses, and one row
+// naming a queue the key does not hold is a bad row and not a bad request.
+func TestARowNamingAQueueTheKeyDoesNotHoldIsRefusedOnItsOwn(t *testing.T) {
+	handler, _ := serveLimited(t, "invoices")
+
+	answer := withKey(t, handler, "POST", "/v1/jobs/bulk",
+		`{"jobs":[{"type":"bill","queue":"invoices"},{"type":"pay","queue":"payroll"}]}`)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("the bulk submit answered %d: %s", answer.Code, answer.Body)
+	}
+
+	var got struct {
+		Created int `json:"created"`
+		Refused int `json:"refused"`
+		Results []struct {
+			Index int    `json:"index"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(answer.Body.Bytes(), &got); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if got.Created != 1 {
+		t.Errorf("%d jobs were created, want the one in the held queue", got.Created)
+	}
+	if len(got.Results) != 2 || got.Results[1].Error == "" {
+		t.Errorf("the row naming another queue was not reported: %+v", got.Results)
+	}
+}
+
+// A schedule produces jobs into a queue, so it answers the same rule.
+func TestAScheduleCannotProduceIntoAQueueTheKeyDoesNotHold(t *testing.T) {
+	handler, _ := serveLimited(t, "invoices")
+
+	refused := withKey(t, handler, "POST", "/v1/schedules",
+		`{"name":"nightly","cron":"0 2 * * *","catch_up":"skip","type":"pay","queue":"payroll"}`)
+	if refused.Code != http.StatusForbidden {
+		t.Errorf("a schedule into another queue answered %d, want 403", refused.Code)
+	}
+}
