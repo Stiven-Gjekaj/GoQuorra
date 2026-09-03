@@ -150,6 +150,9 @@ button.open {
     <button type="submit">Open</button>
   </form>
   <div class="filters" id="filters"></div>
+  <!-- Acting on everything the filter names. Empty unless a status is
+       chosen, because "cancel all of them" must not be one press away. -->
+  <div class="filters" id="bulk"></div>
   <div class="scroll">
     <table>
       <thead>
@@ -213,10 +216,14 @@ let askedAbout = null;
 // them every five seconds.
 let pages = 1;
 
-async function post(path) {
+async function post(path, body) {
+  const headers = { "X-API-Key": store.getItem("quorra.key") || "" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+
   const response = await fetch(path, {
     method: "POST",
-    headers: { "X-API-Key": store.getItem("quorra.key") || "" },
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
     const answer = await response.json().catch(() => ({}));
@@ -526,6 +533,56 @@ function renderFilters() {
     });
     holder.appendChild(button);
   }
+}
+
+// The action that a status calls for.
+//
+// Cancel is for a job that has not finished, and revive is for one that has.
+// A status that is already finished has no cancel, and one that is still
+// going has no revive, so a page that offered both would offer one that
+// answers an error whatever is pressed.
+const BULK = {
+  pending: ["cancel", "Cancel"],
+  blocked: ["cancel", "Cancel"],
+  leased: ["cancel", "Cancel"],
+  dead: ["revive", "Revive"],
+  cancelled: ["revive", "Revive"],
+};
+
+// renderBulk offers one action over everything the filter names.
+//
+// Only when a status is chosen. The filter that names every job is the one
+// nobody means to act on, and "cancel all of them" must not be one press
+// away from a page somebody opened to look at it.
+//
+// Bounded by what is on the page. The reader narrows until the table shows
+// what they mean and then acts on that, so nothing moves that they have not
+// seen. Pressing again takes the next page of them.
+function renderBulk(shown) {
+  const holder = document.getElementById("bulk");
+  holder.replaceChildren();
+
+  const action = BULK[filter];
+  if (!action || shown === 0) return;
+
+  const [verb, label] = action;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label + " these " + shown;
+  button.addEventListener("click", async () => {
+    if (!window.confirm(label + " " + shown + " " + filter + " job(s)?")) return;
+
+    button.disabled = true;
+    try {
+      const answer = await post("/v1/jobs/" + verb, { status: filter, limit: shown });
+      say(label.toLowerCase() + "d " + answer.moved);
+      await load();
+    } catch (error) {
+      say(error.message, true);
+      button.disabled = false;
+    }
+  });
+  holder.appendChild(button);
 }
 
 // untilText says how far off a moment is, in the shortest form that is still
@@ -870,6 +927,7 @@ async function load() {
 
     renderJobs(rows);
     renderMore(rows.length, next);
+    renderBulk(rows.length);
 
     // The open panel is drawn again with the rest. A job somebody is
     // watching because it is stuck is the job whose status they are waiting

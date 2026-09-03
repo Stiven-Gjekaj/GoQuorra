@@ -722,3 +722,69 @@ func TestTheDashboardShowsTheSchedules(t *testing.T) {
 		t.Error("the page works out the next firing itself")
 	}
 }
+
+// The page can act on everything the filter names.
+//
+// Clearing a dead letter queue was a shell loop, because the only route to
+// the bulk actions was quorractl. The arc that built them said the point was
+// an operator who does not need a terminal.
+func TestTheDashboardCanActOnAWholeFilter(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	for _, route := range []string{"/v1/jobs/\" + verb", "renderBulk"} {
+		if !strings.Contains(page, route) {
+			t.Errorf("the dashboard cannot act on a whole filter: %q is missing", route)
+		}
+	}
+
+	// Only when a status is chosen. The filter that names every job is the
+	// one nobody means to act on, and cancelling all of them must not be one
+	// press away from a page somebody opened to look at it.
+	//
+	// What is checked here is that no action is named for the two filters
+	// that are not a status. A first version looked for the lookup itself,
+	// and passed against a build that had added a fallback to it, because
+	// the line it searched for was still there with more after it. Whether
+	// the button appears is behaviour, and the page is loaded in a browser
+	// at the end of this arc to see it.
+	table := page[strings.Index(page, "const BULK = {"):]
+	table = table[:strings.Index(table, "};")]
+	for _, notAStatus := range []string{`"":`, "ready:", `"ready":`} {
+		if strings.Contains(table, notAStatus) {
+			t.Errorf("the bulk action is named for %q, which is not a status", notAStatus)
+		}
+	}
+	if !strings.Contains(page, "if (!action") {
+		t.Error("the bulk action is offered when the filter names none")
+	}
+
+	// A finished status offers revive and an unfinished one offers cancel.
+	// Offering both would offer one that answers an error whatever is
+	// pressed.
+	for status, want := range map[string]string{
+		"pending": "cancel", "leased": "cancel", "blocked": "cancel",
+		"dead": "revive", "cancelled": "revive",
+	} {
+		at := strings.Index(page, status+": [\"")
+		if at < 0 {
+			t.Errorf("no bulk action is named for %q", status)
+			continue
+		}
+		if !strings.HasPrefix(page[at:], status+`: ["`+want+`"`) {
+			t.Errorf("%q does not offer %q", status, want)
+		}
+	}
+
+	// Bounded by what is on the page, so nothing moves that the reader has
+	// not seen, and asked about before it runs.
+	if !strings.Contains(page, "limit: shown") {
+		t.Error("the bulk action is not bounded by what the page shows")
+	}
+	if !strings.Contains(page, "window.confirm") {
+		t.Error("the bulk action runs without asking")
+	}
+}
