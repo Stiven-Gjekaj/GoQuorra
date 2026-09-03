@@ -605,3 +605,30 @@ func TestTheOutcomeCellFollowsTheStatusAndNotTheFields(t *testing.T) {
 		t.Error("the outcome cell does not read the status, so it cannot tell the two cases apart")
 	}
 }
+
+// The page says which key it is holding.
+//
+// A key limited to queues shows an empty listing for a queue it cannot reach,
+// and that reads exactly like an empty queue. The reader has to be able to
+// see which caller the page is.
+func TestTheDashboardNamesTheKeyInUse(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "/v1/whoami") {
+		t.Error("the dashboard never asks who it is")
+	}
+	if !strings.Contains(page, `id="who"`) {
+		t.Error("the dashboard has nowhere to say who it is")
+	}
+
+	// Asked again when the key changes, and not on every refresh. A page
+	// that asked every five seconds would put a request on an answer that
+	// changes only when somebody types a different key.
+	if !strings.Contains(page, "askedAbout") {
+		t.Error("the dashboard asks who it is on every refresh")
+	}
+}

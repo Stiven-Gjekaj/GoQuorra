@@ -103,6 +103,10 @@ button.open {
     <img class="mark" src="/logo.svg" alt="" width="26" height="26">
     <h1>GoQuorra</h1>
     <span class="tag" id="state">connecting</span>
+    <!-- Which key is in use. A key limited to queues shows an empty listing
+         for a queue it cannot reach, which reads exactly like an empty
+         queue, so the page says which key it is holding. -->
+    <span class="tag" id="who" hidden></span>
     <span class="spacer"></span>
     <form id="keyform">
       <label for="key" class="tag">API key</label>
@@ -172,6 +176,11 @@ function say(text, bad) {
 
 // Which status the reader is looking at. Empty means all of them.
 let filter = "";
+
+// The key whoami was last asked about. Asking again on every refresh would
+// put a request every five seconds on an answer that changes only when the
+// reader types a different key.
+let askedAbout = null;
 
 // The pages already fetched, and the cursor for the next one.
 //
@@ -258,6 +267,27 @@ function cell(row, text, className) {
   if (className) td.className = className;
   row.appendChild(td);
   return td;
+}
+
+// showWho names the key in use, and the queues it holds when it holds some.
+//
+// A key that holds every queue says so by naming none, and a line saying "on
+// every queue" would sit on the page for ever to report that nothing is
+// limited.
+async function showWho() {
+  const key = store.getItem("quorra.key") || "";
+  if (key === askedAbout) return;
+
+  const badge = document.getElementById("who");
+  const answer = await get("/v1/whoami");
+  askedAbout = key;
+
+  let text = answer.name + " (may " + answer.scope;
+  if (Array.isArray(answer.queues) && answer.queues.length > 0) {
+    text += ", on " + answer.queues.join(", ");
+  }
+  badge.textContent = text + ")";
+  badge.hidden = false;
 }
 
 function renderQueues(rows) {
@@ -651,6 +681,8 @@ async function load() {
     // different query: what the queue would hand out now, in the order it
     // would hand it out. A list of ready jobs in submission order does not
     // answer what runs next.
+    await showWho();
+
     const queues = await get("/v1/queues");
     renderQueues(queues.queues || []);
 
@@ -751,6 +783,9 @@ function restart() {
   stopped = false;
   failures = 0;
   wait = BASE;
+  // A different key is a different caller, so what it may see is asked
+  // again rather than kept from the key before it.
+  askedAbout = null;
   if (timer) clearTimeout(timer);
   tick();
 }
