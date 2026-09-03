@@ -56,6 +56,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
    result: it is a job nobody has to look at yet. */
 .blocked { color: var(--blocked); }
 .note { color: var(--dim); padding: 16px; }
+/* A schedule that is switched off. Dimmed and not hidden: somebody switched
+   it, and hiding it would leave them looking for it. */
+tr.off td { color: var(--dim); }
+td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 input, button {
   font: inherit; padding: 7px 10px; border-radius: 6px;
@@ -125,6 +129,19 @@ button.open {
        because the work is slow, and the difference is this list. -->
   <h3>Workers</h3>
   <div class="cards" id="workers"></div>
+
+  <!-- The repeat schedules. A schedule that is switched off produces
+       nothing and looks, from the jobs table, exactly like one that is
+       working and has nothing due. -->
+  <h3>Schedules</h3>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Rule</th><th>Zone</th><th>Queue</th><th>Catch up</th><th>Last fired</th><th>Next</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="schedules"></tbody>
+    </table>
+  </div>
 
   <h3>Jobs</h3>
   <form id="findform">
@@ -294,6 +311,76 @@ async function showWho() {
   }
   badge.textContent = text + ")";
   badge.hidden = false;
+}
+
+// renderSchedules shows the repeat schedules and lets one be switched.
+//
+// A schedule that is switched off produces nothing, and from the jobs table
+// that looks exactly like a schedule that is working and has nothing due.
+// The row says which it is.
+function renderSchedules(rows) {
+  const body = document.getElementById("schedules");
+  body.replaceChildren();
+
+  if (rows.length === 0) {
+    const row = body.insertRow();
+    const only = cell(row, "No repeat schedules.");
+    only.colSpan = 8;
+    only.className = "note";
+    return;
+  }
+
+  for (const one of [...rows].sort((a, b) => a.name.localeCompare(b.name))) {
+    const row = body.insertRow();
+    if (!one.enabled) row.className = "off";
+
+    cell(row, one.name);
+    cell(row, one.cron, "mono");
+    cell(row, one.timezone || "UTC");
+    cell(row, one.queue || "default");
+    cell(row, one.catch_up);
+    cell(row, one.last_fired_at ? whenText(one.last_fired_at) : "never");
+
+    // A rule that names a day which never comes has no next firing, and a
+    // schedule that is off has none either. The two read differently and
+    // the second is the one somebody switched.
+    if (!one.enabled) {
+      cell(row, "off", "dead");
+    } else if (one.error) {
+      cell(row, one.error, "dead");
+    } else {
+      cell(row, one.next_firing_at ? whenText(one.next_firing_at) : "never", "");
+    }
+
+    const actions = row.insertCell();
+    actions.appendChild(scheduleButton(
+      one.enabled ? "Switch off" : "Switch on",
+      one.name, one.enabled ? "disable" : "enable"));
+  }
+}
+
+// scheduleButton switches one schedule and asks for the page again.
+function scheduleButton(label, name, verb) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await post("/v1/schedules/" + encodeURIComponent(name) + "/" + verb);
+      await load();
+    } catch (error) {
+      say(error.message, true);
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
+// whenText gives a moment in the reader's own zone.
+function whenText(stamp) {
+  const at = new Date(stamp);
+  return Number.isNaN(at.getTime()) ? String(stamp) : at.toLocaleString();
 }
 
 // renderWorkers shows the workers the queue has heard from.
@@ -762,6 +849,9 @@ async function load() {
 
     const seen = await get("/v1/workers");
     renderWorkers(seen.workers || []);
+
+    const repeats = await get("/v1/schedules");
+    renderSchedules(repeats.schedules || []);
 
     // Every page the reader has asked for, one after another, following the
     // cursor. Asking for a bigger limit instead would work until somebody

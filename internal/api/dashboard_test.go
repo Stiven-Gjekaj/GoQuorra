@@ -543,11 +543,34 @@ func TestTheDashboardShowsWhenAJobRuns(t *testing.T) {
 
 	// The column count and the empty-state row have to agree, or the empty
 	// message stops spanning the table and the layout breaks in a way that
-	// only shows when there are no jobs.
-	columns := strings.Count(page[strings.Index(page, "<thead>"):strings.Index(page, "</thead>")], "<th>")
-	if !strings.Contains(page, "td.colSpan = "+strconv.Itoa(columns)) {
-		t.Errorf("the table has %d columns and the empty row spans a different number", columns)
+	// only shows when there is nothing to list.
+	//
+	// Every table on the page, and not the first one. This read the first
+	// <thead> it found, which was the jobs table until the schedules table
+	// was put above it, and then it measured one table against the other.
+	for _, table := range []string{"jobs", "schedules"} {
+		columns := headingsOf(t, page, table)
+		if !strings.Contains(page, "colSpan = "+strconv.Itoa(columns)) {
+			t.Errorf("the %s table has %d columns and no empty row spans that many", table, columns)
+		}
 	}
+}
+
+// headingsOf counts the columns of the table whose body carries an id.
+func headingsOf(t *testing.T, page, id string) int {
+	t.Helper()
+
+	body := strings.Index(page, `<tbody id="`+id+`">`)
+	if body < 0 {
+		t.Fatalf("there is no table bodied %q", id)
+	}
+
+	head := strings.LastIndex(page[:body], "<thead>")
+	shut := strings.LastIndex(page[:body], "</thead>")
+	if head < 0 || shut < head {
+		t.Fatalf("the table bodied %q has no heading row", id)
+	}
+	return strings.Count(page[head:shut], "<th>")
 }
 
 // A cancelled job says who cancelled it.
@@ -662,5 +685,40 @@ func TestTheDashboardShowsTheWorkers(t *testing.T) {
 	// marked rather than left to be read.
 	if !strings.Contains(page, "idle_seconds") {
 		t.Error("the page does not say how long ago a worker asked")
+	}
+}
+
+// The page shows the repeat schedules, and can switch one.
+//
+// A schedule that is switched off produces nothing, and from the jobs table
+// that looks exactly like a schedule that is working and has nothing due.
+func TestTheDashboardShowsTheSchedules(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "/v1/schedules") {
+		t.Error("the dashboard never asks for the schedules")
+	}
+	if !strings.Contains(page, `id="schedules"`) {
+		t.Error("the dashboard has nowhere to show the schedules")
+	}
+
+	// Both verbs, because a switch that only goes one way is half a switch.
+	for _, verb := range []string{"enable", "disable"} {
+		if !strings.Contains(page, `"/`+verb) && !strings.Contains(page, `"`+verb+`"`) {
+			t.Errorf("the dashboard cannot %s a schedule", verb)
+		}
+	}
+
+	// The next firing comes from the server. A page that worked it out in a
+	// browser would answer in whatever zone the reader's machine is set to.
+	if !strings.Contains(page, "next_firing_at") {
+		t.Error("the page does not say when a schedule fires next")
+	}
+	if strings.Contains(page, "ParseCron") || strings.Contains(page, "cronNext") {
+		t.Error("the page works out the next firing itself")
 	}
 }
