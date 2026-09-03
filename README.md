@@ -372,6 +372,32 @@ a network cannot honour a second.
 The two day columns are an `OR` when both name specific days, which is what
 every cron does and what nobody believes without being told.
 
+**A rule is read as a clock on a wall, and the clock changes twice a year.**
+Two days a year need an answer, and both answers are chosen rather than
+inherited.
+
+On the day the clock goes back, a reading happens twice.
+`0 2 * * *` in `Europe/Berlin` on 25 October 2026 could mean 02:00 CEST or
+02:00 CET, an hour apart.
+It fires once, at the first of the two, which keeps a daily schedule twenty
+four hours from the day before.
+
+On the day the clock goes forward, a reading does not happen at all.
+02:00 does not exist in `Europe/Berlin` on 29 March 2026.
+It fires once, at the first moment that does exist, which is 03:00.
+A day missing once a year is found in the ledger and not in the log.
+
+Measured against a real server, a daily schedule catching up with `skip`:
+
+| Rule and zone | Span | Windows |
+| ---- | ---- | ---- |
+| `0 2 * * *` `Europe/Berlin` | 28 March to 3 September 2026 | 159, and 158 before this was fixed |
+| `30 2 * * *` `Pacific/Auckland` | 4 April to 3 September 2026 | 152, and 153 before |
+
+One window each way. The zone that put its clock forward gained the day it
+used to step over, and the zone that put its clock back lost the firing it
+used to do twice.
+
 ```sh
 quorractl schedule list
 quorractl schedule off nightly     # keeps it, produces nothing
