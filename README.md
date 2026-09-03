@@ -670,6 +670,30 @@ string.
 | Open one job, with its payload and every run of it | The identifier in its row |
 | Find a job from an identifier in a log line | The `Find` box |
 | Stop or revive a job | The buttons in its row |
+| Stop or revive everything the filter names | The button under the filters |
+| Switch a repeat schedule on or off | The button in its row |
+| See which key the page is holding | The badge in the header |
+
+The page shows the workers as well as the jobs.
+A queue that is filling up because no worker has asked for work looks exactly
+like one that is filling up because the work is slow, and the cards are the
+difference.
+A worker that asked about two queues is one card, because it is one process.
+
+It shows the repeat schedules too.
+A schedule that is switched off produces nothing, and from the jobs table that
+looks exactly like a schedule that is working with nothing due.
+A switched off one is dimmed rather than hidden: somebody switched it, and
+hiding it would leave them looking for it.
+
+**The bulk action is offered only when a status is chosen.**
+The filter that names every job is the one nobody means to act on.
+It is bounded by what is on the page, and it asks before it runs, so nothing
+moves that the reader has not seen.
+A finished status offers `Revive` and an unfinished one offers `Cancel`.
+
+Clearing a dead letter queue was a shell loop before this.
+The routes existed and only `quorractl` could reach them.
 
 Opening a job is the only place the payload is shown.
 A listing cannot carry it: the payload of one job can be larger than a page of
@@ -681,6 +705,14 @@ stop it, and a tab that is hidden is asked for nothing.
 Correcting the key clears the wait and refreshes at once.
 Measured over the browser: with a wrong key, two requests in twenty one and a
 half seconds rather than eight.
+
+Driven over the browser again after the workers, the schedules and the bulk
+action were added: the badge read `ops (may write)`, one worker card, both
+schedules with the enabled one showing its next firing and the switched off
+one showing `off`, no bulk button while the filter was `all`, and
+`Revive these 4` once `cancelled` was chosen. Pressing it moved four jobs
+back to pending. Zero console messages, zero policy refusals, zero failed
+requests.
 
 A job identifier never reaches the address bar.
 It would be kept in browser history and sent on in the `Referer` of anything
