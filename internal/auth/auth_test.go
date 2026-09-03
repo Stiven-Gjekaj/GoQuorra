@@ -219,3 +219,92 @@ func TestParseScope(t *testing.T) {
 		t.Error("an unknown scope was accepted")
 	}
 }
+
+// A key that names no queue may use every one.
+//
+// That is what every key was before a key could be limited, so a deployment
+// that has not divided its queues keeps working without saying so.
+func TestAKeyThatNamesNoQueueMayUseEveryQueue(t *testing.T) {
+	key, err := NewKey("ops", Write, secret)
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+
+	for _, queue := range []string{"default", "mail", "anything at all"} {
+		if !key.MayUse(queue) {
+			t.Errorf("a key naming no queue refused %q", queue)
+		}
+	}
+	if len(key.Queues()) != 0 {
+		t.Errorf("a key naming no queue holds %v", key.Queues())
+	}
+}
+
+// A key that names queues may use those and nothing else.
+func TestAKeyThatNamesQueuesMayUseOnlyThose(t *testing.T) {
+	key, err := NewKey("billing", Write, secret, "invoices", "receipts")
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+
+	if !key.MayUse("invoices") || !key.MayUse("receipts") {
+		t.Error("a key refused a queue it names")
+	}
+	if key.MayUse("payroll") {
+		t.Error("a key limited to two queues used a third")
+	}
+}
+
+// A queue that was not named is refused, and the empty string is not named.
+//
+// A caller that names no queue means the default one, and resolving it
+// belongs to the layer that knows what the default is. Answering yes here
+// would let a resolution somebody forgot widen a key with nothing failing.
+func TestALimitedKeyRefusesAQueueNobodyNamed(t *testing.T) {
+	key, err := NewKey("billing", Write, secret, "invoices")
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+
+	if key.MayUse("") {
+		t.Error("a limited key used the queue nobody named")
+	}
+}
+
+// What a key holds cannot be widened by the caller that reads it.
+func TestWhatAKeyHoldsCannotBeChangedFromOutside(t *testing.T) {
+	key, err := NewKey("billing", Write, secret, "invoices")
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+
+	held := key.Queues()
+	held[0] = "payroll"
+
+	if key.MayUse("payroll") {
+		t.Error("changing what Queues gave back changed the key")
+	}
+	if !key.MayUse("invoices") {
+		t.Error("changing what Queues gave back took a queue away from the key")
+	}
+}
+
+// A queue a key cannot be limited to is refused where the key is built.
+//
+// A queue name is free text everywhere else, so the four characters that
+// separate the fields of a key cannot appear in one here. Saying so at
+// startup is better than a key quietly holding a queue nobody meant.
+func TestAQueueNameThatCannotBeWrittenInAKeyIsRefused(t *testing.T) {
+	for _, queue := range []string{"a:b", "a,b", "a@b", "a+b"} {
+		if _, err := NewKey("billing", Write, secret, queue); err == nil {
+			t.Errorf("a key was built naming the queue %q", queue)
+		}
+	}
+
+	if _, err := NewKey("billing", Write, secret, "  "); err == nil {
+		t.Error("a key was built naming an empty queue")
+	}
+	if _, err := NewKey("billing", Write, secret, "mail", "mail"); err == nil {
+		t.Error("a key was built naming one queue twice")
+	}
+}

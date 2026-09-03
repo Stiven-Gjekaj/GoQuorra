@@ -131,13 +131,24 @@ type Key struct {
 
 	Scope Scope
 
+	// queues are the queues this key may act on. Empty means every queue.
+	//
+	// Unexported and copied on the way out, because a caller that could
+	// append to it would widen its own permission.
+	queues []string
+
 	// digest is the hashed secret. The secret itself is not kept, so a heap
 	// dump of a running server does not hand it over.
 	digest [sha256.Size]byte
 }
 
-// NewKey builds a key from a name, a scope and a secret.
-func NewKey(name string, scope Scope, secret string) (Key, error) {
+// NewKey builds a key from a name, a scope, a secret and the queues it may
+// act on.
+//
+// Naming no queue means every queue, which is what every key was before this
+// existed. A deployment that has not divided its queues does not have to say
+// so.
+func NewKey(name string, scope Scope, secret string, queues ...string) (Key, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Key{}, fmt.Errorf("auth: a key needs a name")
@@ -157,7 +168,77 @@ func NewKey(name string, scope Scope, secret string) (Key, error) {
 	if len(secret) < 16 {
 		return Key{}, fmt.Errorf("auth: the secret for %q is %d characters, and the shortest allowed is 16", name, len(secret))
 	}
-	return Key{Name: name, Scope: scope, digest: sha256.Sum256([]byte(secret))}, nil
+
+	held, err := cleanQueues(name, queues)
+	if err != nil {
+		return Key{}, err
+	}
+	return Key{Name: name, Scope: scope, queues: held, digest: sha256.Sum256([]byte(secret))}, nil
+}
+
+// cleanQueues checks the queues a key names.
+//
+// A queue name is free text of up to 255 characters everywhere else in this
+// project, so the four characters that separate the fields of a key cannot
+// appear in one here. The limit is real and the error says so, rather than a
+// key quietly holding a queue nobody meant.
+func cleanQueues(name string, queues []string) ([]string, error) {
+	if len(queues) == 0 {
+		return nil, nil
+	}
+
+	held := make([]string, 0, len(queues))
+	seen := map[string]bool{}
+	for _, queue := range queues {
+		queue = strings.TrimSpace(queue)
+		if queue == "" {
+			return nil, fmt.Errorf("auth: the key %q names an empty queue", name)
+		}
+		if len(queue) > 255 {
+			return nil, fmt.Errorf("auth: the key %q names a queue of %d characters, and the column holds 255", name, len(queue))
+		}
+		if at := strings.IndexAny(queue, ":,@+"); at >= 0 {
+			return nil, fmt.Errorf(
+				"auth: the key %q names the queue %q, which holds %q. A key cannot be limited to a queue whose name holds one of : , @ or +, because those separate the fields of a key",
+				name, queue, queue[at:at+1])
+		}
+		if seen[queue] {
+			return nil, fmt.Errorf("auth: the key %q names the queue %q twice", name, queue)
+		}
+		seen[queue] = true
+		held = append(held, queue)
+	}
+	return held, nil
+}
+
+// Queues gives the queues this key may act on.
+//
+// An empty answer means every queue. The slice is copied, so that a caller
+// cannot widen its own permission by appending to it.
+func (k Key) Queues() []string {
+	if len(k.queues) == 0 {
+		return nil
+	}
+	return append([]string(nil), k.queues...)
+}
+
+// MayUse says whether this key may act on a queue.
+//
+// A key that names no queue may use every one. A key that names some may use
+// those and nothing else, and that includes the empty string: a caller that
+// did not name a queue means the default one, and resolving it is the job of
+// the layer that knows what the default is. Answering true here would let a
+// forgotten resolution widen a key without anything failing.
+func (k Key) MayUse(queue string) bool {
+	if len(k.queues) == 0 {
+		return true
+	}
+	for _, held := range k.queues {
+		if held == queue {
+			return true
+		}
+	}
+	return false
 }
 
 // Set is every key the server accepts.
