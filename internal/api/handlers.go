@@ -245,10 +245,40 @@ func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// heldByCaller reports whether the key that made a request may act on a
+// queue, and answers the request when it may not.
+//
+// One helper and not a check written out at each route. Every one of them
+// asks the same question, and the answer a caller gets has to be the same
+// wherever it comes from.
+//
+// 404 and not 403. A key limited to its own queues learns nothing about what
+// is in another one, not even that a job is there. The caller already holds
+// the identifier it asked about, so the only thing 403 would add is the fact
+// that the job exists.
+func (a *API) heldByCaller(w http.ResponseWriter, r *http.Request, queue string) bool {
+	if callerOf(r.Context()).MayUse(queue) {
+		return true
+	}
+	a.fail(w, http.StatusNotFound, "no job carries that identifier")
+	return false
+}
+
+// queuesOfCaller gives the queues a filter has to be narrowed to.
+//
+// An empty answer means every queue, which is what a key that names none
+// holds.
+func queuesOfCaller(r *http.Request) []string {
+	return callerOf(r.Context()).Queues()
+}
+
 func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 	job, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.failWith(r.Context(), w, err, "cannot read the job")
+		return
+	}
+	if !a.heldByCaller(w, r, job.Queue) {
 		return
 	}
 	a.send(w, http.StatusOK, job)
@@ -264,6 +294,17 @@ func (a *API) getJob(w http.ResponseWriter, r *http.Request) {
 // A job that has not finished a run answers 200 with an empty list. Only a
 // job that is not there is 404.
 func (a *API) jobAttempts(w http.ResponseWriter, r *http.Request) {
+	// The job first, so that a key which may not see it is answered before
+	// its history is read.
+	job, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(r.Context(), w, err, "cannot read what the job did")
+		return
+	}
+	if !a.heldByCaller(w, r, job.Queue) {
+		return
+	}
+
 	found, err := a.opts.Store.Attempts(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.failWith(r.Context(), w, err, "cannot read what the job did")
@@ -290,6 +331,17 @@ func (a *API) jobAttempts(w http.ResponseWriter, r *http.Request) {
 func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 	caller := callerOf(r.Context())
 
+	// Read before acting, so that a key which may not see the job cannot
+	// stop it either.
+	before, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(r.Context(), w, err, "cannot cancel the job")
+		return
+	}
+	if !a.heldByCaller(w, r, before.Queue) {
+		return
+	}
+
 	job, err := a.opts.Store.Cancel(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
 		a.failWith(r.Context(), w, err, "cannot cancel the job")
@@ -304,6 +356,15 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 // reviveJob handles POST /v1/jobs/{id}/revive.
 func (a *API) reviveJob(w http.ResponseWriter, r *http.Request) {
 	caller := callerOf(r.Context())
+
+	before, err := a.opts.Store.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.failWith(r.Context(), w, err, "cannot revive the job")
+		return
+	}
+	if !a.heldByCaller(w, r, before.Queue) {
+		return
+	}
 
 	job, err := a.opts.Store.Revive(r.Context(), r.PathValue("id"), caller.Name)
 	if err != nil {
@@ -375,6 +436,7 @@ func (a *API) bulk(
 
 	filter := store.Filter{
 		Queue:  req.Queue,
+		Queues: queuesOfCaller(r),
 		Type:   req.Type,
 		Worker: req.Worker,
 		Limit:  req.Limit,
@@ -430,6 +492,7 @@ func (a *API) listJobs(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	filter := store.Filter{
 		Queue:  query.Get("queue"),
+		Queues: queuesOfCaller(r),
 		Type:   query.Get("type"),
 		Limit:  limit,
 		Before: query.Get("before"),
@@ -527,9 +590,16 @@ func (a *API) queueStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if stats == nil {
-		stats = []store.QueueStat{}
+	// Counted for every queue and shown for the caller's. A count of a queue
+	// somebody cannot read is a fact about that queue.
+	caller := callerOf(r.Context())
+	kept := make([]store.QueueStat, 0, len(stats))
+	for _, one := range stats {
+		if caller.MayUse(one.Queue) {
+			kept = append(kept, one)
+		}
 	}
+	stats = kept
 	a.send(w, http.StatusOK, map[string]any{"queues": stats})
 }
 
@@ -551,8 +621,14 @@ func (a *API) workers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := a.opts.Now()
+	caller := callerOf(r.Context())
 	rows := make([]map[string]any, 0, len(seen))
 	for _, one := range seen {
+		// A worker is recorded per queue, so a key limited to its own queues
+		// sees the workers on those and not the size of somebody's fleet.
+		if !caller.MayUse(one.Queue) {
+			continue
+		}
 		rows = append(rows, map[string]any{
 			"id":            one.ID,
 			"queue":         one.Queue,

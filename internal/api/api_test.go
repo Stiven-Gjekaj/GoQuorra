@@ -1612,3 +1612,155 @@ func TestAnAnswerThatWorkedLeavesNoLine(t *testing.T) {
 		t.Errorf("an answer that worked was logged as a refusal:\n%s", written.String())
 	}
 }
+
+// A key limited to its own queues sees only those.
+//
+// Listing, counting the queues, and reading one job by identifier. A key that
+// could count what is in another team's queue would learn how much work that
+// team has, which is the thing the division is for.
+func TestAKeyLimitedToItsQueuesSeesOnlyThose(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	mine, _, err := backing.Create(t.Context(), store.NewJob{Type: "bill", Queue: "invoices"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	theirs, _, err := backing.Create(t.Context(), store.NewJob{Type: "pay", Queue: "payroll"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var listed struct {
+		Jobs []store.Job `json:"jobs"`
+	}
+	decode(t, withKey(t, handler, "GET", "/v1/jobs", ""), &listed)
+	if len(listed.Jobs) != 1 || listed.Jobs[0].ID != mine.ID {
+		t.Errorf("the listing holds %d jobs, want the one in the held queue", len(listed.Jobs))
+	}
+
+	// Asking for the other queue by name gives nothing, and not an error.
+	decode(t, withKey(t, handler, "GET", "/v1/jobs?queue=payroll", ""), &listed)
+	if len(listed.Jobs) != 0 {
+		t.Errorf("asking for a queue the key does not hold gave %d jobs", len(listed.Jobs))
+	}
+
+	var counted struct {
+		Queues []store.QueueStat `json:"queues"`
+	}
+	decode(t, withKey(t, handler, "GET", "/v1/queues", ""), &counted)
+	for _, one := range counted.Queues {
+		if one.Queue != "invoices" {
+			t.Errorf("the counts hold the queue %q", one.Queue)
+		}
+	}
+
+	if got := withKey(t, handler, "GET", "/v1/jobs/"+theirs.ID, "").Code; got != http.StatusNotFound {
+		t.Errorf("reading a job in another queue answered %d, want 404", got)
+	}
+	if got := withKey(t, handler, "GET", "/v1/jobs/"+mine.ID, "").Code; got != http.StatusOK {
+		t.Errorf("reading a job in the held queue answered %d", got)
+	}
+}
+
+// A key limited to its own queues cannot act on a job outside them.
+//
+// The same 404 as a job that is not there. The caller already holds the
+// identifier, so the only thing a 403 would add is that the job exists.
+func TestAKeyLimitedToItsQueuesCannotActOutsideThem(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	theirs, _, err := backing.Create(t.Context(), store.NewJob{Type: "pay", Queue: "payroll"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for _, verb := range []string{"cancel", "revive"} {
+		got := withKey(t, handler, "POST", "/v1/jobs/"+theirs.ID+"/"+verb, "")
+		if got.Code != http.StatusNotFound {
+			t.Errorf("%s on a job in another queue answered %d, want 404", verb, got.Code)
+		}
+	}
+
+	after, err := backing.Get(t.Context(), theirs.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.Status != jobs.Pending {
+		t.Errorf("the job in the other queue is %q", after.Status)
+	}
+}
+
+// A bulk action narrows to the queues the key holds.
+//
+// This is the one that cannot be undone. A filter naming nothing means every
+// job the caller can reach, and that must not be every job.
+func TestABulkActionStopsOnlyWhatTheKeyHolds(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	mine, _, _ := backing.Create(t.Context(), store.NewJob{Type: "bill", Queue: "invoices"})
+	theirs, _, _ := backing.Create(t.Context(), store.NewJob{Type: "pay", Queue: "payroll"})
+
+	answer := withKey(t, handler, "POST", "/v1/jobs/cancel", `{"limit":100}`)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("the bulk cancel answered %d: %s", answer.Code, answer.Body)
+	}
+
+	stopped, err := backing.Get(t.Context(), mine.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stopped.Status != jobs.Cancelled {
+		t.Errorf("the job in the held queue is %q", stopped.Status)
+	}
+
+	untouched, err := backing.Get(t.Context(), theirs.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if untouched.Status != jobs.Pending {
+		t.Errorf("the bulk cancel reached %q in another queue", untouched.Status)
+	}
+}
+
+// decode reads an answer into a value, and fails the test rather than
+// leaving a zero one to be compared against.
+func decode(t *testing.T, answer *httptest.ResponseRecorder, into any) {
+	t.Helper()
+
+	if answer.Code != http.StatusOK {
+		t.Fatalf("the request answered %d: %s", answer.Code, answer.Body)
+	}
+	if err := json.Unmarshal(answer.Body.Bytes(), into); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+}
+
+// serveLimited builds an API whose only key is limited to the named queues.
+func serveLimited(t *testing.T, queues ...string) (http.Handler, store.Store) {
+	t.Helper()
+
+	backing := memory.New(store.Options{
+		Policy: jobs.Policy{MaxRetries: 2, Base: time.Second, Max: time.Minute},
+		Now:    func() time.Time { return frozen },
+	})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	only, err := auth.NewKey("billing", auth.Write, key, queues...)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(only)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+
+	return api.New(api.Options{
+		Store:            backing,
+		Metrics:          metrics.New(),
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Keys:             set,
+		MaxBodyBytes:     1 << 16,
+		DashboardEnabled: true,
+		Now:              func() time.Time { return frozen },
+	}).Handler(), backing
+}
