@@ -28,11 +28,18 @@ Read this before you report, because two classes of finding are decisions
 rather than defects.
 
 **An API key is the whole of the authentication.**
-There are no accounts and no per queue permissions.
-A key has a name and one of two scopes.
+There are no accounts.
+A key has a name, a scope and the queues it may act on.
 A `read` key asks questions and changes nothing.
-A `write` key submits work, cancels any job and revives any job, in every
-queue.
+A `write` key submits work, cancels a job and revives one.
+A `worker` key leases jobs and reports on them, and does nothing else.
+
+A key may be limited to queues, and a key that names none holds every queue.
+A limited key does not see what is in another queue, does not count it, and is
+answered 404 for a job in one, the same as for a job that is not there.
+It is answered 403 when it names another queue to write to, because it already
+knows the name it asked for and there is nothing to hide.
+
 Run it inside a network you control, and treat a key the way you treat a
 database password.
 
@@ -78,6 +85,8 @@ Do not put a secret in a payload.
   another key's name.
 - A way for a worker to report on a job it was not given, or to be given a job
   that another worker holds.
+- A way for a key limited to queues to read, count, act on, or put work in a
+  queue it does not hold, or to lease or watch one.
 - A way to lease a job with a key that does not hold the `worker` scope, or to
   lease one with no key at all.
 - Anything that makes the dashboard run script from the content of a job. The
@@ -92,11 +101,11 @@ Do not put a secret in a payload.
 
 **These are out of scope:**
 
-- That there is no user model, no rate limit, and no per queue permission.
-  Those are named above. A key naming a service and not a person is a
-  decision, not a defect.
-- That a `write` key may cancel or revive a job in any queue. Scopes divide
-  reading from writing and do not divide the queues.
+- That there is no user model and no rate limit. Both are named above. A key
+  naming a service and not a person is a decision, not a defect.
+- That a key which names no queue reaches every queue. That is what every key
+  was before a key could be limited, and it is what a deployment gets when it
+  does not divide anything. Limiting a key is the deployment's to do.
 - That the gRPC port carries a bearer token over a connection you have not
   put TLS in front of. Named above.
 - A denial of service that needs a `write` key. Somebody holding one can fill
