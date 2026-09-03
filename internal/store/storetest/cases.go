@@ -829,6 +829,59 @@ var cases = []testCase{
 		}
 	}},
 
+	// A schedule that crossed the day the clock goes back fires once.
+	//
+	// The rule about which moment a reading names lives in internal/jobs and
+	// is table tested there. What this asks is whether the mark survives the
+	// round trip, because that is the part the two stores could differ on: a
+	// timestamp goes into PostgreSQL with a zone and comes back in another
+	// one, and the memory store keeps the Go value it was given.
+	//
+	// 25 October 2026 in Europe/Berlin: 03:00 CEST becomes 02:00 CET, so a
+	// clock reads 02:00 twice, an hour apart. A daily schedule at 02:00 has
+	// one window that day and not two.
+	{"a schedule marked at a reading that happens twice does not fire again", func(t *testing.T, s store.Store, clock *Clock) {
+		made, err := s.CreateSchedule(ctx(), store.NewSchedule{
+			Name: "nightly", Cron: "0 2 * * *", Timezone: "Europe/Berlin",
+			CatchUp: jobs.CatchUpAll, Type: "report", Queue: "reports",
+		})
+		if err != nil {
+			t.Fatalf("CreateSchedule: %v", err)
+		}
+
+		// The first of the two readings, which is the one a schedule means.
+		first := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+		if err := s.MarkScheduleFired(ctx(), made.ID, first); err != nil {
+			t.Fatalf("MarkScheduleFired: %v", err)
+		}
+
+		read, err := s.Schedule(ctx(), "nightly")
+		if err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		if read.LastFiredAt == nil {
+			t.Fatal("the schedule came back with no last firing")
+		}
+		if !read.LastFiredAt.Equal(first) {
+			t.Errorf("the mark came back as %s, want %s", read.LastFiredAt.UTC(), first)
+		}
+
+		// Noon on the same day, which is after both readings.
+		windows, mark, dropped, err := read.Due(time.Date(2026, 10, 25, 11, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatalf("Due: %v", err)
+		}
+		if dropped != 0 {
+			t.Errorf("%d windows were dropped, and the policy is to catch every one up", dropped)
+		}
+		if len(windows) != 0 {
+			t.Errorf("the schedule fired again for %s, and 02:00 happened once", windows)
+		}
+		if !mark.Equal(first) {
+			t.Errorf("the mark moved to %s with nothing produced", mark.UTC())
+		}
+	}},
+
 	// A name that is taken is refused rather than replacing what is there.
 	//
 	// A schedule is something somebody refers to by name in a change request,
