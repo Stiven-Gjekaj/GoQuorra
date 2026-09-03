@@ -395,3 +395,78 @@ func TestANegativeRetentionIsRefused(t *testing.T) {
 		t.Fatal("a negative retention was accepted")
 	}
 }
+
+// A key names the queues it may act on, after the scope.
+//
+// The queues go in the scope field and not in a fourth one, so that the
+// secret stays the whole of the rest of the entry. A secret holding a colon
+// is written correctly today, and a fourth field would take that away.
+func TestAKeyReadsTheQueuesItMayActOn(t *testing.T) {
+	env := minimalServer()
+	delete(env, "QUORRA_API_KEY")
+	env["QUORRA_API_KEYS"] = "billing:write@invoices+receipts:a-secret-long-enough-here," +
+		"ops:write:another-secret-long-enough"
+
+	cfg, err := LoadServer(FromMap(env))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	billing, found := cfg.Keys.Lookup("a-secret-long-enough-here")
+	if !found {
+		t.Fatal("the billing key was not read")
+	}
+	if !billing.MayUse("invoices") || !billing.MayUse("receipts") {
+		t.Errorf("the billing key holds %v", billing.Queues())
+	}
+	if billing.MayUse("payroll") {
+		t.Error("the billing key used a queue it does not name")
+	}
+
+	ops, found := cfg.Keys.Lookup("another-secret-long-enough")
+	if !found {
+		t.Fatal("the ops key was not read")
+	}
+	if !ops.MayUse("payroll") {
+		t.Error("a key naming no queue was limited to something")
+	}
+}
+
+// A secret holding a colon is still the whole of the rest of the entry.
+//
+// This is the reason the queues went in the scope field. A test says so,
+// because the next person to want a fourth field will not read the comment.
+func TestASecretMayStillHoldAColon(t *testing.T) {
+	env := minimalServer()
+	delete(env, "QUORRA_API_KEY")
+	env["QUORRA_API_KEYS"] = "ops:write@mail:a-secret:with-a-colon-in-it"
+
+	cfg, err := LoadServer(FromMap(env))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	key, found := cfg.Keys.Lookup("a-secret:with-a-colon-in-it")
+	if !found {
+		t.Fatal("a secret holding a colon was cut short")
+	}
+	if !key.MayUse("mail") || key.MayUse("other") {
+		t.Errorf("the key holds %v", key.Queues())
+	}
+}
+
+// A queue a key cannot be limited to stops the server rather than being
+// dropped in silence.
+//
+// An at sign and not a comma, because a comma separates the keys and would
+// make this two entries, one of which is malformed. The test would then pass
+// against a build that accepted every queue name.
+func TestAQueueAKeyCannotHoldStopsTheServer(t *testing.T) {
+	env := minimalServer()
+	delete(env, "QUORRA_API_KEY")
+	env["QUORRA_API_KEYS"] = "billing:write@in@voices:a-secret-long-enough-here"
+
+	if _, err := LoadServer(FromMap(env)); err == nil {
+		t.Fatal("a key naming a queue it cannot hold was accepted")
+	}
+}

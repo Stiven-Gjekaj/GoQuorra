@@ -329,6 +329,16 @@ func (l *loader) required(key string) string {
 // operator's key must not be able to lease the queue empty, and a worker must
 // not be able to cancel anything.
 //
+// A key may be limited to queues, written after the scope with an at sign and
+// joined by a plus, the same way the scopes are:
+//
+//	QUORRA_API_KEYS=billing:write@invoices+receipts:<secret>,ops:write:<secret>
+//
+// Naming no queue means every queue, which is what every key was before this
+// existed. The queues come in the scope field and not in a fourth one so that
+// the secret stays the whole of the rest of the entry: a secret holding a
+// colon is written correctly today, and a fourth field would take that away.
+//
 // A secret holding a comma or a colon cannot be written this way, and the
 // error says so rather than silently taking the part before the separator.
 func (l *loader) keys(many, one string) *auth.Set {
@@ -365,12 +375,17 @@ func (l *loader) keys(many, one string) *auth.Set {
 				"config: %s holds %q, and each key is name:scope:secret", many, entry))
 			continue
 		}
-		scope, err := auth.ParseScope(parts[1])
+		wanted, queues := parts[1], []string(nil)
+		if at := strings.IndexByte(wanted, '@'); at >= 0 {
+			wanted, queues = wanted[:at], strings.Split(wanted[at+1:], "+")
+		}
+
+		scope, err := auth.ParseScope(wanted)
 		if err != nil {
 			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", many, err))
 			continue
 		}
-		key, err := auth.NewKey(parts[0], scope, parts[2])
+		key, err := auth.NewKey(parts[0], scope, parts[2], queues...)
 		if err != nil {
 			l.problems = append(l.problems, fmt.Errorf("config: %s: %w", many, err))
 			continue
