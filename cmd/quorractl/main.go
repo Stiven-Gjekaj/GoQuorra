@@ -790,7 +790,22 @@ func whoami(args []string, out io.Writer) error {
 
 	name, _ := answer["name"].(string)
 	scope, _ := answer["scope"].(string)
-	fmt.Fprintf(out, "%s (may %s)\n", name, scope)
+
+	// The queues the key holds, when it holds some. An empty list means
+	// every queue, and printing "on every queue" for the ordinary case would
+	// put a line on every answer to say that nothing is limited.
+	where := ""
+	if held, ok := answer["queues"].([]any); ok && len(held) > 0 {
+		names := make([]string, 0, len(held))
+		for _, one := range held {
+			if name, ok := one.(string); ok {
+				names = append(names, name)
+			}
+		}
+		where = ", on " + strings.Join(names, ", ")
+	}
+
+	fmt.Fprintf(out, "%s (may %s%s)\n", name, scope, where)
 	return nil
 }
 

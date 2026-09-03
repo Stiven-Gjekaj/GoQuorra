@@ -1866,3 +1866,34 @@ func TestAScheduleCannotProduceIntoAQueueTheKeyDoesNotHold(t *testing.T) {
 		t.Errorf("a schedule into another queue answered %d, want 403", refused.Code)
 	}
 }
+
+// whoami says which queues the key holds.
+//
+// A key that cannot reach a queue and does not know it reads an empty
+// listing as an empty queue, which sends somebody looking for a job that is
+// there and visible to everybody else.
+func TestWhoamiSaysWhichQueuesTheKeyHolds(t *testing.T) {
+	limited, _ := serveLimited(t, "invoices", "receipts")
+
+	var who struct {
+		Name   string   `json:"name"`
+		Scope  string   `json:"scope"`
+		Queues []string `json:"queues"`
+	}
+	decode(t, withKey(t, limited, "GET", "/v1/whoami", ""), &who)
+
+	if len(who.Queues) != 2 || who.Queues[0] != "invoices" || who.Queues[1] != "receipts" {
+		t.Errorf("whoami says the key holds %v", who.Queues)
+	}
+
+	// A key that holds every queue says so with an empty list, and not by
+	// leaving the field out.
+	every, _ := serve(t)
+	decode(t, withKey(t, every, "GET", "/v1/whoami", ""), &who)
+	if who.Queues == nil {
+		t.Error("a key holding every queue answered with no queues field at all")
+	}
+	if len(who.Queues) != 0 {
+		t.Errorf("a key holding every queue named %v", who.Queues)
+	}
+}

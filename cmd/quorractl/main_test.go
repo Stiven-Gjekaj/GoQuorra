@@ -1052,3 +1052,60 @@ func TestTheUsageNamesEveryVerbThatWorks(t *testing.T) {
 		}
 	}
 }
+
+// whoami names the queues a limited key holds, and stays quiet for one that
+// holds every queue.
+//
+// A key that cannot reach a queue and does not know it reads an empty listing
+// as an empty queue. Printing "on every queue" for the ordinary case would
+// put a line on every answer to say that nothing is limited.
+func TestWhoamiNamesTheQueuesALimitedKeyHolds(t *testing.T) {
+	limited := serveForQueues(t, "invoices", "receipts")
+
+	printed, err := cli(t, limited, "whoami")
+	if err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if !strings.Contains(printed, "invoices") || !strings.Contains(printed, "receipts") {
+		t.Errorf("whoami printed %q, want the queues the key holds", printed)
+	}
+
+	everywhere := serve(t)
+	printed, err = cli(t, everywhere, "whoami")
+	if err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if strings.Contains(printed, ", on ") {
+		t.Errorf("whoami printed %q for a key that holds every queue", printed)
+	}
+}
+
+// serveForQueues builds a server whose only key is limited to the named
+// queues, and gives back the flags that reach it.
+func serveForQueues(t *testing.T, queues ...string) []string {
+	t.Helper()
+
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	only, err := auth.NewKey("billing", auth.Write, key, queues...)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(only)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+
+	handler := api.New(api.Options{
+		Store:   backing,
+		Metrics: metrics.New(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Keys:    set,
+	}).Handler()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	return []string{"-server", server.URL, "-key", key}
+}

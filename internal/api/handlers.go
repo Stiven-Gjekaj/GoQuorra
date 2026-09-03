@@ -249,9 +249,19 @@ const bulkSubmitMost = 1000
 // be able to ask what it is.
 func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
 	caller := callerOf(r.Context())
+
+	// An empty list and not a missing field, because the two mean different
+	// things and a client that walks the answer should not have to test for
+	// null. Empty means every queue.
+	queues := caller.Queues()
+	if queues == nil {
+		queues = []string{}
+	}
+
 	a.send(w, http.StatusOK, map[string]any{
-		"name":  caller.Name,
-		"scope": caller.Scope.String(),
+		"name":   caller.Name,
+		"scope":  caller.Scope.String(),
+		"queues": queues,
 	})
 }
 
