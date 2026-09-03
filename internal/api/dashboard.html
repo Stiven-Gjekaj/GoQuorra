@@ -120,6 +120,12 @@ button.open {
   <h3>Queues</h3>
   <div class="cards" id="queues"></div>
 
+  <!-- Is anything out there. A queue that is filling up because no worker
+       has asked for work looks exactly like a queue that is filling up
+       because the work is slow, and the difference is this list. -->
+  <h3>Workers</h3>
+  <div class="cards" id="workers"></div>
+
   <h3>Jobs</h3>
   <form id="findform">
     <label for="find" class="tag">Find</label>
@@ -288,6 +294,74 @@ async function showWho() {
   }
   badge.textContent = text + ")";
   badge.hidden = false;
+}
+
+// renderWorkers shows the workers the queue has heard from.
+//
+// Grouped by worker and not by queue. One worker asking for two queues is one
+// process, and a reader counting rows to find out how many are running would
+// count it twice.
+function renderWorkers(rows) {
+  const holder = document.getElementById("workers");
+  holder.replaceChildren();
+
+  if (rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "card note";
+    empty.textContent = "No worker has asked for work.";
+    holder.appendChild(empty);
+    return;
+  }
+
+  const byWorker = new Map();
+  for (const row of rows) {
+    if (!byWorker.has(row.id)) byWorker.set(row.id, []);
+    byWorker.get(row.id).push(row);
+  }
+
+  for (const [worker, seen] of [...byWorker].sort()) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const title = document.createElement("h2");
+    title.textContent = worker;
+    card.appendChild(title);
+
+    // The longest silence across the queues it asked about. A worker that
+    // asked one queue a second ago is working, whatever the other says.
+    const idle = Math.min(...seen.map((one) => one.idle_seconds));
+
+    const when = document.createElement("div");
+    when.className = "row";
+    const label = document.createElement("span");
+    label.textContent = "last asked";
+    const value = document.createElement("span");
+    value.textContent = idleText(idle);
+    // A worker nobody has heard from is the thing this list is for, so it
+    // is coloured like a job that stopped rather than left to be read.
+    if (idle >= 60) value.className = "dead";
+    when.append(label, value);
+    card.appendChild(when);
+
+    const where = document.createElement("div");
+    where.className = "row";
+    const queuesLabel = document.createElement("span");
+    queuesLabel.textContent = "queues";
+    const queuesValue = document.createElement("span");
+    queuesValue.textContent = seen.map((one) => one.queue).sort().join(", ");
+    where.append(queuesLabel, queuesValue);
+    card.appendChild(where);
+
+    holder.appendChild(card);
+  }
+}
+
+// idleText says how long ago in words a person uses.
+function idleText(seconds) {
+  if (seconds < 2) return "just now";
+  if (seconds < 90) return Math.round(seconds) + "s ago";
+  if (seconds < 5400) return Math.round(seconds / 60) + "m ago";
+  return Math.round(seconds / 3600) + "h ago";
 }
 
 function renderQueues(rows) {
@@ -685,6 +759,9 @@ async function load() {
 
     const queues = await get("/v1/queues");
     renderQueues(queues.queues || []);
+
+    const seen = await get("/v1/workers");
+    renderWorkers(seen.workers || []);
 
     // Every page the reader has asked for, one after another, following the
     // cursor. Asking for a bigger limit instead would work until somebody

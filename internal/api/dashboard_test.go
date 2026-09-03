@@ -632,3 +632,35 @@ func TestTheDashboardNamesTheKeyInUse(t *testing.T) {
 		t.Error("the dashboard asks who it is on every refresh")
 	}
 }
+
+// The page shows the workers the queue has heard from.
+//
+// A queue filling up because no worker has asked for work looks exactly like
+// a queue filling up because the work is slow. GET /v1/workers answers that,
+// and the page could not ask it.
+func TestTheDashboardShowsTheWorkers(t *testing.T) {
+	source, err := os.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("cannot read the dashboard: %v", err)
+	}
+	page := string(source)
+
+	if !strings.Contains(page, "/v1/workers") {
+		t.Error("the dashboard never asks which workers are out there")
+	}
+	if !strings.Contains(page, `id="workers"`) {
+		t.Error("the dashboard has nowhere to show the workers")
+	}
+
+	// Grouped by worker. One worker asking about two queues is one process,
+	// and a reader counting rows would otherwise count it twice.
+	if !strings.Contains(page, "byWorker") {
+		t.Error("the workers are not grouped by worker")
+	}
+
+	// A worker nobody has heard from is the thing the list is for, so it is
+	// marked rather than left to be read.
+	if !strings.Contains(page, "idle_seconds") {
+		t.Error("the page does not say how long ago a worker asked")
+	}
+}
