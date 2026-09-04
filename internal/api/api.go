@@ -225,8 +225,12 @@ func (a *API) observe(next http.Handler) http.Handler {
 				// other request in flight with it.
 				a.logOf(r.Context()).Error("a request panicked",
 					"method", r.Method, "path", r.URL.Path, "panic", panicked)
+				// Through the same helper every other answer uses. This
+				// wrote a JSON body with http.Error, which labels it
+				// text/plain, so the one answer a client is least able to
+				// guess at was the one it could not decode.
 				if rec.status == 0 {
-					http.Error(rec, `{"error":"internal error"}`, http.StatusInternalServerError)
+					a.fail(rec, http.StatusInternalServerError, "internal error")
 				}
 			}
 
