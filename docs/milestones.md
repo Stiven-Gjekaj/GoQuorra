@@ -256,6 +256,55 @@ run twice.
 
 ## Recorded so nobody investigates them twice
 
+### A permission check on one route of a resource is not a permission
+
+Per queue keys were built with the check on the route that creates a schedule,
+and the other five routes on that resource did not get one for eleven commits.
+
+The gap was found by driving a limited key against a live server and asking it
+for something it should not have. It was not found by reading the code, and it
+was not found by the tests, which covered the route the check was on.
+
+The lesson is about where a permission belongs, not about that one resource. A
+rule written per route is a rule somebody has to remember on every route added
+afterwards, and remembering is not a mechanism. Two things follow from this
+one:
+
+- **A resource, not a route, is the unit.** When a rule is about who may see a
+  thing, write the rule for every way of reaching the thing at once, and count
+  the ways.
+- **Read before acting.** A route that changes something it did not first read
+  cannot check who may reach it. Switching a schedule off and removing one both
+  read it now, the same as cancelling and reviving a job already did.
+
+**What would change the answer.** Nothing. There is no clever version of this.
+The routes are a list in `internal/api`, and it is short enough to read.
+
+### An error read as a string is a coupling nobody can see
+
+The API decided whether a refusal was the caller's mistake by testing whether
+the message began with `store: `. Every sentinel in that package began with
+the same seven characters, so a job that is not there and a stale lease both
+read as something the caller had got wrong.
+
+This is the second time. `ErrNotJSON` exists because the same layer used to
+search the text for the words "not JSON", and its comment says so. The fix
+then was a sentinel for that one case, and the pattern went on living beside
+it.
+
+Two details are worth keeping:
+
+- **The guard in front of the test did nothing.** It was an `errors.As`
+  against `interface{ Error() string }`, which every error in Go satisfies. It
+  reads like a type check and answers yes to a connection failure.
+- **The contract suite had the same shape.** The rule about the integer
+  columns asserted the prefix, so it would have gone on passing while the
+  thing it was there to check quietly stopped working.
+
+**What would change the answer.** Nothing. A message is for a person and a
+sentinel is for a caller, and the moment one is used as the other, rewording a
+sentence moves a status code with nothing anywhere failing.
+
 ### The list of migrations has a limit, and here it is
 
 Every file in `migrations/` is applied in name order, and each is written to
