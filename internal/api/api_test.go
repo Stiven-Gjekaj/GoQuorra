@@ -1944,6 +1944,42 @@ func TestTheScheduleListingHoldsOnlyTheKeysQueues(t *testing.T) {
 	}
 }
 
+// A key limited to its queues cannot switch another queue's schedule.
+//
+// Switching one off is the quietest way to stop somebody else's work.
+// Nothing fails and nothing is logged as a failure: the jobs simply stop
+// arriving, and the first person to notice is whoever was waiting for them.
+func TestAKeyLimitedToItsQueuesCannotSwitchAnotherQueuesSchedule(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	if _, err := backing.CreateSchedule(t.Context(), store.NewSchedule{
+		Name:    "payroll-run",
+		Cron:    "0 3 * * *",
+		CatchUp: jobs.CatchUpSkip,
+		Type:    "pay",
+		Queue:   "payroll",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	for _, verb := range []string{"disable", "enable"} {
+		got := withKey(t, handler, "POST", "/v1/schedules/payroll-run/"+verb, "")
+		if got.Code != http.StatusNotFound {
+			t.Errorf("%s on another queue's schedule answered %d, want 404", verb, got.Code)
+		}
+	}
+
+	// The point of the rule. A refusal that still switched the schedule
+	// would answer 404 and stop the work anyway.
+	after, err := backing.Schedule(t.Context(), "payroll-run")
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if !after.Enabled {
+		t.Error("the schedule in the other queue is switched off")
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty

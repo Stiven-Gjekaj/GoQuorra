@@ -153,7 +153,21 @@ func (a *API) enableSchedule(w http.ResponseWriter, r *http.Request)  { a.switch
 func (a *API) disableSchedule(w http.ResponseWriter, r *http.Request) { a.switchSchedule(w, r, false) }
 
 func (a *API) switchSchedule(w http.ResponseWriter, r *http.Request, on bool) {
-	one, err := a.opts.Store.SetScheduleEnabled(r.Context(), r.PathValue("name"), on)
+	name := r.PathValue("name")
+
+	// Read before acting, so that a key which may not see the schedule
+	// cannot switch it either. Switching one off is the quietest way to stop
+	// another team's work: nothing fails, and the jobs simply stop arriving.
+	before, err := a.opts.Store.Schedule(r.Context(), name)
+	if err != nil {
+		a.failWith(r.Context(), w, err, "cannot switch the schedule")
+		return
+	}
+	if !a.heldSchedule(w, r, before.Queue) {
+		return
+	}
+
+	one, err := a.opts.Store.SetScheduleEnabled(r.Context(), name, on)
 	if err != nil {
 		a.failWith(r.Context(), w, err, "cannot switch the schedule")
 		return
