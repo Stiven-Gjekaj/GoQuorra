@@ -133,6 +133,19 @@ func (a *API) getSchedule(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+
+	// Read before acting, the same as switching one. This is the action
+	// that cannot be undone: the rule, the zone and the payload go with the
+	// row, and nothing anywhere holds a copy.
+	before, err := a.opts.Store.Schedule(r.Context(), name)
+	if err != nil {
+		a.failWith(r.Context(), w, err, "cannot remove the schedule")
+		return
+	}
+	if !a.heldSchedule(w, r, before.Queue) {
+		return
+	}
+
 	if err := a.opts.Store.DeleteSchedule(r.Context(), name); err != nil {
 		a.failWith(r.Context(), w, err, "cannot remove the schedule")
 		return

@@ -1980,6 +1980,33 @@ func TestAKeyLimitedToItsQueuesCannotSwitchAnotherQueuesSchedule(t *testing.T) {
 	}
 }
 
+// A key limited to its queues cannot remove another queue's schedule.
+//
+// This is the action that cannot be undone. The rule, the zone and the
+// payload go with the row, and nothing anywhere holds a copy.
+func TestAKeyLimitedToItsQueuesCannotRemoveAnotherQueuesSchedule(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	if _, err := backing.CreateSchedule(t.Context(), store.NewSchedule{
+		Name:    "payroll-run",
+		Cron:    "0 3 * * *",
+		CatchUp: jobs.CatchUpSkip,
+		Type:    "pay",
+		Queue:   "payroll",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	got := withKey(t, handler, "DELETE", "/v1/schedules/payroll-run", "")
+	if got.Code != http.StatusNotFound {
+		t.Errorf("removing another queue's schedule answered %d, want 404", got.Code)
+	}
+
+	if _, err := backing.Schedule(t.Context(), "payroll-run"); err != nil {
+		t.Errorf("the schedule in the other queue is gone: %v", err)
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
