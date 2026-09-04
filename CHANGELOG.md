@@ -13,6 +13,71 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### An error says whose mistake it is
+
+**Fixed**
+
+- **The API decided whether a refusal was the caller's by reading the first
+  seven characters of the message.** Every sentinel in the store package
+  begins with those same seven characters, so a job that is not there, a
+  stale lease and a job in the wrong state all read as something the caller
+  had got wrong. One error used only inside the PostgreSQL store began with
+  them too.
+
+  The check in front of it did nothing. Its target was an interface holding
+  only `Error`, which every error in Go satisfies, so it said yes to a
+  connection failure as readily as to a refused job.
+
+  It also meant that rewording any sentence in that package moved a status
+  code, with nothing anywhere failing. The package had already learned this
+  once: `ErrNotJSON` exists because the same layer used to search the text
+  for the words "not JSON", and its comment says so.
+
+  Twenty one refusals now carry one of two sentinels, and the API tests those
+  instead. Every one of them was checked by putting the fault back.
+
+- **A schedule name that is taken answers 409 rather than 400.** It was
+  decided by searching the message for the words "already exists". 400 tells
+  a caller never to try again, and this request would be accepted the moment
+  somebody removes the schedule holding the name. It has its own sentinel,
+  because a request that is not valid and a name that is in use are not the
+  same answer.
+
+- **A schedule that is not there said "no job carries that identifier".** The
+  sentinel for a missing row is shared by both resources and one helper
+  answered for both, so a person who asked for a schedule by name went
+  looking for a job. The wording matches what a key that may not see the
+  schedule is told, so the two cannot be told apart.
+
+- **A refusal a caller reads no longer names a Go package.** Every message
+  from the store package began with `store: `, and the cron and catch up
+  messages began with `jobs: `. The HTTP layer handed them to the client
+  unchanged. The rest of the domain package keeps its prefix: those messages
+  are read at startup and by a worker, where the package name says which part
+  of the configuration is wrong.
+
+  Driven against a live server and PostgreSQL 16, before and after:
+
+  | Request | Before | Now |
+  | --- | --- | --- |
+  | A job with no type | 400 `store: a job needs a type` | 400 `a job needs a type` |
+  | A cron rule of three fields | 400 `store: jobs: "not a cron" has 3 fields...` | 400 `"not a cron" has 3 fields...` |
+  | A catch up policy nobody knows | 400 `store: jobs: "maybe" is not a catch up policy...` | 400 `"maybe" is not a catch up policy...` |
+  | A schedule name in use | 400 `store: a schedule named "q3" already exists` | 409 `a schedule named "q3" already exists` |
+  | A schedule that is not there | 404 `no job carries that identifier` | 404 `no schedule carries that name` |
+  | A job that is not there | 404 `no job carries that identifier` | unchanged |
+
+**Added**
+
+- **Four contract rules about how a store refuses.** The suite checked that
+  both stores refused the same things and not that they refused them the same
+  way, so a store answering "connection refused" passed. One existing rule
+  tested the seven character prefix and moves to the sentinel with the rest.
+
+  The rule about the integer columns only ever covered three numbers.
+  Reverting the very first check in the validator left it passing, so a
+  second rule covers the other seven refusals.
+
 ### A schedule answers the same per queue rule as a job
 
 **Fixed**
