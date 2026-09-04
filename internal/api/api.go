@@ -71,51 +71,92 @@ func New(opts Options) *API {
 	return &API{opts: opts, log: opts.Log}
 }
 
+// Route is one entry in the router.
+//
+// The handler is unexported, so a reader outside this package sees the
+// pattern and the permission and not the code behind them.
+type Route struct {
+	// Pattern is the ServeMux pattern, such as "GET /v1/jobs/{id}".
+	Pattern string
+
+	// Scope is the permission a key needs. It is zero for a route that needs
+	// no key at all.
+	Scope auth.Scope
+
+	handler http.HandlerFunc
+}
+
+// NeedsKey says whether a caller has to present a key for this route.
+func (r Route) NeedsKey() bool { return r.Scope != 0 }
+
+// Routes lists every route this API serves.
+//
+// A list rather than a run of Handle calls, so that the whole policy is one
+// table a reader can check in one pass, and so that a test can ask the server
+// what it serves rather than being told by whoever wrote the test.
+//
+// The scope is named here and not inside the handler. A handler that forgot
+// to check would be a route anybody could call, and reading this list is how
+// somebody notices.
+func (a *API) Routes() []Route {
+	routes := []Route{
+		// Public. A health check that needed a key would have to carry one in
+		// every load balancer and every container definition.
+		{Pattern: "GET /healthz", handler: a.alive},
+		{Pattern: "GET /readyz", handler: a.ready},
+	}
+
+	if a.opts.DashboardEnabled {
+		routes = append(routes,
+			Route{Pattern: "GET /{$}", handler: a.dashboard},
+			Route{Pattern: "GET /dashboard", handler: a.dashboard},
+
+			// Only with the dashboard, because the dashboard is the only
+			// thing that asks for it. A deployment that turns the page off
+			// serves nothing it does not use.
+			Route{Pattern: "GET /logo.svg", handler: a.logo},
+		)
+	}
+
+	return append(routes,
+		Route{Pattern: "POST /v1/jobs", Scope: auth.Write, handler: a.createJob},
+		Route{Pattern: "POST /v1/jobs/bulk", Scope: auth.Write, handler: a.createMany},
+		Route{Pattern: "GET /v1/jobs", Scope: auth.Read, handler: a.listJobs},
+		Route{Pattern: "GET /v1/jobs/{id}", Scope: auth.Read, handler: a.getJob},
+		Route{Pattern: "GET /v1/jobs/{id}/attempts", Scope: auth.Read, handler: a.jobAttempts},
+		Route{Pattern: "POST /v1/jobs/cancel", Scope: auth.Write, handler: a.cancelMatching},
+		Route{Pattern: "POST /v1/jobs/revive", Scope: auth.Write, handler: a.reviveMatching},
+		Route{Pattern: "POST /v1/jobs/{id}/cancel", Scope: auth.Write, handler: a.cancelJob},
+		Route{Pattern: "POST /v1/jobs/{id}/revive", Scope: auth.Write, handler: a.reviveJob},
+		Route{Pattern: "GET /v1/queues", Scope: auth.Read, handler: a.queueStats},
+		Route{Pattern: "GET /v1/workers", Scope: auth.Read, handler: a.workers},
+
+		Route{Pattern: "POST /v1/schedules", Scope: auth.Change, handler: a.createSchedule},
+		Route{Pattern: "GET /v1/schedules", Scope: auth.Read, handler: a.listSchedules},
+		Route{Pattern: "GET /v1/schedules/{name}", Scope: auth.Read, handler: a.getSchedule},
+		Route{Pattern: "DELETE /v1/schedules/{name}", Scope: auth.Change, handler: a.deleteSchedule},
+		Route{Pattern: "POST /v1/schedules/{name}/enable", Scope: auth.Change, handler: a.enableSchedule},
+		Route{Pattern: "POST /v1/schedules/{name}/disable", Scope: auth.Change, handler: a.disableSchedule},
+		Route{Pattern: "GET /v1/whoami", Scope: auth.Read, handler: a.whoami},
+	)
+}
+
 // Handler builds the router.
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Public. A health check that needed a key would have to carry one in
-	// every load balancer and every container definition.
-	mux.HandleFunc("GET /healthz", a.alive)
-	mux.HandleFunc("GET /readyz", a.ready)
-	mux.Handle("GET /metrics", a.opts.Metrics.Handler())
-
-	if a.opts.DashboardEnabled {
-		mux.HandleFunc("GET /{$}", a.dashboard)
-		mux.HandleFunc("GET /dashboard", a.dashboard)
-
-		// Only with the dashboard, because the dashboard is the only thing
-		// that asks for it. A deployment that turns the page off serves
-		// nothing it does not use.
-		mux.HandleFunc("GET /logo.svg", a.logo)
+	for _, route := range a.Routes() {
+		if !route.NeedsKey() {
+			mux.HandleFunc(route.Pattern, route.handler)
+			continue
+		}
+		mux.Handle(route.Pattern, a.guard(route.Scope, route.handler))
 	}
 
-	// Guarded, and each route says the scope it needs.
-	//
-	// The scope is named at the route and not inside the handler, so the
-	// whole policy is one column of this list. A handler that forgot to check
-	// would be a route that anybody could call, and reading the list is how
-	// somebody notices.
-	mux.Handle("POST /v1/jobs", a.guard(auth.Write, http.HandlerFunc(a.createJob)))
-	mux.Handle("POST /v1/jobs/bulk", a.guard(auth.Write, http.HandlerFunc(a.createMany)))
-	mux.Handle("GET /v1/jobs", a.guard(auth.Read, http.HandlerFunc(a.listJobs)))
-	mux.Handle("GET /v1/jobs/{id}", a.guard(auth.Read, http.HandlerFunc(a.getJob)))
-	mux.Handle("GET /v1/jobs/{id}/attempts", a.guard(auth.Read, http.HandlerFunc(a.jobAttempts)))
-	mux.Handle("POST /v1/jobs/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelMatching)))
-	mux.Handle("POST /v1/jobs/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveMatching)))
-	mux.Handle("POST /v1/jobs/{id}/cancel", a.guard(auth.Write, http.HandlerFunc(a.cancelJob)))
-	mux.Handle("POST /v1/jobs/{id}/revive", a.guard(auth.Write, http.HandlerFunc(a.reviveJob)))
-	mux.Handle("GET /v1/queues", a.guard(auth.Read, http.HandlerFunc(a.queueStats)))
-	mux.Handle("GET /v1/workers", a.guard(auth.Read, http.HandlerFunc(a.workers)))
-
-	mux.Handle("POST /v1/schedules", a.guard(auth.Change, http.HandlerFunc(a.createSchedule)))
-	mux.Handle("GET /v1/schedules", a.guard(auth.Read, http.HandlerFunc(a.listSchedules)))
-	mux.Handle("GET /v1/schedules/{name}", a.guard(auth.Read, http.HandlerFunc(a.getSchedule)))
-	mux.Handle("DELETE /v1/schedules/{name}", a.guard(auth.Change, http.HandlerFunc(a.deleteSchedule)))
-	mux.Handle("POST /v1/schedules/{name}/enable", a.guard(auth.Change, http.HandlerFunc(a.enableSchedule)))
-	mux.Handle("POST /v1/schedules/{name}/disable", a.guard(auth.Change, http.HandlerFunc(a.disableSchedule)))
-	mux.Handle("GET /v1/whoami", a.guard(auth.Read, http.HandlerFunc(a.whoami)))
+	// Not in the list. It is served by the metrics package rather than by a
+	// handler of this one, so it has no function to put in a Route, and the
+	// list is about the routes this package answers.
+	mux.Handle("GET /metrics", a.opts.Metrics.Handler())
 
 	return a.observe(a.routingErrors(mux))
 }
