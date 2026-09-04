@@ -1344,9 +1344,9 @@ make verify
 That runs the formatting check, `go vet`, the build, the tests under the race
 detector, the generated code check, and the documentation links.
 
-**529 cases pass. 415 of them need nothing installed.**
+**591 cases pass. 473 of them need nothing installed.**
 
-The other 114 need a database. One hundred and eight are the store contract
+The other 118 need a database. One hundred and twelve are the store contract
 suite, five are `worker/pgtx`, which is one transaction covering a handler's
 writes and the record of the job and so has nothing to test without a real
 one, and the last is the test that holds the contract suite:

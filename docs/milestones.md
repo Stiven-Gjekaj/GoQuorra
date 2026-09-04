@@ -24,8 +24,8 @@ Measured, on a real server against PostgreSQL 16:
 
 | Check | Result |
 | ----- | ------ |
-| Test cases | 529, of which 415 need nothing installed |
-| Store contract rules | 108, and both stores pass all of them |
+| Test cases | 591, of which 473 need nothing installed |
+| Store contract rules | 112, and both stores pass all of them |
 | A worker stopped with SIGKILL while holding a job | The lease was taken back ten seconds later, the row named the worker that died, and the counter moved from 0 to 1 |
 | A job with `max_retries: 2` whose handler always fails | Ran three times, then `dead`, with the last error on the row |
 | Eight goroutines leasing forty jobs at once | No job handed out twice, against PostgreSQL and against the in-memory store |
