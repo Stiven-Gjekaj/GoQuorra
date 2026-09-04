@@ -57,7 +57,7 @@ func ParseCron(text string) (Cron, error) {
 	parts := strings.Fields(strings.TrimSpace(text))
 	if len(parts) != 5 {
 		return Cron{}, fmt.Errorf(
-			"jobs: %q has %d fields, and a schedule has five: minute hour day-of-month month day-of-week",
+			"%q has %d fields, and a schedule has five: minute hour day-of-month month day-of-week",
 			text, len(parts))
 	}
 
@@ -76,7 +76,7 @@ func ParseCron(text string) (Cron, error) {
 	for i, column := range columns {
 		one, err := parseField(parts[i], column.from, column.to)
 		if err != nil {
-			return Cron{}, fmt.Errorf("jobs: the %s field of %q: %w", column.name, text, err)
+			return Cron{}, fmt.Errorf("the %s field of %q: %w", column.name, text, err)
 		}
 		built[i] = one
 	}

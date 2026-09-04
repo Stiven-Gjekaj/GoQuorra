@@ -68,7 +68,7 @@ func ParseCatchUp(text string) (CatchUp, error) {
 	case CatchUpNone:
 		return CatchUpNone, nil
 	default:
-		return "", fmt.Errorf("jobs: %q is not a catch up policy, and it must be skip, all or none", text)
+		return "", fmt.Errorf("%q is not a catch up policy, and it must be skip, all or none", text)
 	}
 }
 

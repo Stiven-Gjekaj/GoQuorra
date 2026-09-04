@@ -2075,6 +2075,39 @@ func TestAScheduleThatIsNotThereSaysSoAboutASchedule(t *testing.T) {
 	}
 }
 
+// No refusal a caller reads names a Go package.
+//
+// Every message in the store package began with "store: ", and the cron and
+// catch up messages began with "jobs: ". The HTTP layer handed all of them to
+// the client unchanged, so a person submitting a job read the names of two
+// packages they cannot see and did not ask about.
+func TestNoRefusalACallerReadsNamesAPackage(t *testing.T) {
+	handler, _ := serve(t)
+
+	for name, call := range map[string]struct{ method, path, body string }{
+		"a job with no type": {"POST", "/v1/jobs", `{"type":"","payload":{}}`},
+		"a priority past the column": {"POST", "/v1/jobs",
+			`{"type":"work","payload":{},"priority":3000000000}`},
+		"a rule that is not a rule": {"POST", "/v1/schedules",
+			`{"name":"a","cron":"not a cron","catch_up":"skip","type":"work"}`},
+		"a zone that is not a zone": {"POST", "/v1/schedules",
+			`{"name":"b","cron":"0 3 * * *","catch_up":"skip","type":"work","timezone":"Mars/Olympus"}`},
+		"a catch up nobody knows": {"POST", "/v1/schedules",
+			`{"name":"c","cron":"0 3 * * *","catch_up":"maybe","type":"work"}`},
+	} {
+		got := withKey(t, handler, call.method, call.path, call.body)
+		if got.Code != http.StatusBadRequest {
+			t.Errorf("%s answered %d, want 400", name, got.Code)
+			continue
+		}
+		for _, prefix := range []string{"store:", "jobs:"} {
+			if strings.Contains(got.Body.String(), prefix) {
+				t.Errorf("%s says %s, which names the %s package", name, got.Body.String(), prefix)
+			}
+		}
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
