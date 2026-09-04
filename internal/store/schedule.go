@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -73,20 +72,20 @@ type NewSchedule struct {
 // PostgreSQL.
 func (n NewSchedule) Validate() error {
 	if strings.TrimSpace(n.Name) == "" {
-		return errors.New("store: a schedule needs a name")
+		return invalid("a schedule needs a name")
 	}
 	if len(n.Name) > 255 {
-		return fmt.Errorf("store: the name is %d characters, and the column holds 255", len(n.Name))
+		return invalid("the name is %d characters, and the column holds 255", len(n.Name))
 	}
 	if _, err := jobs.ParseCron(n.Cron); err != nil {
-		return fmt.Errorf("store: %w", err)
+		return invalid("%s", err)
 	}
 	if _, err := n.Location(); err != nil {
 		return err
 	}
 	if !n.CatchUp.Valid() {
-		return fmt.Errorf(
-			"store: %q is not a catch up policy, and it must be skip, all or none", n.CatchUp)
+		return invalid(
+			"%q is not a catch up policy, and it must be skip, all or none", n.CatchUp)
 	}
 
 	// The job a firing submits has to be one a caller could have submitted.
@@ -118,8 +117,8 @@ func (n NewSchedule) Location() (*time.Location, error) {
 
 	place, err := time.LoadLocation(name)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"store: cannot read the time zone %q: %w. A container built with no zone database has only UTC, "+
+		return nil, invalid(
+			"cannot read the time zone %q: %s. A container built with no zone database has only UTC, "+
 				"and importing time/tzdata puts one in the binary.", name, err)
 	}
 	return place, nil

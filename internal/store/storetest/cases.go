@@ -987,8 +987,17 @@ var cases = []testCase{
 		}
 
 		for name, change := range bad {
-			if _, err := s.CreateSchedule(ctx(), change(good)); err == nil {
+			_, err := s.CreateSchedule(ctx(), change(good))
+			if err == nil {
 				t.Errorf("%s was accepted", name)
+				continue
+			}
+			// Refused, and refused as the caller's mistake. Without this the
+			// rule passes against a store that answers "connection refused",
+			// and the layer above answers 500 to a cron rule somebody
+			// mistyped.
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s gave %q, which does not answer to ErrInvalid", name, err)
 			}
 		}
 
