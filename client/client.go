@@ -432,7 +432,19 @@ type Identity struct {
 }
 
 // CanWrite reports whether this key may change a job.
-func (i Identity) CanWrite() bool { return i.Scope == "write" }
+//
+// Any scope that carries write and not only the one that is exactly "write".
+// A key holding everything answers "all", and a key that also leases answers
+// "write+worker", and both may submit. Testing for the one word turned the
+// most privileged key there is into one this package said could not write.
+func (i Identity) CanWrite() bool {
+	for _, part := range strings.Split(i.Scope, "+") {
+		if part == "write" || part == "all" {
+			return true
+		}
+	}
+	return false
+}
 
 // Whoami says which key this client holds.
 //

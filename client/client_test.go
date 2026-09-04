@@ -476,6 +476,48 @@ func TestTheClientCanAskWhichKeyItHolds(t *testing.T) {
 	}
 }
 
+// A key that holds everything may write.
+//
+// The scope a key answers with is a name and not a flag. A key holding
+// everything answers "all", and one that also leases answers "write+worker".
+// Testing for the one word "write" made this package say that the most
+// privileged key there is could not submit a job, which is the answer a
+// producer reads at startup to decide whether to run at all.
+func TestAKeyThatHoldsEverythingMayWrite(t *testing.T) {
+	for scope, want := range map[string]bool{
+		"write":        true,
+		"all":          true,
+		"write+worker": true,
+		"read":         false,
+		"worker":       false,
+		"nothing":      false,
+	} {
+		if got := (client.Identity{Scope: scope}).CanWrite(); got != want {
+			t.Errorf("a %q key answers CanWrite %v, want %v", scope, got, want)
+		}
+	}
+}
+
+// And the same question, asked of a real server holding a real key.
+//
+// The table above is about the parsing. This is about the word the server
+// actually sends, which is the part that would change without this package
+// noticing.
+func TestAServerHoldingEveryScopeSaysTheKeyMayWrite(t *testing.T) {
+	c := connectAs(t, auth.Everything)
+
+	who, err := c.Whoami(t.Context())
+	if err != nil {
+		t.Fatalf("Whoami: %v", err)
+	}
+	if who.Scope != "all" {
+		t.Fatalf("the server calls every scope %q, and this test is written against \"all\"", who.Scope)
+	}
+	if !who.CanWrite() {
+		t.Error("a key holding every scope answers that it cannot write")
+	}
+}
+
 // The job a cancel returns names the key that cancelled it.
 //
 // A producer that cancels its own work reads this back to confirm that the
@@ -751,6 +793,37 @@ func TestSubmitNeedsAType(t *testing.T) {
 //
 // Named "test" and allowed to write, because these harnesses drive every
 // route. A test about scopes builds its own set rather than using this.
+// connectAs builds a server whose one key holds the scope named.
+func connectAs(t *testing.T, scope auth.Scope) *client.Client {
+	t.Helper()
+
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	only, err := auth.NewKey("test", scope, key)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(only)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+
+	server := httptest.NewServer(api.New(api.Options{
+		Store:   backing,
+		Metrics: metrics.New(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Keys:    set,
+	}).Handler())
+	t.Cleanup(server.Close)
+
+	c, err := client.New(client.Config{Server: server.URL, APIKey: key})
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	return c
+}
+
 func testKeys(t *testing.T, secret string) *auth.Set {
 	t.Helper()
 	key, err := auth.NewKey("test", auth.Write, secret)
