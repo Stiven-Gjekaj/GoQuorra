@@ -2615,10 +2615,9 @@ var cases = []testCase{
 	//
 	// This rule exists because they did not. Priority and max retries are a Go
 	// int, and both columns are INTEGER, so a number between the two sizes was
-	// accepted by the memory store and refused by PostgreSQL with a message
-	// carrying no "store: " prefix. The API answered 201 against one store and
-	// 500 against the other, for the same submission, while all sixty five
-	// rules here passed.
+	// accepted by the memory store and refused by PostgreSQL. The API answered
+	// 201 against one store and 500 against the other, for the same
+	// submission, while all sixty five rules here passed.
 	//
 	// A store that agrees only with itself is the thing this suite exists to
 	// prevent, so the rule is written against the interface and not against
@@ -2638,10 +2637,12 @@ var cases = []testCase{
 				t.Errorf("%s was stored", name)
 				continue
 			}
-			// The message says which package refused it, which is how the
-			// layer above tells a client mistake from a server fault.
-			if !strings.HasPrefix(err.Error(), "store: ") {
-				t.Errorf("%s gave %q, which does not read as the client's mistake", name, err)
+			// The sentinel says whose mistake it is, which is how the layer
+			// above tells a client mistake from a server fault. This rule
+			// used to test the message for a "store: " prefix, which every
+			// sentinel in that package carries as well.
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s gave %q, which does not answer to ErrInvalid", name, err)
 			}
 		}
 
@@ -2653,6 +2654,49 @@ var cases = []testCase{
 			got := create(t, s, n)
 			if got.Priority != n.Priority {
 				t.Errorf("%s came back as %d", name, got.Priority)
+			}
+		}
+	}},
+
+	// Every refusal a store makes about the content of a job answers to one
+	// sentinel.
+	//
+	// The rule above covers three numbers. This one covers the rest, because
+	// a refusal that does not carry the sentinel is answered 500 by the layer
+	// above, and 500 tells the caller to try again with something the store
+	// will never accept.
+	//
+	// The empty type is the one that matters most: it is the first check in
+	// the validator, so it is the one a reader is most likely to reword.
+	{"every refusal about the content of a job carries one sentinel", func(t *testing.T, s store.Store, clock *Clock) {
+		below := -1
+		tooMany := math.MaxInt32
+		refused := map[string]store.NewJob{
+			"a job with no type":              {},
+			"a type longer than the column":   {Type: strings.Repeat("t", 256)},
+			"a queue longer than the column":  {Type: "work", Queue: strings.Repeat("q", 256)},
+			"a delay that is in the past":     {Type: "work", Delay: -time.Second},
+			"a payload that is not JSON":      {Type: "work", Payload: []byte("{oh no")},
+			"a key longer than the column":    {Type: "work", IdempotencyKey: strings.Repeat("k", 256)},
+			"retries below zero":              {Type: "work", MaxRetries: &below},
+			"waiting for a job with no name":  {Type: "work", After: []string{""}},
+			"waiting for more jobs than most": {Type: "work", After: make([]string, store.MostAfter+1)},
+			"retries past the column":         {Type: "work", MaxRetries: &tooMany, Priority: math.MaxInt32 + 1},
+		}
+		for name, n := range refused {
+			_, _, err := s.Create(ctx(), n)
+			if err == nil {
+				t.Errorf("%s was stored", name)
+				continue
+			}
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s gave %q, which does not answer to ErrInvalid", name, err)
+			}
+			// And it is not one of the sentinels that means something else.
+			// Those all carried the "store: " prefix this rule replaces, so a
+			// check written against the prefix could not tell them apart.
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrWrongState) {
+				t.Errorf("%s answers to a sentinel that means something else", name)
 			}
 		}
 	}},
