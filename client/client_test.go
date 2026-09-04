@@ -554,6 +554,86 @@ func TestTheClientSaysWhichQueuesItsKeyHolds(t *testing.T) {
 	}
 }
 
+// A producer reads how much work is waiting without paging every job.
+//
+// Counting through List means asking for every job to count them, which gets
+// slower exactly as the queue does the thing worth watching for.
+func TestAProducerReadsHowMuchWorkIsWaiting(t *testing.T) {
+	c, backing := connectWithStore(t)
+	ctx := t.Context()
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.Submit(ctx, client.NewJob{Type: "bill", Queue: "invoices"}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	if _, err := c.Submit(ctx, client.NewJob{Type: "pay", Queue: "payroll"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// One that has stopped, so the count is not simply every job in the
+	// queue.
+	done, err := c.Submit(ctx, client.NewJob{Type: "bill", Queue: "invoices"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := backing.Cancel(ctx, done.ID, "test"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	counts, err := c.Queues(ctx)
+	if err != nil {
+		t.Fatalf("Queues: %v", err)
+	}
+
+	if got := client.Waiting(counts, "invoices"); got != 3 {
+		t.Errorf("invoices has %d waiting, want 3", got)
+	}
+	if got := client.Waiting(counts, "payroll"); got != 1 {
+		t.Errorf("payroll has %d waiting, want 1", got)
+	}
+	if got := client.Waiting(counts, "nothing-here"); got != 0 {
+		t.Errorf("a queue with no jobs has %d waiting", got)
+	}
+
+	// The cancelled one is counted, under its own status, so nothing is lost
+	// from the answer.
+	var cancelled int
+	for _, one := range counts {
+		if one.Queue == "invoices" && one.Status == "cancelled" {
+			cancelled = one.Count
+		}
+	}
+	if cancelled != 1 {
+		t.Errorf("the counts hold %d cancelled jobs in invoices, want 1", cancelled)
+	}
+}
+
+// A blocked job is waiting too.
+//
+// A queue of a thousand blocked jobs is not idle, and counting pending alone
+// says that it is.
+func TestABlockedJobCountsAsWaiting(t *testing.T) {
+	c := connect(t)
+	ctx := t.Context()
+
+	first, err := c.Submit(ctx, client.NewJob{Type: "first", Queue: "chain"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := c.Submit(ctx, client.NewJob{Type: "second", Queue: "chain", After: []string{first.ID}}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	counts, err := c.Queues(ctx)
+	if err != nil {
+		t.Fatalf("Queues: %v", err)
+	}
+	if got := client.Waiting(counts, "chain"); got != 2 {
+		t.Errorf("the chain has %d waiting, want the pending one and the blocked one", got)
+	}
+}
+
 // The job a cancel returns names the key that cancelled it.
 //
 // A producer that cancels its own work reads this back to confirm that the

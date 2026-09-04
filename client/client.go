@@ -421,6 +421,53 @@ func (c *Client) Workers(ctx context.Context) ([]Worker, error) {
 	return answer.Workers, nil
 }
 
+// QueueCount is how many jobs one queue holds in one status.
+//
+// One row per pair, and not a queue with a map of statuses. That is the shape
+// the API answers with, and this package holds the JSON the API speaks.
+type QueueCount struct {
+	Queue  string `json:"queue"`
+	Status string `json:"status"`
+	Count  int    `json:"count"`
+}
+
+// Queues counts the jobs, by queue and by status.
+//
+// A producer uses this to decide whether to submit more. Reading it through
+// List means paging every job to count them, which is the wrong tool and gets
+// slower as the queue does the thing worth watching for.
+//
+// A key limited to queues is answered about its own and nothing else, so a
+// queue missing from the answer is one that is empty or one this key cannot
+// reach. Whoami says which.
+func (c *Client) Queues(ctx context.Context) ([]QueueCount, error) {
+	var answer struct {
+		Queues []QueueCount `json:"queues"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/v1/queues", nil, &answer); err != nil {
+		return nil, err
+	}
+	return answer.Queues, nil
+}
+
+// Waiting gives how many jobs in a queue have not started.
+//
+// Pending and blocked together, because both are work that has not run. A
+// caller watching one number wants that one: a queue of a thousand blocked
+// jobs is not idle, and reading pending alone says it is.
+func Waiting(counts []QueueCount, queue string) int {
+	total := 0
+	for _, one := range counts {
+		if one.Queue != queue {
+			continue
+		}
+		if one.Status == "pending" || one.Status == "blocked" {
+			total += one.Count
+		}
+	}
+	return total
+}
+
 // Identity is what a key is and what it may do.
 type Identity struct {
 	// Name is what the server records against an action this key takes.
