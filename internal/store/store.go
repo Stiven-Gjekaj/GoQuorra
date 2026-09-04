@@ -68,6 +68,15 @@ var (
 	// error used only inside the PostgreSQL store begins with as well. It
 	// also meant that rewording any sentence below turned a 400 into a 500.
 	ErrInvalid = errors.New("store: the request is not valid")
+
+	// ErrNameTaken means a schedule already carries the name asked for.
+	//
+	// Separate from ErrInvalid because the answer to a caller is different.
+	// A request that is not valid will never be accepted, and this one would
+	// be accepted the moment the name is free, so it is a 409 and not a 400.
+	// The layer above used to tell them apart by searching the message for
+	// the words "already exists".
+	ErrNameTaken = errors.New("store: the name is taken")
 )
 
 // Invalid builds an error that says the caller's input is wrong.
@@ -83,6 +92,24 @@ var (
 func Invalid(format string, args ...any) error {
 	return invalidError{said: fmt.Sprintf(format, args...)}
 }
+
+// NameTaken builds an error that says a schedule name is already in use.
+//
+// It reads like Invalid and for the same reason: the message is the caller's
+// and the sentinel is the layer above's. Wrapping with %w would put "the name
+// is taken" behind a sentence that already says exactly that.
+func NameTaken(format string, args ...any) error {
+	return takenError{said: fmt.Sprintf(format, args...)}
+}
+
+// takenError carries a message of its own and answers to ErrNameTaken.
+type takenError struct{ said string }
+
+func (e takenError) Error() string { return e.said }
+
+// Is makes errors.Is(err, ErrNameTaken) true for every error this helper
+// built.
+func (e takenError) Is(target error) bool { return target == ErrNameTaken }
 
 // invalidError carries a message of its own and answers to ErrInvalid.
 //

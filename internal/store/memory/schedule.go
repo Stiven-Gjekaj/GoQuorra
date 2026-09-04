@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -31,7 +30,7 @@ func (s *Store) CreateSchedule(ctx context.Context, n store.NewSchedule) (*store
 	// and quietly replacing one is how a rule nobody agreed to starts
 	// producing jobs.
 	if _, taken := s.schedules[made.Name]; taken {
-		return nil, fmt.Errorf("store: a schedule named %q already exists", made.Name)
+		return nil, store.NameTaken("a schedule named %q already exists", made.Name)
 	}
 	s.schedules[made.Name] = made
 

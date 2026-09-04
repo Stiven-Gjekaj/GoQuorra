@@ -43,7 +43,7 @@ func (s *Store) CreateSchedule(ctx context.Context, n store.NewSchedule) (*store
 		// already taken. Refused rather than replacing what is there: a
 		// schedule is something somebody refers to by name in a change
 		// request.
-		return nil, fmt.Errorf("store: a schedule named %q already exists", made.Name)
+		return nil, store.NameTaken("a schedule named %q already exists", made.Name)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: cannot store the schedule: %w", err)

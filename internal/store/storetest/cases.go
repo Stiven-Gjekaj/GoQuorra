@@ -957,8 +957,20 @@ var cases = []testCase{
 
 		second := first
 		second.Cron = "0 4 * * *"
-		if _, err := s.CreateSchedule(ctx(), second); err == nil {
+		err := func() error { _, err := s.CreateSchedule(ctx(), second); return err }()
+		if err == nil {
 			t.Fatal("a second schedule took a name that was in use")
+		}
+		// Refused through its own sentinel. The layer above answers 409 to
+		// this and 400 to a request that is simply wrong, because a name that
+		// is taken is free again the moment somebody removes the schedule.
+		// It used to tell them apart by searching the message for the words
+		// "already exists".
+		if !errors.Is(err, store.ErrNameTaken) {
+			t.Errorf("a name that is taken gave %q, which does not answer to ErrNameTaken", err)
+		}
+		if errors.Is(err, store.ErrInvalid) {
+			t.Error("a name that is taken also reads as a request that is not valid")
 		}
 
 		// And the first one is untouched, which is the point.

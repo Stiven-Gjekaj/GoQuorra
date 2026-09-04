@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -73,10 +74,20 @@ func (a *API) createSchedule(w http.ResponseWriter, r *http.Request) {
 		Enabled:    req.Enabled,
 	})
 	if err != nil {
-		// Everything the store refuses here is the caller's to fix: a rule
-		// that is not a rule, a zone that is not a zone, or a name that is
-		// taken. None of them is a fault underneath.
-		if isClientMistake(err) || strings.Contains(err.Error(), "already exists") {
+		// 409 and not 400. The request is well formed and would be accepted
+		// the moment the name is free, so a caller that renames and retries
+		// is behaving sensibly. 400 tells it never to try again.
+		//
+		// This used to be decided by searching the message for the words
+		// "already exists", which is the same fault the sentinels replace.
+		if errors.Is(err, store.ErrNameTaken) {
+			a.fail(w, http.StatusConflict, err.Error())
+			return
+		}
+		// Everything else the store refuses here is the caller's to fix: a
+		// rule that is not a rule, or a zone that is not a zone. Neither is a
+		// fault underneath.
+		if isClientMistake(err) {
 			a.fail(w, http.StatusBadRequest, err.Error())
 			return
 		}

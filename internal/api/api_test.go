@@ -2007,6 +2007,36 @@ func TestAKeyLimitedToItsQueuesCannotRemoveAnotherQueuesSchedule(t *testing.T) {
 	}
 }
 
+// A schedule name that is taken answers 409 and not 400.
+//
+// The request is well formed and would be accepted the moment the name is
+// free, so a caller that renames and retries is behaving sensibly. 400 tells
+// it never to try again.
+func TestAScheduleNameThatIsTakenAnswers409(t *testing.T) {
+	handler, _ := serve(t)
+
+	body := `{"name":"nightly","cron":"0 3 * * *","catch_up":"skip","type":"report"}`
+	if got := withKey(t, handler, "POST", "/v1/schedules", body).Code; got != http.StatusCreated {
+		t.Fatalf("the first schedule answered %d", got)
+	}
+
+	again := withKey(t, handler, "POST", "/v1/schedules", body)
+	if again.Code != http.StatusConflict {
+		t.Errorf("a name that is taken answered %d, want 409", again.Code)
+	}
+	if !strings.Contains(again.Body.String(), "already exists") {
+		t.Errorf("the refusal does not say why: %s", again.Body.String())
+	}
+
+	// A rule that is not a rule is still 400. Retrying that one never
+	// succeeds, and the two must not be given the same answer.
+	wrong := withKey(t, handler, "POST", "/v1/schedules",
+		`{"name":"other","cron":"every night","catch_up":"skip","type":"report"}`)
+	if wrong.Code != http.StatusBadRequest {
+		t.Errorf("a rule that is not a rule answered %d, want 400", wrong.Code)
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
