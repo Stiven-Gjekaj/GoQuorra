@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/auth"
@@ -116,7 +117,66 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /v1/schedules/{name}/disable", a.guard(auth.Change, http.HandlerFunc(a.disableSchedule)))
 	mux.Handle("GET /v1/whoami", a.guard(auth.Read, http.HandlerFunc(a.whoami)))
 
-	return a.observe(mux)
+	return a.observe(a.routingErrors(mux))
+}
+
+// routingErrors turns what ServeMux writes for a route it does not know into
+// JSON.
+//
+// ServeMux answers an unknown path with "404 page not found" and a method it
+// does not allow with "Method Not Allowed", both as text/plain. Every other
+// answer this API gives is JSON with an error field, so a client that decodes
+// every answer reports a parse failure and not the reason it was refused.
+//
+// The two are told apart by the content type, and not by the status. This
+// API's own answers set application/json before the status line and
+// ServeMux's do not, so a text/plain 404 or 405 is one nothing in this
+// package wrote. Telling them apart by status alone would rewrite the 404
+// that a job which is not there answers.
+func (a *API) routingErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&routingWriter{ResponseWriter: w}, r)
+	})
+}
+
+// routingWriter replaces the body of a routing refusal on its way out.
+type routingWriter struct {
+	http.ResponseWriter
+
+	// replaced says the status line has gone with a body of this wrapper's
+	// own, so whatever the mux writes next is dropped.
+	replaced bool
+}
+
+func (w *routingWriter) WriteHeader(status int) {
+	routing := status == http.StatusNotFound || status == http.StatusMethodNotAllowed
+	if !routing || strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+
+	w.replaced = true
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.ResponseWriter.WriteHeader(status)
+
+	// The Allow header ServeMux sets for a 405 is written before the status
+	// line, so it is already out and a caller still learns which methods the
+	// path takes.
+	message := "no route answers that path"
+	if status == http.StatusMethodNotAllowed {
+		message = "that path does not answer that method, and the Allow header says which it does"
+	}
+	_ = json.NewEncoder(w.ResponseWriter).Encode(map[string]string{"error": message})
+}
+
+func (w *routingWriter) Write(b []byte) (int, error) {
+	if w.replaced {
+		// What the mux was about to write. Reported as written, because a
+		// short write is an error to the caller and nothing went wrong here.
+		return len(b), nil
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // ---------------------------------------------------------------------------

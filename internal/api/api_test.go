@@ -2108,6 +2108,78 @@ func TestNoRefusalACallerReadsNamesAPackage(t *testing.T) {
 	}
 }
 
+// A route the server does not know answers JSON like every other refusal.
+//
+// ServeMux answers an unknown path with "404 page not found" as text/plain,
+// and a method it does not allow with "Method Not Allowed". A client that
+// decodes every answer reports a parse failure and not the reason.
+func TestARouteTheServerDoesNotKnowAnswersJSON(t *testing.T) {
+	handler, _ := serve(t)
+
+	unknown := withKey(t, handler, "GET", "/v1/nope", "")
+	if unknown.Code != http.StatusNotFound {
+		t.Errorf("an unknown path answered %d, want 404", unknown.Code)
+	}
+	assertJSONError(t, unknown, "an unknown path")
+
+	wrongMethod := withKey(t, handler, "DELETE", "/v1/jobs", "")
+	if wrongMethod.Code != http.StatusMethodNotAllowed {
+		t.Errorf("a method the path does not take answered %d, want 405", wrongMethod.Code)
+	}
+	assertJSONError(t, wrongMethod, "a method the path does not take")
+
+	// The Allow header is what tells the caller which methods the path does
+	// take, and it is written before the status line, so replacing the body
+	// must not lose it.
+	if allow := wrongMethod.Header().Get("Allow"); !strings.Contains(allow, "POST") {
+		t.Errorf("the Allow header is %q, and it does not name POST", allow)
+	}
+}
+
+// A 404 a handler writes is left alone.
+//
+// The refusals are told apart by the content type and not by the status. A
+// rule written against the status would rewrite the answer a job that is not
+// there gives, and the caller would lose the reason.
+func TestA404AHandlerWritesIsLeftAlone(t *testing.T) {
+	handler, _ := serve(t)
+
+	missing := withKey(t, handler, "GET", "/v1/jobs/e6f0e6b6-0000-4000-8000-000000000000", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("a job that is not there answered %d", missing.Code)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(missing.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the answer is not JSON: %v", err)
+	}
+	if body.Error != "no job carries that identifier" {
+		t.Errorf("the answer says %q, and the handler's own reason is gone", body.Error)
+	}
+}
+
+// assertJSONError says that an answer is JSON carrying a non-empty reason.
+func assertJSONError(t *testing.T, got *httptest.ResponseRecorder, what string) {
+	t.Helper()
+
+	if kind := got.Header().Get("Content-Type"); !strings.HasPrefix(kind, "application/json") {
+		t.Errorf("%s answered with the content type %q", what, kind)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+		t.Errorf("%s answered %q, which is not JSON: %v", what, got.Body.String(), err)
+		return
+	}
+	if body.Error == "" {
+		t.Errorf("%s answered JSON with no reason in it: %s", what, got.Body.String())
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
