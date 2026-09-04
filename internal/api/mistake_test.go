@@ -23,6 +23,24 @@ func TestASentinelRefusalIsTheCallersMistake(t *testing.T) {
 	}
 }
 
+// A message beginning with the store package's name is not by itself the
+// caller's mistake.
+//
+// This is what the function used to decide by. Every sentinel in that package
+// carries the same prefix, so a job that is not there and a lease that is
+// stale both read as something the caller got wrong.
+func TestTheStorePrefixAloneIsNotTheCallersMistake(t *testing.T) {
+	for name, err := range map[string]error{
+		"a job that is not there":  store.ErrNotFound,
+		"a stale lease":            store.ErrLeaseNotValid,
+		"a job in the wrong state": store.ErrWrongState,
+	} {
+		if isClientMistake(err) {
+			t.Errorf("%s reads as the caller's mistake", name)
+		}
+	}
+}
+
 // An error from underneath is not the caller's mistake.
 //
 // Without this the test passes against a function that says yes to

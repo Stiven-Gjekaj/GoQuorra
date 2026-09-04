@@ -130,10 +130,15 @@ func (s Schedule) Location() (*time.Location, error) {
 }
 
 // Rule reads the cron rule of a stored schedule.
+//
+// This one is not marked as the caller's mistake, and that is deliberate. A
+// stored rule was accepted when it was written, so a build that cannot read
+// it now has a problem of its own, and telling the reader they got the
+// request wrong would send them looking in the wrong place.
 func (s Schedule) Rule() (jobs.Cron, error) {
 	c, err := jobs.ParseCron(s.Cron)
 	if err != nil {
-		return jobs.Cron{}, fmt.Errorf("store: the schedule %q holds %w", s.Name, err)
+		return jobs.Cron{}, fmt.Errorf("the schedule %q holds %w", s.Name, err)
 	}
 	return c, nil
 }

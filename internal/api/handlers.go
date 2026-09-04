@@ -764,16 +764,11 @@ func firstNonEmpty(values ...string) string {
 // isClientMistake reports whether the store refused a job because of what was
 // in it, rather than because something went wrong underneath.
 //
-// The sentinel is the answer. The prefix test below it is what this function
-// used to be, and it stays until every refusal in the store package carries
-// the sentinel. Each of those moves is its own commit, and this function has
-// to accept both while that is going on.
+// One sentinel and nothing else. This function used to read the first seven
+// characters of the message, which every sentinel in the store package
+// carries as well, so it could not tell a refused job from a job that is not
+// there. It also meant that rewording any message in that package moved a
+// status code, with nothing anywhere failing.
 func isClientMistake(err error) bool {
-	if errors.Is(err, store.ErrInvalid) {
-		return true
-	}
-	// The store's validation errors all begin with this prefix, and no error
-	// from the database does. That is not true of the sentinels in the same
-	// package, which is why this is being replaced rather than kept.
-	return len(err.Error()) > 7 && err.Error()[:7] == "store: "
+	return errors.Is(err, store.ErrInvalid)
 }
