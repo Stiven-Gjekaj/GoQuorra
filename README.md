@@ -876,10 +876,34 @@ Nothing in that package holds a type from inside this repository, so a caller
 depends on it without depending on how the server stores anything.
 
 A refusal arrives as an error the caller can test: `client.ErrNotFound`,
-`client.ErrWrongState` and `client.ErrUnauthorized`, each wrapping the sentence
-the server wrote.
+`client.ErrWrongState`, `client.ErrUnauthorized` and `client.ErrNameTaken`,
+each wrapping the sentence the server wrote.
 `ErrWrongState` is the one worth having, because a caller that waits and asks
 again may succeed.
+
+The package reaches every route under `/v1` that takes a key, and a test says
+so by asking the router rather than by holding its own list.
+
+| To do this | Call |
+| ---------- | ---- |
+| Submit one job, or many at once | `Submit`, `SubmitMany` |
+| Read one job, or page through them | `Get`, `List`, `Each` |
+| Read what a job did on each attempt | `Attempts` |
+| Stop or restart one job | `Cancel`, `Revive` |
+| Stop or restart everything a filter names | `CancelMatching`, `ReviveMatching` |
+| Count what is in each queue | `Queues`, and `Waiting` over the answer |
+| Ask whether any worker is out there | `Workers` |
+| Manage a repeat schedule | `CreateSchedule`, `Schedules`, `Schedule`, `EnableSchedule`, `DisableSchedule`, `DeleteSchedule` |
+| Ask which key this client holds | `Whoami` |
+
+`Waiting` adds pending and blocked together.
+A queue of a thousand blocked jobs is not idle, and counting pending alone
+says that it is.
+
+`Whoami` answers the queues the key holds as well as its scope.
+A key limited to queues reads an empty listing for one it cannot reach, which
+looks exactly like an empty queue, and `Identity.MayUse` is how a producer
+tells the two apart.
 
 ---
 
