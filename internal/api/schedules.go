@@ -105,8 +105,15 @@ func (a *API) listSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Narrowed here and not in the store. A listing is the one place a key
+	// learns what exists, so the rule is the caller's and not the storage's,
+	// and it is the same rule the read of one schedule answers.
+	caller := callerOf(r.Context())
 	rows := make([]map[string]any, 0, len(found))
 	for _, one := range found {
+		if !caller.MayUse(one.Queue) {
+			continue
+		}
 		rows = append(rows, a.withNextFiring(one))
 	}
 	a.send(w, http.StatusOK, map[string]any{"schedules": rows})

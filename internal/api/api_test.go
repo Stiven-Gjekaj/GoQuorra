@@ -1911,6 +1911,39 @@ func TestAKeyLimitedToItsQueuesCannotReadAnotherQueuesSchedule(t *testing.T) {
 	}
 }
 
+// The schedule listing holds only the queues the key can reach.
+//
+// The listing is the one place a key learns what exists at all. A key that
+// cannot read one schedule by name and can still see it in a listing has
+// learned the same thing by a longer route.
+func TestTheScheduleListingHoldsOnlyTheKeysQueues(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	for _, one := range []store.NewSchedule{
+		{Name: "billing-run", Cron: "0 4 * * *", CatchUp: jobs.CatchUpSkip, Type: "bill", Queue: "invoices"},
+		{Name: "payroll-run", Cron: "0 3 * * *", CatchUp: jobs.CatchUpSkip, Type: "pay", Queue: "payroll"},
+	} {
+		if _, err := backing.CreateSchedule(t.Context(), one); err != nil {
+			t.Fatalf("CreateSchedule %s: %v", one.Name, err)
+		}
+	}
+
+	var listed struct {
+		Schedules []struct {
+			Name  string `json:"name"`
+			Queue string `json:"queue"`
+		} `json:"schedules"`
+	}
+	decode(t, withKey(t, handler, "GET", "/v1/schedules", ""), &listed)
+
+	if len(listed.Schedules) != 1 {
+		t.Fatalf("the listing holds %d schedules, want the one in the held queue", len(listed.Schedules))
+	}
+	if listed.Schedules[0].Name != "billing-run" {
+		t.Errorf("the listing holds %q", listed.Schedules[0].Name)
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
