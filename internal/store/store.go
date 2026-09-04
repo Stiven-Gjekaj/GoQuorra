@@ -376,13 +376,13 @@ func (o Order) String() string {
 // Validate refuses a filter that cannot be answered.
 func (f Filter) Validate() error {
 	if f.Status != "" && !f.Status.Valid() {
-		return fmt.Errorf("store: %q is not a status", f.Status)
+		return invalid("%q is not a status", f.Status)
 	}
 	if f.Limit < 0 {
-		return fmt.Errorf("store: the limit is %d", f.Limit)
+		return invalid("the limit is %d", f.Limit)
 	}
 	if !f.Order.Valid() {
-		return fmt.Errorf("store: %s is not an order", f.Order)
+		return invalid("%s is not an order", f.Order)
 	}
 	return nil
 }

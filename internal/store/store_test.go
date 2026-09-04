@@ -210,6 +210,30 @@ func TestTheMessageOfAnInvalidRequestNamesNoPackage(t *testing.T) {
 	}
 }
 
+// What a filter refuses is the caller's mistake as well.
+//
+// A listing is the route a person uses most, so a filter refused as the
+// server's fault sends somebody reading logs for a query they mistyped.
+func TestWhatAFilterRefusesIsTheCallersMistake(t *testing.T) {
+	for name, f := range map[string]Filter{
+		"a status that is not a status": {Status: "banana"},
+		"a limit below one":             {Limit: -1},
+		"an order the store does not know": {
+			Limit: 10,
+			Order: Order(99),
+		},
+	} {
+		err := f.Validate()
+		if err == nil {
+			t.Errorf("%s was accepted", name)
+			continue
+		}
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s gave %q, which does not answer to ErrInvalid", name, err)
+		}
+	}
+}
+
 // A filter that names no order asks for the newest first.
 //
 // Every caller that exists was written before there was an order to name, so
