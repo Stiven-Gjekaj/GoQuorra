@@ -118,6 +118,9 @@ func (a *API) getSchedule(w http.ResponseWriter, r *http.Request) {
 		a.failWith(r.Context(), w, err, "cannot read the schedule")
 		return
 	}
+	if !a.heldSchedule(w, r, one.Queue) {
+		return
+	}
 	a.send(w, http.StatusOK, a.withNextFiring(one))
 }
 

@@ -284,6 +284,21 @@ func (a *API) heldByCaller(w http.ResponseWriter, r *http.Request, queue string)
 	return false
 }
 
+// heldSchedule is the same rule for a schedule, and answers 404 for the same
+// reason.
+//
+// A schedule is named by whoever made it, so a caller guessing names would
+// learn from a 403 which of its guesses are real. It also names a queue, and
+// a caller that cannot reach that queue has no business reading the payload
+// the schedule carries into it.
+func (a *API) heldSchedule(w http.ResponseWriter, r *http.Request, queue string) bool {
+	if callerOf(r.Context()).MayUse(queue) {
+		return true
+	}
+	a.fail(w, http.StatusNotFound, "no schedule carries that name")
+	return false
+}
+
 // mayWriteTo reports whether the caller may put work in a queue, and answers
 // the request when it may not.
 //

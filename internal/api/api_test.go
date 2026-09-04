@@ -1867,6 +1867,50 @@ func TestAScheduleCannotProduceIntoAQueueTheKeyDoesNotHold(t *testing.T) {
 	}
 }
 
+// A key limited to its queues cannot read a schedule that belongs to another.
+//
+// A schedule carries the payload it produces, so this is not only about the
+// name. The payroll schedule below holds an account number, and a key that
+// cannot reach the payroll queue could read it.
+//
+// 404 and not 403, because a name is chosen by whoever made the schedule. A
+// caller guessing names would learn from a 403 which of its guesses are real.
+func TestAKeyLimitedToItsQueuesCannotReadAnotherQueuesSchedule(t *testing.T) {
+	handler, backing := serveLimited(t, "invoices")
+
+	if _, err := backing.CreateSchedule(t.Context(), store.NewSchedule{
+		Name:    "payroll-run",
+		Cron:    "0 3 * * *",
+		CatchUp: jobs.CatchUpSkip,
+		Type:    "pay",
+		Payload: json.RawMessage(`{"account":"the number nobody else should read"}`),
+		Queue:   "payroll",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	if _, err := backing.CreateSchedule(t.Context(), store.NewSchedule{
+		Name:    "billing-run",
+		Cron:    "0 4 * * *",
+		CatchUp: jobs.CatchUpSkip,
+		Type:    "bill",
+		Queue:   "invoices",
+	}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	theirs := withKey(t, handler, "GET", "/v1/schedules/payroll-run", "")
+	if theirs.Code != http.StatusNotFound {
+		t.Errorf("reading another queue's schedule answered %d, want 404", theirs.Code)
+	}
+	if strings.Contains(theirs.Body.String(), "nobody else should read") {
+		t.Error("the refusal carries the payload it was refusing to show")
+	}
+
+	if got := withKey(t, handler, "GET", "/v1/schedules/billing-run", "").Code; got != http.StatusOK {
+		t.Errorf("reading the held queue's schedule answered %d", got)
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty
