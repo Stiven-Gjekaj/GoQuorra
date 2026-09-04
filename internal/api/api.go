@@ -269,8 +269,18 @@ func (a *API) fail(w http.ResponseWriter, status int, message string) {
 // that had fallen over was reported to the client as a missing job, and the
 // logs of the client and of the server told different stories.
 func (a *API) failWith(ctx context.Context, w http.ResponseWriter, err error, what string) {
+	a.failMissing(ctx, w, err, what, "no job carries that identifier")
+}
+
+// failMissing is failWith for a route about something that is not a job.
+//
+// The sentinel for a missing row is shared, so every route that used failWith
+// answered "no job carries that identifier". On the schedule routes that
+// named the wrong thing entirely: a person who asked for a schedule by name
+// and got back a sentence about a job identifier looks for a job.
+func (a *API) failMissing(ctx context.Context, w http.ResponseWriter, err error, what, missing string) {
 	if errors.Is(err, store.ErrNotFound) {
-		a.fail(w, http.StatusNotFound, "no job carries that identifier")
+		a.fail(w, http.StatusNotFound, missing)
 		return
 	}
 

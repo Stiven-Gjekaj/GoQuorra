@@ -295,7 +295,7 @@ func (a *API) heldSchedule(w http.ResponseWriter, r *http.Request, queue string)
 	if callerOf(r.Context()).MayUse(queue) {
 		return true
 	}
-	a.fail(w, http.StatusNotFound, "no schedule carries that name")
+	a.fail(w, http.StatusNotFound, noSuchSchedule)
 	return false
 }
 

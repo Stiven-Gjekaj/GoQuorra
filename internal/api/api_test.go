@@ -2037,6 +2037,44 @@ func TestAScheduleNameThatIsTakenAnswers409(t *testing.T) {
 	}
 }
 
+// A schedule that is not there says so about a schedule.
+//
+// Every route used one helper, and that helper answered "no job carries that
+// identifier" because the sentinel for a missing row is shared. A person who
+// asked for a schedule by name and read that sentence goes looking for a job.
+//
+// The wording matches what a key that may not see the schedule is told, so a
+// caller cannot tell the two apart. That is the point of both.
+func TestAScheduleThatIsNotThereSaysSoAboutASchedule(t *testing.T) {
+	handler, _ := serve(t)
+
+	for _, call := range []struct{ method, path string }{
+		{"GET", "/v1/schedules/nothing-here"},
+		{"DELETE", "/v1/schedules/nothing-here"},
+		{"POST", "/v1/schedules/nothing-here/enable"},
+		{"POST", "/v1/schedules/nothing-here/disable"},
+	} {
+		got := withKey(t, handler, call.method, call.path, "")
+		if got.Code != http.StatusNotFound {
+			t.Errorf("%s %s answered %d, want 404", call.method, call.path, got.Code)
+			continue
+		}
+		if strings.Contains(got.Body.String(), "job") {
+			t.Errorf("%s %s says %s, which names a job", call.method, call.path, got.Body.String())
+		}
+		if !strings.Contains(got.Body.String(), "schedule") {
+			t.Errorf("%s %s says %s, which does not name a schedule", call.method, call.path, got.Body.String())
+		}
+	}
+
+	// A job that is not there still says so about a job, so the two answers
+	// did not simply swap.
+	missing := withKey(t, handler, "GET", "/v1/jobs/e6f0e6b6-0000-4000-8000-000000000000", "")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), "job") {
+		t.Errorf("a job that is not there answered %d, %s", missing.Code, missing.Body.String())
+	}
+}
+
 // whoami says which queues the key holds.
 //
 // A key that cannot reach a queue and does not know it reads an empty

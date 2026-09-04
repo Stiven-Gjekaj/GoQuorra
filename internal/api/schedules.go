@@ -10,6 +10,11 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 )
 
+// noSuchSchedule is what every schedule route says about a name that is not
+// there. It matches the wording the read of one schedule uses when a key may
+// not see it, so the two answers cannot be told apart.
+const noSuchSchedule = "no schedule carries that name"
+
 // scheduleRequest is the body of POST /v1/schedules.
 type scheduleRequest struct {
 	Name     string `json:"name"`
@@ -133,7 +138,7 @@ func (a *API) listSchedules(w http.ResponseWriter, r *http.Request) {
 func (a *API) getSchedule(w http.ResponseWriter, r *http.Request) {
 	one, err := a.opts.Store.Schedule(r.Context(), r.PathValue("name"))
 	if err != nil {
-		a.failWith(r.Context(), w, err, "cannot read the schedule")
+		a.failMissing(r.Context(), w, err, "cannot read the schedule", noSuchSchedule)
 		return
 	}
 	if !a.heldSchedule(w, r, one.Queue) {
@@ -150,7 +155,7 @@ func (a *API) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	// row, and nothing anywhere holds a copy.
 	before, err := a.opts.Store.Schedule(r.Context(), name)
 	if err != nil {
-		a.failWith(r.Context(), w, err, "cannot remove the schedule")
+		a.failMissing(r.Context(), w, err, "cannot remove the schedule", noSuchSchedule)
 		return
 	}
 	if !a.heldSchedule(w, r, before.Queue) {
@@ -158,7 +163,7 @@ func (a *API) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.opts.Store.DeleteSchedule(r.Context(), name); err != nil {
-		a.failWith(r.Context(), w, err, "cannot remove the schedule")
+		a.failMissing(r.Context(), w, err, "cannot remove the schedule", noSuchSchedule)
 		return
 	}
 
@@ -184,7 +189,7 @@ func (a *API) switchSchedule(w http.ResponseWriter, r *http.Request, on bool) {
 	// another team's work: nothing fails, and the jobs simply stop arriving.
 	before, err := a.opts.Store.Schedule(r.Context(), name)
 	if err != nil {
-		a.failWith(r.Context(), w, err, "cannot switch the schedule")
+		a.failMissing(r.Context(), w, err, "cannot switch the schedule", noSuchSchedule)
 		return
 	}
 	if !a.heldSchedule(w, r, before.Queue) {
@@ -193,7 +198,7 @@ func (a *API) switchSchedule(w http.ResponseWriter, r *http.Request, on bool) {
 
 	one, err := a.opts.Store.SetScheduleEnabled(r.Context(), name, on)
 	if err != nil {
-		a.failWith(r.Context(), w, err, "cannot switch the schedule")
+		a.failMissing(r.Context(), w, err, "cannot switch the schedule", noSuchSchedule)
 		return
 	}
 
