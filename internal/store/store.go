@@ -56,7 +56,40 @@ var (
 	// by searching the message for the words "not JSON", so rewording this
 	// sentence would have quietly moved every one of these to a 500.
 	ErrNotJSON = errors.New("store: the result is not JSON")
+
+	// ErrInvalid means the caller asked for something this package refuses
+	// because of what was in the request. Retrying the same request produces
+	// the same answer.
+	//
+	// It exists for the same reason ErrNotJSON does, and it closes the last
+	// place this package still asked the layer above to read a message. That
+	// layer decided a client's mistake by testing whether the message began
+	// with "store: ", which every sentinel here begins with, and which one
+	// error used only inside the PostgreSQL store begins with as well. It
+	// also meant that rewording any sentence below turned a 400 into a 500.
+	ErrInvalid = errors.New("store: the request is not valid")
 )
+
+// invalid builds an error that says the caller's input is wrong.
+//
+// The message is what a caller reads, so it carries no package name. The
+// sentinel is what the layer above tests, so rewording a message can no
+// longer move a status code.
+func invalid(format string, args ...any) error {
+	return invalidError{said: fmt.Sprintf(format, args...)}
+}
+
+// invalidError carries a message of its own and answers to ErrInvalid.
+//
+// Wrapping with %w was the alternative and it reads worse: the sentinel's own
+// sentence then appears in every message, either in front of the useful part
+// or behind it.
+type invalidError struct{ said string }
+
+func (e invalidError) Error() string { return e.said }
+
+// Is makes errors.Is(err, ErrInvalid) true for every error this helper built.
+func (e invalidError) Is(target error) bool { return target == ErrInvalid }
 
 // Job is one job, as it is stored.
 type Job struct {

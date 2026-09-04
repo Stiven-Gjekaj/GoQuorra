@@ -167,6 +167,49 @@ func TestABadResultIsReportedThroughASentinel(t *testing.T) {
 	}
 }
 
+// An error the invalid helper builds answers to ErrInvalid and to nothing
+// else.
+//
+// This is the property the layer above rests on. It answers 400 to this and
+// 500 to everything else from this package, and every other sentinel here
+// means something it must not confuse with a caller's mistake: a job that is
+// not there is a 404, and a job in the wrong state is a 409.
+func TestAnInvalidRequestIsReportedThroughItsOwnSentinel(t *testing.T) {
+	err := invalid("the priority is %d, and the column holds fewer", 3000000000)
+
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid built %v, which does not answer to ErrInvalid", err)
+	}
+	for name, other := range map[string]error{
+		"ErrNotFound":      ErrNotFound,
+		"ErrLeaseNotValid": ErrLeaseNotValid,
+		"ErrWrongState":    ErrWrongState,
+		"ErrNotJSON":       ErrNotJSON,
+	} {
+		if errors.Is(err, other) {
+			t.Errorf("a caller's mistake compares equal to %s", name)
+		}
+	}
+
+	// An error from somewhere else does not answer to it. Without this the
+	// test passes against an Is that says yes to everything, which is the
+	// shape of the check this sentinel replaces.
+	if errors.Is(errors.New("connection refused"), ErrInvalid) {
+		t.Error("an error from underneath compares equal to a caller's mistake")
+	}
+}
+
+// The message a caller reads carries no package name.
+//
+// Every message in this package used to begin with "store: ", and the HTTP
+// layer handed it to the client unchanged, so a person submitting a job read
+// the name of a Go package they cannot see.
+func TestTheMessageOfAnInvalidRequestNamesNoPackage(t *testing.T) {
+	if got := invalid("a job needs a type").Error(); got != "a job needs a type" {
+		t.Errorf("the message is %q", got)
+	}
+}
+
 // A filter that names no order asks for the newest first.
 //
 // Every caller that exists was written before there was an order to name, so
