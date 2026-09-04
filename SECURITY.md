@@ -40,6 +40,12 @@ answered 404 for a job in one, the same as for a job that is not there.
 It is answered 403 when it names another queue to write to, because it already
 knows the name it asked for and there is nothing to hide.
 
+A schedule belongs to the queue it produces into, and answers the same rule.
+A limited key does not see one in another queue, in a listing or by name, and
+cannot switch one off or remove it.
+404 here as well: a schedule name is chosen by whoever made it, so a caller
+guessing names would learn from a 403 which of its guesses are real.
+
 Run it inside a network you control, and treat a key the way you treat a
 database password.
 
@@ -86,7 +92,9 @@ Do not put a secret in a payload.
 - A way for a worker to report on a job it was not given, or to be given a job
   that another worker holds.
 - A way for a key limited to queues to read, count, act on, or put work in a
-  queue it does not hold, or to lease or watch one.
+  queue it does not hold, or to lease or watch one. This covers a schedule
+  that produces into that queue, in a listing or by name, and switching one
+  off or removing it.
 - A way to lease a job with a key that does not hold the `worker` scope, or to
   lease one with no key at all.
 - Anything that makes the dashboard run script from the content of a job. The
