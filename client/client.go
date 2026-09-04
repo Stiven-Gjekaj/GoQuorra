@@ -49,6 +49,13 @@ var (
 
 	// ErrUnauthorized means the API key was missing or wrong.
 	ErrUnauthorized = errors.New("quorra: the API key was refused")
+
+	// ErrNameTaken means a schedule already carries the name asked for.
+	//
+	// The server answers 409 to this and to a job in the wrong state, so this
+	// package tells them apart by which call was made rather than by reading
+	// the sentence. CreateSchedule is the only call that can mean this one.
+	ErrNameTaken = errors.New("quorra: the name is taken")
 )
 
 // Config sets a client up.
