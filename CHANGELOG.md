@@ -13,6 +13,44 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### Every answer is JSON, including the ones no handler wrote
+
+**Fixed**
+
+- **A route the server does not know answered plain text.** `ServeMux` writes
+  `404 page not found` for a path it does not have and `Method Not Allowed`
+  for a method it does not take, both as `text/plain`. Every other answer this
+  API gives is JSON with an `error` field, so a client that decodes every
+  answer reported a parse failure instead of the reason.
+
+  The two are told apart by the content type and not by the status. This
+  package sets `application/json` before the status line and `ServeMux` does
+  not, so a `text/plain` 404 is one nothing here wrote. A rule written against
+  the status alone would rewrite the answer a job that is not there gives, and
+  a test says so.
+
+  The `Allow` header on a 405 goes out before the status line, so replacing
+  the body keeps it, and the message points the reader at it.
+
+- **A handler that panicked answered a JSON body under a plain text header.**
+  It was written with `http.Error`, which sets the content type itself, so the
+  one answer a client is least able to guess at was the one it could not
+  decode. It goes through the same helper as every other answer now.
+
+  Nothing tested that path at all. The recover is the reason one bad request
+  does not end the process and take every other request in flight with it, and
+  there was no rule saying that it answers. There is one now, and it also
+  checks that what the handler panicked with does not reach the caller.
+
+  Driven against a live server:
+
+  | Request | Answer |
+  | --- | --- |
+  | `GET /v1/nope` | 404 `application/json`, `no route answers that path` |
+  | `DELETE /v1/jobs` | 405 `application/json`, `Allow: GET, HEAD, POST` kept |
+  | `GET /v1/jobs/<not there>` | 404 `application/json`, the handler's own reason kept |
+  | `GET /nothing` | 404 `application/json` |
+
 ### An error says whose mistake it is
 
 **Fixed**
