@@ -518,6 +518,42 @@ func TestAServerHoldingEveryScopeSaysTheKeyMayWrite(t *testing.T) {
 	}
 }
 
+// The client says which queues its key holds.
+//
+// A key limited to queues reads an empty listing for one it cannot reach,
+// which looks exactly like an empty queue. A producer that finds nothing
+// where it expected work has no way to tell the two apart without this.
+func TestTheClientSaysWhichQueuesItsKeyHolds(t *testing.T) {
+	c := connectLimited(t, "invoices", "receipts")
+
+	who, err := c.Whoami(t.Context())
+	if err != nil {
+		t.Fatalf("Whoami: %v", err)
+	}
+	if len(who.Queues) != 2 {
+		t.Fatalf("the key holds %v, want two queues", who.Queues)
+	}
+	if !who.MayUse("invoices") {
+		t.Error("the key says it may not use a queue it holds")
+	}
+	if who.MayUse("payroll") {
+		t.Error("the key says it may use a queue it does not hold")
+	}
+
+	// A key naming no queue holds every one, which is what a deployment that
+	// has not divided anything gets.
+	every, err := connectAs(t, auth.Write).Whoami(t.Context())
+	if err != nil {
+		t.Fatalf("Whoami: %v", err)
+	}
+	if len(every.Queues) != 0 {
+		t.Errorf("an unlimited key names the queues %v", every.Queues)
+	}
+	if !every.MayUse("payroll") {
+		t.Error("an unlimited key says it may not use a queue")
+	}
+}
+
 // The job a cancel returns names the key that cancelled it.
 //
 // A producer that cancels its own work reads this back to confirm that the
@@ -801,6 +837,37 @@ func connectAs(t *testing.T, scope auth.Scope) *client.Client {
 	t.Cleanup(func() { _ = backing.Close() })
 
 	only, err := auth.NewKey("test", scope, key)
+	if err != nil {
+		t.Fatalf("auth.NewKey: %v", err)
+	}
+	set, err := auth.NewSet(only)
+	if err != nil {
+		t.Fatalf("auth.NewSet: %v", err)
+	}
+
+	server := httptest.NewServer(api.New(api.Options{
+		Store:   backing,
+		Metrics: metrics.New(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Keys:    set,
+	}).Handler())
+	t.Cleanup(server.Close)
+
+	c, err := client.New(client.Config{Server: server.URL, APIKey: key})
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	return c
+}
+
+// connectLimited builds a server whose one key is limited to the queues named.
+func connectLimited(t *testing.T, queues ...string) *client.Client {
+	t.Helper()
+
+	backing := memory.New(store.Options{})
+	t.Cleanup(func() { _ = backing.Close() })
+
+	only, err := auth.NewKey("test", auth.Write, key, queues...)
 	if err != nil {
 		t.Fatalf("auth.NewKey: %v", err)
 	}

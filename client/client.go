@@ -429,6 +429,30 @@ type Identity struct {
 	// Scope is "read" or "write". A read key may ask questions and change
 	// nothing.
 	Scope string `json:"scope"`
+
+	// Queues names the queues this key may act on. Empty means every queue.
+	//
+	// A key limited to queues reads an empty listing for one it cannot reach,
+	// which looks exactly like an empty queue. A producer that finds nothing
+	// where it expected work can ask this and learn that it was never
+	// looking at the queue it meant.
+	Queues []string `json:"queues"`
+}
+
+// MayUse reports whether this key may act on a queue.
+//
+// A key naming no queue holds every one, which is what a deployment that has
+// not divided anything gets.
+func (i Identity) MayUse(queue string) bool {
+	if len(i.Queues) == 0 {
+		return true
+	}
+	for _, held := range i.Queues {
+		if held == queue {
+			return true
+		}
+	}
+	return false
 }
 
 // CanWrite reports whether this key may change a job.
