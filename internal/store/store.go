@@ -70,12 +70,17 @@ var (
 	ErrInvalid = errors.New("store: the request is not valid")
 )
 
-// invalid builds an error that says the caller's input is wrong.
+// Invalid builds an error that says the caller's input is wrong.
 //
 // The message is what a caller reads, so it carries no package name. The
 // sentinel is what the layer above tests, so rewording a message can no
 // longer move a status code.
-func invalid(format string, args ...any) error {
+//
+// Exported because the two stores refuse things this package cannot check:
+// a lease extended by a negative amount, and a sweep asked to delete a state
+// that is not finished. Both are the caller's mistake and both live in the
+// implementations.
+func Invalid(format string, args ...any) error {
 	return invalidError{said: fmt.Sprintf(format, args...)}
 }
 
@@ -193,28 +198,28 @@ type NewJob struct {
 // Validate refuses a job that cannot be stored.
 func (n NewJob) Validate() error {
 	if n.Type == "" {
-		return invalid("a job needs a type")
+		return Invalid("a job needs a type")
 	}
 	if len(n.Type) > 255 {
-		return invalid("the type is %d characters, and the column holds 255", len(n.Type))
+		return Invalid("the type is %d characters, and the column holds 255", len(n.Type))
 	}
 	if len(n.Queue) > 255 {
-		return invalid("the queue name is %d characters, and the column holds 255", len(n.Queue))
+		return Invalid("the queue name is %d characters, and the column holds 255", len(n.Queue))
 	}
 	if n.Delay < 0 {
-		return invalid("the delay is %s, which puts the job in the past", n.Delay)
+		return Invalid("the delay is %s, which puts the job in the past", n.Delay)
 	}
 	// A bound on how many jobs one may wait for. Every one of them is read
 	// at submission and again whenever one of them ends, so an unbounded
 	// list is an unbounded amount of work on a path a caller controls.
 	if len(n.After) > MostAfter {
-		return invalid(
+		return Invalid(
 			"the job waits for %d jobs, and the most it may wait for is %d",
 			len(n.After), MostAfter)
 	}
 	for _, id := range n.After {
 		if id == "" {
-			return invalid("the job waits for a job with no identifier")
+			return Invalid("the job waits for a job with no identifier")
 		}
 	}
 	// Priority and max retries are bounded by the column and not only by
@@ -231,24 +236,24 @@ func (n NewJob) Validate() error {
 	// contract suite passed. That is the part worth fixing: the suite exists
 	// so that a store cannot agree only with itself.
 	if n.Priority > math.MaxInt32 || n.Priority < math.MinInt32 {
-		return invalid("the priority is %d, and the column holds a number between %d and %d",
+		return Invalid("the priority is %d, and the column holds a number between %d and %d",
 			n.Priority, math.MinInt32, math.MaxInt32)
 	}
 	if n.MaxRetries != nil && *n.MaxRetries < 0 {
-		return invalid("max retries is %d, and it cannot be negative", *n.MaxRetries)
+		return Invalid("max retries is %d, and it cannot be negative", *n.MaxRetries)
 	}
 	if n.MaxRetries != nil && *n.MaxRetries > math.MaxInt32 {
-		return invalid("max retries is %d, and the column holds no more than %d",
+		return Invalid("max retries is %d, and the column holds no more than %d",
 			*n.MaxRetries, math.MaxInt32)
 	}
 	if len(n.IdempotencyKey) > 255 {
-		return invalid("the idempotency key is %d characters, and the column holds 255", len(n.IdempotencyKey))
+		return Invalid("the idempotency key is %d characters, and the column holds 255", len(n.IdempotencyKey))
 	}
 	// An empty payload is allowed and becomes {}. Text that is not JSON is
 	// not, because the column is JSONB and the database would refuse it
 	// later, with an error naming a constraint rather than the field.
 	if len(n.Payload) > 0 && !json.Valid(n.Payload) {
-		return invalid("the payload is not JSON")
+		return Invalid("the payload is not JSON")
 	}
 	return nil
 }
@@ -376,13 +381,13 @@ func (o Order) String() string {
 // Validate refuses a filter that cannot be answered.
 func (f Filter) Validate() error {
 	if f.Status != "" && !f.Status.Valid() {
-		return invalid("%q is not a status", f.Status)
+		return Invalid("%q is not a status", f.Status)
 	}
 	if f.Limit < 0 {
-		return invalid("the limit is %d", f.Limit)
+		return Invalid("the limit is %d", f.Limit)
 	}
 	if !f.Order.Valid() {
-		return invalid("%s is not an order", f.Order)
+		return Invalid("%s is not an order", f.Order)
 	}
 	return nil
 }

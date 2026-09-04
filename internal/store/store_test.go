@@ -175,7 +175,7 @@ func TestABadResultIsReportedThroughASentinel(t *testing.T) {
 // means something it must not confuse with a caller's mistake: a job that is
 // not there is a 404, and a job in the wrong state is a 409.
 func TestAnInvalidRequestIsReportedThroughItsOwnSentinel(t *testing.T) {
-	err := invalid("the priority is %d, and the column holds fewer", 3000000000)
+	err := Invalid("the priority is %d, and the column holds fewer", 3000000000)
 
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid built %v, which does not answer to ErrInvalid", err)
@@ -205,7 +205,7 @@ func TestAnInvalidRequestIsReportedThroughItsOwnSentinel(t *testing.T) {
 // layer handed it to the client unchanged, so a person submitting a job read
 // the name of a Go package they cannot see.
 func TestTheMessageOfAnInvalidRequestNamesNoPackage(t *testing.T) {
-	if got := invalid("a job needs a type").Error(); got != "a job needs a type" {
+	if got := Invalid("a job needs a type").Error(); got != "a job needs a type" {
 		t.Errorf("the message is %q", got)
 	}
 }

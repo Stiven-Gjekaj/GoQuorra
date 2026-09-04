@@ -72,19 +72,19 @@ type NewSchedule struct {
 // PostgreSQL.
 func (n NewSchedule) Validate() error {
 	if strings.TrimSpace(n.Name) == "" {
-		return invalid("a schedule needs a name")
+		return Invalid("a schedule needs a name")
 	}
 	if len(n.Name) > 255 {
-		return invalid("the name is %d characters, and the column holds 255", len(n.Name))
+		return Invalid("the name is %d characters, and the column holds 255", len(n.Name))
 	}
 	if _, err := jobs.ParseCron(n.Cron); err != nil {
-		return invalid("%s", err)
+		return Invalid("%s", err)
 	}
 	if _, err := n.Location(); err != nil {
 		return err
 	}
 	if !n.CatchUp.Valid() {
-		return invalid(
+		return Invalid(
 			"%q is not a catch up policy, and it must be skip, all or none", n.CatchUp)
 	}
 
@@ -117,7 +117,7 @@ func (n NewSchedule) Location() (*time.Location, error) {
 
 	place, err := time.LoadLocation(name)
 	if err != nil {
-		return nil, invalid(
+		return nil, Invalid(
 			"cannot read the time zone %q: %s. A container built with no zone database has only UTC, "+
 				"and importing time/tzdata puts one in the binary.", name, err)
 	}
