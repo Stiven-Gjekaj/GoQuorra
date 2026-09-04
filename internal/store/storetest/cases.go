@@ -2710,6 +2710,39 @@ var cases = []testCase{
 		}
 	}},
 
+	// What a store refuses on its own account is the caller's mistake too.
+	//
+	// These two checks are not in the shared validator: one is about a
+	// duration a caller passes to ExtendLease, and one is about a status a
+	// sweeper passes to DeleteFinished. Both live in the implementations, so
+	// both stores have to answer the same way or the layer above answers a
+	// different status code depending on which store is configured.
+	{"a store's own refusals carry the same sentinel", func(t *testing.T, s store.Store, clock *Clock) {
+		made := create(t, s, store.NewJob{Type: "work"})
+		leased, err := s.Lease(ctx(), store.LeaseRequest{
+			Queue: store.DefaultQueue, WorkerID: "w1", Limit: 1, TTL: time.Minute,
+		})
+		if err != nil || len(leased) != 1 {
+			t.Fatalf("Lease: %v, %d jobs", err, len(leased))
+		}
+
+		if _, err := s.ExtendLease(ctx(), made.ID, leased[0].LeaseID, -time.Second); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("extending a lease backwards gave %q, which does not answer to ErrInvalid", err)
+		}
+
+		// Pending is not a finished state, and deleting a job in it loses
+		// work that nobody has done yet.
+		if _, err := s.DeleteFinished(ctx(), jobs.Pending, clock.Now(), 10); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("sweeping a state that is not finished gave %q, which does not answer to ErrInvalid", err)
+		}
+
+		// And a finished state is swept, so the refusal is not always the
+		// answer.
+		if _, err := s.DeleteFinished(ctx(), jobs.Succeeded, clock.Now(), 10); err != nil {
+			t.Errorf("sweeping a finished state was refused: %v", err)
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

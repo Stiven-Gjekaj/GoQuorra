@@ -63,7 +63,11 @@ func (s *Store) ReviveMatching(ctx context.Context, f store.Filter, actor string
 // A job the filter names that has already moved is skipped rather than
 // refused. A bulk action against a moving queue will always race something,
 // and failing the whole batch for it would make the operation useless.
-var errSkip = errors.New("store: this job is not one the action applies to")
+//
+// It never leaves this file. The "store: " prefix it used to carry meant that
+// if it ever did, the layer above would have read an internal decision as
+// something the caller had got wrong and answered 400 to it.
+var errSkip = errors.New("this job is not one the action applies to")
 
 // actOnMatching runs one transition over every job a filter names.
 //
@@ -151,7 +155,7 @@ func (s *Store) actOnMatching(
 // the reclaimer cannot take the job between them.
 func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.Duration) (*store.Job, error) {
 	if by <= 0 {
-		return nil, fmt.Errorf("store: cannot extend a lease by %s", by)
+		return nil, store.Invalid("cannot extend a lease by %s", by)
 	}
 	if _, err := parseID(jobID); err != nil {
 		return nil, store.ErrNotFound
@@ -197,7 +201,7 @@ func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.
 // because its own housekeeping is running is worse than a large table.
 func (s *Store) DeleteFinished(ctx context.Context, status jobs.Status, before time.Time, limit int) (int, error) {
 	if !status.Terminal() {
-		return 0, fmt.Errorf("store: %q is not a finished state, and removing a job in it would lose work", status)
+		return 0, store.Invalid("%q is not a finished state, and removing a job in it would lose work", status)
 	}
 	if limit <= 0 {
 		return 0, nil

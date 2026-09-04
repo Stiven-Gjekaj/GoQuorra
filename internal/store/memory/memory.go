@@ -298,7 +298,7 @@ func (s *Store) ExtendLease(ctx context.Context, jobID, leaseID string, by time.
 		return nil, err
 	}
 	if by <= 0 {
-		return nil, fmt.Errorf("store: cannot extend a lease by %s", by)
+		return nil, store.Invalid("cannot extend a lease by %s", by)
 	}
 
 	now := s.opts.Now()
@@ -784,7 +784,7 @@ func (s *Store) DeleteFinished(ctx context.Context, status jobs.Status, before t
 		return 0, err
 	}
 	if !status.Terminal() {
-		return 0, fmt.Errorf("store: %q is not a finished state, and removing a job in it would lose work", status)
+		return 0, store.Invalid("%q is not a finished state, and removing a job in it would lose work", status)
 	}
 	if limit <= 0 {
 		return 0, nil
