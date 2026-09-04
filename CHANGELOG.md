@@ -13,6 +13,57 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The client package reaches every route
+
+**Added**
+
+- **Seven methods, and a rule that stops the package falling behind again.**
+  It reached eleven of the eighteen guarded routes and nothing said so, so a
+  caller wanting one of the other seven wrote the requests by hand and kept a
+  second copy of the shapes.
+
+  `Queues` counts the jobs by queue and status. Counting them through `List`
+  means paging every job, which gets slower exactly as the queue does the
+  thing worth watching for. `Waiting` adds pending and blocked together: a
+  queue of a thousand blocked jobs is not idle, and counting pending alone
+  says that it is.
+
+  `CreateSchedule`, `Schedules`, `Schedule`, `EnableSchedule`,
+  `DisableSchedule` and `DeleteSchedule` reach the schedules. The catch up
+  policy has no default here either, because there is no answer that is right
+  for every schedule.
+
+  The rule asks the router what it serves rather than holding its own list,
+  and it fails both ways round: a route added to the server, and a route the
+  test names that the server no longer serves. Both halves were checked.
+
+- **`Identity` says which queues the key holds**, and `MayUse` answers about
+  one. The server sends this and the package dropped it, so a producer that
+  found nothing where it expected work could not tell an empty queue from one
+  its key cannot reach.
+
+- **`ErrNameTaken`**, for a schedule name that is in use. The server answers
+  409 to that and to a job in the wrong state, and a caller that cannot tell
+  them apart cannot decide whether to rename and retry or to give up. It is
+  named by which call was made and not by reading the sentence.
+
+**Fixed**
+
+- **`Identity.CanWrite` said no to a key that holds every scope.** The scope
+  is a name and not a flag: a key holding everything answers `all`, and one
+  that also leases answers `write+worker`. This tested for the one word
+  `write`, so the most privileged key there is was reported as unable to
+  submit a job. `Whoami` is documented as the call a producer makes at
+  startup to decide whether to run at all, so the wrong answer stopped the
+  producer before it did anything.
+
+**Changed**
+
+- **The router is a table rather than eighteen `Handle` calls.** Nothing
+  could ask the server what it serves, so a test about coverage had to hold
+  its own copy of the list, which agrees with whatever its author believed
+  and goes on agreeing after somebody adds a route. No behaviour changed.
+
 ### Every answer is JSON, including the ones no handler wrote
 
 **Fixed**
