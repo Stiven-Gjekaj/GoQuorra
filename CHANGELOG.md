@@ -13,6 +13,42 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### A schedule answers the same per queue rule as a job
+
+**Fixed**
+
+- **A key limited to its queues could reach any schedule.** The check that
+  the per queue keys added went on the create path and stopped there. The
+  other five routes on this resource did not have it.
+
+  A key holding only `invoices` could read a `payroll` schedule by name, with
+  its rule, its zone and the payload it produces. It could switch that
+  schedule off, which is the quietest way to stop another team's work:
+  nothing fails, nothing is logged as a failure, and the jobs simply stop
+  arriving. It could also remove the schedule, which takes the rule and the
+  payload with it and leaves no copy anywhere.
+
+  Read, list, enable, disable and remove now answer the rule. `404` and not
+  `403`, because a schedule name is chosen by whoever made it, so a caller
+  guessing names would learn from a `403` which of its guesses are real. That
+  is the answer a job in another queue already gives.
+
+  The listing narrows in the handler rather than in the store. The rule
+  belongs to the caller and not to the storage, and putting it in the store
+  would mean writing it twice and keeping the two versions in agreement.
+
+  Each of the four rules was checked by putting the fault back. Two of them
+  needed the check made never to hold rather than deleted: deleting it leaves
+  a variable unused, the package stops compiling, and a test that does not
+  run is not a test that failed.
+
+  Driven against a live server and PostgreSQL 16. A key holding `invoices`
+  was answered `404` to reading, switching off and removing a `payroll`
+  schedule, saw one name in the listing where the unlimited key saw two, was
+  answered `200` for its own queue's schedule, and the `payroll` schedule was
+  still enabled afterwards.
+
+
 ### The dashboard shows what the API knows
 
 The API serves eighteen routes and the page used four of them. Two whole
