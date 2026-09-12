@@ -13,6 +13,51 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The readiness probe costs a round trip and not a table scan
+
+**Fixed**
+
+- **`GET /readyz` counted every row in the table.** It called `QueueStats`,
+  which is `GROUP BY queue, status` over the whole of `jobs`, because there
+  was nothing cheaper to call. Kubernetes runs the probe every five seconds
+  on every replica, so the most expensive read in the system was also the
+  most frequent one, and it got slower as the queue filled.
+
+  A probe that is slowest under the load it is watching for is a probe that
+  fails first in an incident, and a replica that fails its readiness probe is
+  taken out of the load balancer.
+
+  Measured against 500,003 rows, over HTTP against a live server:
+
+  | | Before | Now |
+  | --- | --- | --- |
+  | `GET /readyz` | 57ms, the whole table read, two extra worker backends | 0.7ms, one round trip, no rows |
+  | `GET /healthz` next to it | 0.5ms | unchanged |
+
+  The new cost does not move as the table grows, which is the point.
+
+**Added**
+
+- **`Store.Reachable`**, which answers whether the store can be used and
+  nothing else. It proves the three things a probe asks about: the pool has a
+  connection to give, the network carries a query, and the server answers it.
+
+  It deliberately does not prove the schema is there. A server whose schema is
+  missing is broken in a way that taking it out of the load balancer does not
+  fix, and a probe that fails for it hides the real fault behind a rolling
+  restart.
+
+- **Three rules about the two probes.** A working store answers 200 to both,
+  so none of this could be checked from the answer. The store is wrapped in
+  one that records which methods were called: the readiness probe makes one
+  reachability check and no count, a store it cannot reach answers 503 rather
+  than throwing the answer away, and the liveness probe touches the store not
+  at all.
+
+  The last one holds a decision the manifests already carried in a comment
+  and nothing enforced. A liveness probe that reaches the database restarts
+  every replica when the database goes away for a minute.
+
 ### The listing a person asks for has an index
 
 **Fixed**
