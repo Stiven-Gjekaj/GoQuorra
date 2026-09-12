@@ -33,9 +33,22 @@ with no API key and the workers refuse to start with none.
 - **They do not run PostgreSQL.** Point `database-url` at a database you
   already operate. A queue keeps the only copy of work that has been accepted
   and not yet done, so it belongs on storage somebody backs up.
-- **They do not apply the schema.** Run `migrations/0001_init.sql` yourself,
-  or as a Job, before the first start. A migration that runs from inside the
-  server means every replica races to apply it.
+- **They do not apply the schema.** Apply every file in `migrations/`, in
+  name order, before the first start. `make db-init` does that, and a Job that
+  runs `psql -v ON_ERROR_STOP=1 -f` over each file in turn does the same thing
+  in a cluster.
+
+  Every file, and not the first one. This said `migrations/0001_init.sql`,
+  which is one of twelve. An operator who followed it got a `jobs` table with
+  no cancel constraint, no idempotency key, no result column and no
+  `acted_by`, and none of the four later tables. Measured: the first
+  submission answered `500`, with `column "..." does not exist` in the log.
+
+  Each file is written to be safe to apply twice, so a Job that runs again
+  after a restart is not a problem.
+
+  The server does not do this itself, and that is the decision: a migration
+  that runs from inside the server means every replica races to apply it.
 - **They set no resource limits that suit your load.** The numbers here are
   small enough to start on a laptop cluster and are not measurements of
   anything.
