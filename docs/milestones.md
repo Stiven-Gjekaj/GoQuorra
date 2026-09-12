@@ -361,9 +361,9 @@ because both statements are safe to apply twice.
 The property the scheme depends on is repeatability, not additivity. So the
 real trigger is a change that cannot be made repeatable: a column dropped
 while live code still reads it, or a backfill that does something different
-the second time. There are ten files now, six of them added after this entry
-was written, and none of them reaches that line: they add tables and columns
-and touch no existing value.
+the second time. Several files have been added since this entry was written,
+and none of them reaches that line: they add tables, columns and indexes, drop
+an index nothing read, and touch no existing value.
 
 **What would change the answer.** The first change that cannot be written to
 be safe to apply twice. Do not reach for a tool before then: the list is three

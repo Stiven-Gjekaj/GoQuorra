@@ -39,7 +39,7 @@ with no API key and the workers refuse to start with none.
   in a cluster.
 
   Every file, and not the first one. This said `migrations/0001_init.sql`,
-  which is one of twelve. An operator who followed it got a `jobs` table with
+  which is the first of many. An operator who followed it got a `jobs` table with
   no cancel constraint, no idempotency key, no result column and no
   `acted_by`, and none of the four later tables. Measured: the first
   submission answered `500`, with `column "..." does not exist` in the log.
