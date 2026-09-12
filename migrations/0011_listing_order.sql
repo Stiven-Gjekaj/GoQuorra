@@ -1,0 +1,23 @@
+-- The index behind the listing a person actually asks for.
+--
+-- Every listing that is not in the soonest order ends with
+-- "ORDER BY seq DESC LIMIT n". Nothing served that. PostgreSQL sorted the
+-- whole table on every page and took the first rows off the top.
+--
+-- Measured against 500,003 rows: 186ms, 8,009 buffers, and two extra worker
+-- backends for a query that returns twenty six rows. With this index the same
+-- query is 0.08ms and reads four buffers.
+--
+-- jobs_recent_idx was meant to be this index. It leads on created_at, and the
+-- cursor moved from a time to seq when a time turned out not to be unique.
+-- docs/milestones.md records that move. The index was not moved with it, and
+-- a btree cannot answer "order by seq" from a leading column of created_at.
+-- The next file drops it.
+--
+-- seq alone and not (queue, seq) or (status, seq). Adding those two as well
+-- makes a queue holding five rows among half a million fast, and costs 35 per
+-- cent on the insert path and 48MB. A queue is written to more often than it
+-- is read. The number for the case this does not help is in
+-- docs/milestones.md, so that somebody who has that case can decide with it.
+CREATE INDEX IF NOT EXISTS jobs_newest_idx
+    ON jobs (seq DESC);
