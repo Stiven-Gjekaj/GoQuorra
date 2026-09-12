@@ -13,6 +13,36 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### quorractl puts what a person typed into the path escaped
+
+**Fixed**
+
+- **A job identifier reached the path unchecked.** A question mark in it ends
+  the path and starts a query string, so `quorractl get <id>?limit=1` asked
+  the server for the job and printed it, when the identifier it was given
+  names nothing. A hash did the same and silently dropped everything after
+  it. A slash reached a route that does not exist, so the tool answered "no
+  route answers that path" about a job identifier.
+
+  Three commands took it that way: `get`, `history`, and `cancel` with
+  `revive`. A schedule name in the same file was already escaped, and so are
+  the job identifiers in the `client` package and on the dashboard. This was
+  the one place of four that was not.
+
+  Driven against a live server, before and after:
+
+  | Typed | Before | Now |
+  | --- | --- | --- |
+  | `get <id>` | the job | unchanged |
+  | `get <id>?limit=1` | the job | `no job carries that identifier` |
+  | `get <id>#somewhere` | the job | `no job carries that identifier` |
+  | `get a/b` | `no route answers that path` | `no job carries that identifier` |
+  | `cancel <id>?x=1` | `that path does not answer that method` | `no job carries that identifier` |
+
+  The second rule checks the job after the refusal. Without it the first
+  passes against a tool that escapes the path, is answered 404, and has
+  already cancelled the job whose identifier was the prefix.
+
 ### A bad job identifier is told apart by its code
 
 **Fixed**
