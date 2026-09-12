@@ -725,7 +725,15 @@ func (a *API) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 2*time.Second)
 	defer cancel()
 
-	if _, err := a.opts.Store.QueueStats(ctx); err != nil {
+	// Reachable and not QueueStats. This asked for a count of every row by
+	// queue and by status, which is the most expensive read in the system,
+	// and Kubernetes asks for it every five seconds on every replica.
+	// Measured against 500,003 rows it took 57ms and read the whole table.
+	//
+	// The check was also measuring the wrong thing. A probe answers whether
+	// this replica can serve, and counting the queue answers that only as a
+	// side effect of doing far more work.
+	if err := a.opts.Store.Reachable(ctx); err != nil {
 		a.logOf(r.Context()).Warn("the readiness check failed", "error", err)
 		a.send(w, http.StatusServiceUnavailable, map[string]string{
 			"status": "the store cannot be reached",
