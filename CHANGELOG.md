@@ -13,6 +13,36 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The instruction for setting up a real deployment was wrong
+
+**Fixed**
+
+- **`deployments/k8s/README.md` said to run `migrations/0001_init.sql`.**
+  There are twelve files, and the page has been wrong since the second one.
+
+  An operator who followed it got a `jobs` table with no cancel constraint,
+  no idempotency key, no result column and no `acted_by`, and none of the four
+  later tables. Measured against a database set up that way: the first
+  submission answered `500`, with `column "..." does not exist` in the log.
+  With every file applied the same submission answered `201`.
+
+  The page now says to apply every file in name order, names `make db-init`,
+  and says that each file is safe to apply twice so a Job that runs again
+  after a restart is not a problem.
+
+- **`AGENTS.md` said every migration file is applied on every start.** Nothing
+  in the shipped binaries applies a migration: `migrations.Schema()` is called
+  in one place, and that place is the test helper. Measured: a server pointed
+  at an empty database started, listened, and answered a submission with
+  `500`.
+
+  The rule that a file must be safe to apply twice does not change. What
+  changes is the reason: `make db-init` applies every file on every run, the
+  compose stack does it on the first start of an empty data directory, and the
+  test helper does it on every test run.
+
+- **The file tree in the README said ten files.** There are twelve.
+
 ### quorractl puts what a person typed into the path escaped
 
 **Fixed**
