@@ -439,7 +439,7 @@ func get(args []string, out io.Writer) error {
 		return errors.New("give exactly one job identifier")
 	}
 
-	answer, err := c.send(context.Background(), http.MethodGet, "/v1/jobs/"+set.Arg(0), nil)
+	answer, err := c.send(context.Background(), http.MethodGet, jobPath(set.Arg(0)), nil)
 	if err != nil {
 		return err
 	}
@@ -463,7 +463,7 @@ func history(args []string, out io.Writer) error {
 	}
 
 	id := set.Arg(0)
-	answer, err := c.send(context.Background(), http.MethodGet, "/v1/jobs/"+id+"/attempts", nil)
+	answer, err := c.send(context.Background(), http.MethodGet, jobPath(id)+"/attempts", nil)
 	if err != nil {
 		return err
 	}
@@ -735,6 +735,21 @@ func scheduleAdd(args []string, out io.Writer) error {
 	return nil
 }
 
+// jobPath puts a job identifier into a path.
+//
+// Escaped, the same as a schedule name already is. What a person typed
+// reaches this unchecked, and a question mark in it ends the path and starts a
+// query string: "quorractl get <id>?x=1" answered with the job rather than
+// refusing, and a hash silently dropped everything after it. A slash reached
+// a route that does not exist, so the tool said "no route answers that path"
+// about a job identifier.
+//
+// The client package and the dashboard both escape. This was the only one of
+// the three that did not.
+func jobPath(id string) string {
+	return "/v1/jobs/" + url.PathEscape(id)
+}
+
 // scheduleOne runs a verb that names one schedule.
 func scheduleOne(args []string, out io.Writer, method, suffix string) error {
 	set := flag.NewFlagSet("schedule", flag.ContinueOnError)
@@ -971,7 +986,7 @@ func act(args []string, out io.Writer, verb, done string) error {
 	}
 
 	id := set.Arg(0)
-	answer, err := c.send(context.Background(), http.MethodPost, "/v1/jobs/"+id+"/"+verb, nil)
+	answer, err := c.send(context.Background(), http.MethodPost, jobPath(id)+"/"+verb, nil)
 	if err != nil {
 		return err
 	}

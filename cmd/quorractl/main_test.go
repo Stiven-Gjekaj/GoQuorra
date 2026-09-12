@@ -1109,3 +1109,68 @@ func serveForQueues(t *testing.T, queues ...string) []string {
 
 	return []string{"-server", server.URL, "-key", key}
 }
+
+// What a person types reaches the server as one path segment.
+//
+// The identifier went into the path unchecked. A question mark in it ends the
+// path and starts a query string, so "get <id>?x=1" asked for the job and got
+// it, when the identifier it was given names nothing. A hash did the same and
+// dropped everything after it. A slash reached a route that does not exist,
+// so the tool answered "no route answers that path" about a job identifier.
+//
+// The client package and the dashboard both escape. This was the only one of
+// the three that did not.
+func TestAJobIdentifierReachesTheServerAsOneSegment(t *testing.T) {
+	base, backing := serveWithStore(t)
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "probe"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The plain identifier still works, so the escaping is not simply
+	// breaking every call.
+	if _, err := runCLI(t, append([]string{"get", made.ID}, base...)...); err != nil {
+		t.Fatalf("get with a plain identifier: %v", err)
+	}
+
+	for name, typed := range map[string]string{
+		"a query string appended": made.ID + "?limit=1",
+		"a fragment appended":     made.ID + "#somewhere",
+		"a slash in the middle":   "a/b",
+		"a space":                 made.ID + " ",
+	} {
+		for _, command := range []string{"get", "history", "cancel"} {
+			out, err := runCLI(t, append([]string{command, typed}, base...)...)
+			if err == nil {
+				t.Errorf("%s: %s answered about a job, and printed %q", name, command, out)
+			}
+		}
+	}
+}
+
+// And the job is untouched by an identifier the server refused.
+//
+// Without this the test above passes against a tool that escapes the path,
+// gets a 404, and has already cancelled the job whose identifier was the
+// prefix.
+func TestAJobIsUntouchedByAnIdentifierTheServerRefuses(t *testing.T) {
+	base, backing := serveWithStore(t)
+
+	made, _, err := backing.Create(t.Context(), store.NewJob{Type: "probe"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := runCLI(t, append([]string{"cancel", made.ID + "?x=1"}, base...)...); err == nil {
+		t.Fatal("cancel with a query string appended was accepted")
+	}
+
+	after, err := backing.Get(t.Context(), made.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.Status != jobs.Pending {
+		t.Errorf("the job is %q, so the cancel reached it after all", after.Status)
+	}
+}
