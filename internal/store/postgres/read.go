@@ -11,6 +11,7 @@ import (
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/jobs"
 	"github.com/Stiven-Gjekaj/GoQuorra/internal/store"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // QueueStats counts the jobs by queue and by status.
@@ -398,11 +399,31 @@ func scanJob(r row) (*store.Job, int64, error) {
 	return &job, seq, nil
 }
 
+// invalidText is the SQLSTATE PostgreSQL answers when text cannot be read as
+// the type a column holds.
+//
+// 22P02 is invalid_text_representation, and it is documented and stable. The
+// sentence beside it is neither: PostgreSQL translates its messages when
+// lc_messages names a locale with a catalogue, and the wording is free to
+// change between versions.
+const invalidText = "22P02"
+
 // isInvalidUUID reports whether an error is PostgreSQL refusing to read text
 // as a UUID. The caller turns that into ErrNotFound, because a job whose
 // identifier is not a UUID cannot be in a table keyed by one.
+//
+// Told apart by the code and not by the message. This read the message for
+// "invalid input syntax for type uuid", which is the same coupling this
+// repository has now removed twice from its own errors: a decision that rests
+// on a sentence somebody else owns, with nothing failing on the day that
+// sentence changes. A server with lc_messages set to a translated locale
+// answered 500 to every job identifier that was not a UUID.
 func isInvalidUUID(err error) bool {
-	return strings.Contains(err.Error(), "invalid input syntax for type uuid")
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return false
+	}
+	return pg.Code == invalidText
 }
 
 var _ store.Store = (*Store)(nil)
