@@ -13,6 +13,54 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The listing a person asks for has an index
+
+**Fixed**
+
+- **Every newest first listing sorted the whole table.** The default listing,
+  and every filtered one that is not in the soonest order, ends with
+  `ORDER BY seq DESC LIMIT n`. No index served that, so PostgreSQL sorted all
+  the rows on every page and took the first twenty six off the top.
+
+  `jobs_recent_idx` was meant to be that index. It leads on `created_at`, and
+  the cursor moved from a time to `seq` when a time turned out not to be
+  unique: a burst of submissions shares one `created_at`, and a cursor on it
+  either repeats a whole group or skips the rest of it. The index was not
+  moved with the cursor, and a btree cannot answer `ORDER BY seq` from a
+  leading column of `created_at`. It served no query at all.
+
+  One index replaces the other: `jobs_newest_idx` on `(seq DESC)`.
+
+  Measured against 500,003 rows, over HTTP against a live server and in the
+  database:
+
+  | | Before | Now |
+  | --- | --- | --- |
+  | `SELECT ... ORDER BY seq DESC LIMIT 26` | 186ms, 8,009 buffers, two extra worker backends | 0.05ms, four buffers, one backend |
+  | The same filtered by status | 48.8ms | 0.12ms |
+  | `GET /v1/jobs?limit=25` | 115ms | 2.7ms |
+  | 50,000 inserts | 1,099ms | 790ms |
+
+  The insert path gets faster as well, because one column that always
+  increases is cheaper to maintain than two, and the dropped index was taking
+  22 per cent of it while answering nothing. It held 15MB.
+
+  **What this does not help.** A queue holding a handful of rows among
+  millions. The index finds the newest rows and then filters, so a queue with
+  five jobs in half a million still takes about 30ms. Indexes on
+  `(queue, seq DESC)` and `(status, seq DESC)` make that case 0.05ms and cost
+  35 per cent on the insert path and 48MB. A queue is written to more often
+  than it is read, so they are not here. `docs/milestones.md` carries the
+  numbers for anybody who has that case.
+
+**Changed**
+
+- **The migration repeatability test covers a drop.** It checked that every
+  `CREATE` carries `IF NOT EXISTS` and said nothing about `DROP`, so the file
+  that drops the old index could have been written without `IF EXISTS` and
+  nothing would have failed until the second run of `make db-init`.
+
+
 ### The client package reaches every route
 
 **Added**
