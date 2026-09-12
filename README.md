@@ -1085,6 +1085,15 @@ A liveness probe that reaches the database restarts every replica when the
 database goes away for a minute, which is the one thing guaranteed to make an
 outage worse.
 
+`readyz` is one round trip to the database and reads no rows, so what it costs
+does not move as the table grows.
+Measured over HTTP against a live server with 500,003 rows: 0.7ms, against
+0.5ms for `healthz` beside it.
+It does not check that the schema is there.
+A server with no schema is broken in a way that taking it out of the load
+balancer does not fix, and a probe that failed for it would hide the real
+fault behind a rolling restart.
+
 ---
 
 ## What it publishes
