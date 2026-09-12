@@ -13,6 +13,36 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### The route table and the router are checked against each other
+
+**Fixed**
+
+- **`POST /v1/jobs` was not in the README's route table.** The table names
+  every other route under `/v1`, and the one it left out is the first thing a
+  caller does. It is there now, with both answers a caller has to handle: `201`
+  for a job that was stored, and `200` with the job that already exists when
+  an idempotency key has been used before.
+
+**Added**
+
+- **A rule that the two lists agree.** The table is kept by hand beside a
+  router that is also kept by hand, so they are two copies of one list. The
+  test reads the README rather than holding its own list, because a list in a
+  test is a third copy.
+
+  It was written before the row it found was added, and it reported
+  `POST /v1/jobs` as served and not named. It fails both ways round, and both
+  were checked: a route served and not named is one a caller cannot find, and
+  a route named and not served is a caller writing against a `404`.
+
+**Changed**
+
+- **The documentation no longer counts the migration files.** Three places
+  held the count. One said ten when there were twelve, and the other two were
+  correct that morning and would have been wrong after the next schema change.
+  One of the three was a page corrected earlier in the same run, which is the
+  argument for removing the number rather than fixing it.
+
 ### The instruction for setting up a real deployment was wrong
 
 **Fixed**
