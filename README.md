@@ -1299,7 +1299,7 @@ walking into another suite.
 ```
 proto/quorra/v1/       the worker protocol
 internal/quorrapb/     generated from it, and checked by CI
-migrations/            ten files, applied in name order and embedded so the
+migrations/            twelve files, applied in name order and embedded so the
                        tests apply the same bytes an operator reads
 deployments/           the compose stack and the Kubernetes manifests
 scripts/               generation, the link check, the smoke test

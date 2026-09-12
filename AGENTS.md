@@ -148,9 +148,14 @@ It holds the full feature.
 - A schema change is a new file in `migrations/`. Do not edit a file that has
   been applied anywhere.
 - Name it with a four digit prefix. `10_x.sql` sorts before `9_x.sql`.
-- Write it so that applying it twice is safe. Every file is applied on every
-  start and nothing records what has run, so a statement that fails the second
-  time turns a container restart into an outage.
+- Write it so that applying it twice is safe. Nothing records what has run,
+  and three things apply every file in name order: `make db-init`, the compose
+  stack on the first start of an empty data directory, and `internal/pgtest`
+  on every test run. A statement that fails the second time breaks the first
+  of those on a re-run and the third on every run after the first.
+- The server does not apply anything. An operator applies the schema before
+  the first start, and `deployments/k8s/README.md` says so. A migration that
+  ran from inside the server would have every replica racing to apply it.
 - Both of those are tested. The test is in `migrations/`.
 - Reason: this works while every change is additive. The first one that is not
   needs a real migration tool, and `docs/milestones.md` says so.
