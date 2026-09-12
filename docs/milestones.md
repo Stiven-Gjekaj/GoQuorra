@@ -256,6 +256,37 @@ run twice.
 
 ## Recorded so nobody investigates them twice
 
+### An index that outlives the query it was built for
+
+`jobs_recent_idx` led on `created_at`. The listing ordered by `created_at`
+when the index was written, and later moved to `seq`, which the entry below on
+cursors records. Nothing moved the index, and a btree cannot answer
+`ORDER BY seq` from a leading column of `created_at`.
+
+So the listing sorted the whole table on every page, and the index that was
+supposed to stop it was still there, costing 22 per cent of the insert path
+and 15MB, and answering nothing. Both facts were invisible: the index existed,
+so a reader checking whether the listing had one found that it did.
+
+**What to do about the class.** When a cursor or an order changes, the index
+is part of the change. An `EXPLAIN` of the query the index was built for is
+the check, and the index name is not.
+
+**The case the replacement does not cover.** A queue holding a handful of rows
+among millions. `jobs_newest_idx` finds the newest rows and then filters, so a
+queue with five jobs in 500,003 takes about 30ms rather than 0.05ms.
+
+Indexes on `(queue, seq DESC)` and `(status, seq DESC)` fix that. Measured
+over 50,000 inserts against 500,003 rows: 1,099ms as the table was, 790ms with
+one index replacing one, and 1,487ms with those two added as well. That is 35
+per cent on the insert path and 48MB of index, to make a listing fast for a
+queue that is nearly empty.
+
+**What would change the answer.** A deployment that reads a sparse queue often
+enough to care. The numbers above are the trade, and a deployment that has
+that shape can add either index without changing any code: they serve queries
+the store already writes.
+
 ### A permission check on one route of a resource is not a permission
 
 Per queue keys were built with the check on the route that creates a schedule,
