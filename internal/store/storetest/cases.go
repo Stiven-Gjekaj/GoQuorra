@@ -2755,6 +2755,34 @@ var cases = []testCase{
 		}
 	}},
 
+	// A store says whether it can be reached, and says so about an empty
+	// table and a full one alike.
+	//
+	// The readiness probe asks this every few seconds on every replica. It
+	// used to ask QueueStats, which counts every row, so the check got slower
+	// as the queue filled and was slowest under the load it was watching for.
+	{"a store says whether it can be reached", func(t *testing.T, s store.Store, clock *Clock) {
+		if err := s.Reachable(ctx()); err != nil {
+			t.Fatalf("an empty store says it cannot be reached: %v", err)
+		}
+
+		for i := 0; i < 5; i++ {
+			create(t, s, store.NewJob{Type: "work"})
+		}
+		if err := s.Reachable(ctx()); err != nil {
+			t.Errorf("a store holding jobs says it cannot be reached: %v", err)
+		}
+
+		// A context that has ended is refused rather than answered. A probe
+		// whose deadline passed has no answer, and saying yes to it reports
+		// a store nothing has checked.
+		done, cancel := context.WithCancel(ctx())
+		cancel()
+		if err := s.Reachable(done); err == nil {
+			t.Error("a check whose context has ended answered that the store is reachable")
+		}
+	}},
+
 	{"the statistics count by queue and by status", func(t *testing.T, s store.Store, clock *Clock) {
 		create(t, s, store.NewJob{Type: "a", Queue: "one"})
 		create(t, s, store.NewJob{Type: "b", Queue: "one"})

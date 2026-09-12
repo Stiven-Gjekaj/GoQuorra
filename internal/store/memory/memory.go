@@ -1018,3 +1018,12 @@ func recordAction(job *store.Job, actor string, now time.Time) {
 	job.ActedBy = actor
 	job.ActedAt = &at
 }
+
+// Reachable answers whether this store can be used.
+//
+// Always yes while the process is running. There is nothing to reach: the
+// jobs are in this process, so a caller holding this store has already
+// reached them.
+func (s *Store) Reachable(ctx context.Context) error {
+	return ctx.Err()
+}

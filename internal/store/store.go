@@ -667,6 +667,19 @@ type Store interface {
 	// the next Before. An empty result means the end.
 	List(ctx context.Context, f Filter) ([]*Job, error)
 
+	// Reachable answers whether the store can be used, and nothing else.
+	//
+	// It exists for a readiness probe. That probe used QueueStats, which
+	// counts every row in the table: measured against 500,003 rows it took
+	// 57ms, read the whole table and started two extra worker backends, and
+	// Kubernetes runs it every five seconds on every replica. A check that
+	// gets more expensive as the queue fills is a check that fails first
+	// under exactly the load it is watching for.
+	//
+	// A reachability check has to stay cheap whatever the table holds, so
+	// this is a round trip and no rows.
+	Reachable(ctx context.Context) error
+
 	// Close releases whatever the store holds.
 	Close() error
 }

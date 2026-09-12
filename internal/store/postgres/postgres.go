@@ -394,3 +394,21 @@ func (s *Store) Lease(ctx context.Context, req store.LeaseRequest) ([]*store.Job
 	}
 	return leased, nil
 }
+
+// Reachable answers whether this store can be used.
+//
+// A round trip and no rows. The pool hands back a connection, the server
+// answers, and the connection goes back. That proves the three things a
+// readiness probe is asking about: the pool has a connection to give, the
+// network carries a query, and the server answers it.
+//
+// It does not prove that the schema is there. That is deliberate: a server
+// whose schema is missing is broken in a way that taking it out of the load
+// balancer does not fix, and a probe that fails for it hides the real fault
+// behind a rolling restart.
+func (s *Store) Reachable(ctx context.Context) error {
+	if err := s.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("postgres: cannot reach the database: %w", err)
+	}
+	return nil
+}
