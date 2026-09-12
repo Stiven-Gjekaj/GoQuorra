@@ -1,0 +1,20 @@
+-- The index that names the column the cursor moved away from.
+--
+-- jobs_recent_idx leads on created_at. Every listing orders by seq, and a
+-- btree cannot answer "order by seq" from a leading column of created_at, so
+-- this index serves no query in the repository. Nothing orders by created_at
+-- and nothing filters on it.
+--
+-- It was the index behind the listing when the listing ordered by a time.
+-- That changed when a time turned out not to be unique: a burst of
+-- submissions shares one created_at, and a cursor on it either repeats a
+-- whole group or skips the rest of it. docs/milestones.md records that move.
+-- The index was not moved with it.
+--
+-- An index nobody reads is not free. Measured over 50,000 inserts against
+-- 500,003 rows: 1,099ms with this index and 861ms without, so it was taking
+-- 22 per cent of the insert path. It held 15MB.
+--
+-- IF EXISTS because every file here is applied on every run of make db-init,
+-- and a second run must not fail.
+DROP INDEX IF EXISTS jobs_recent_idx;

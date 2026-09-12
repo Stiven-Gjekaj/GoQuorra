@@ -69,11 +69,19 @@ func TestEveryMigrationIsSafeToApplyTwice(t *testing.T) {
 			t.Fatalf("Read(%q): %v", name, err)
 		}
 
-		for _, statement := range []string{"CREATE TABLE", "CREATE INDEX"} {
+		// A create needs IF NOT EXISTS and a drop needs IF EXISTS, so the
+		// word to look for is not the same one.
+		guards := map[string]string{
+			"CREATE TABLE": "IF NOT EXISTS",
+			"CREATE INDEX": "IF NOT EXISTS",
+			"DROP INDEX":   "IF EXISTS",
+			"DROP TABLE":   "IF EXISTS",
+		}
+		for statement, guard := range guards {
 			for _, line := range strings.Split(body, "\n") {
 				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, statement) && !strings.Contains(trimmed, "IF NOT EXISTS") {
-					t.Errorf("%s: %q cannot be applied twice", name, trimmed)
+				if strings.HasPrefix(trimmed, statement) && !strings.Contains(trimmed, guard) {
+					t.Errorf("%s: %q cannot be applied twice, and needs %s", name, trimmed, guard)
 				}
 			}
 		}
