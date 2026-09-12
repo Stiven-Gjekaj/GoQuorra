@@ -1030,6 +1030,7 @@ before.
 
 | Route | Gives |
 | ----- | ----- |
+| `POST /v1/jobs` | Submits one job. `201` when it is stored, and `200` with the job that already exists when an idempotency key has been used before. |
 | `GET /v1/jobs/{id}` | One job. `404` when there is none, and `500` when the database is unreachable. |
 | `GET /v1/jobs` | Jobs, newest first. Narrowed by `queue`, `status`, `type`, `worker`, `due` and `limit`, ordered by `order`, and paged with `before`. |
 | `POST /v1/jobs/{id}/cancel` | Stops a job that has not finished. `409` when it already has. |
