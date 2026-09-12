@@ -13,6 +13,38 @@ A version moves only when something is released.
 
 ## Unreleased
 
+### A bad job identifier is told apart by its code
+
+**Fixed**
+
+- **The PostgreSQL store read the database's error message.** A job
+  identifier that is not a UUID reaches the database as one, so the failure
+  is a type conversion and not a missing row, and the store turned that into
+  `ErrNotFound` by searching the message for "invalid input syntax for type
+  uuid".
+
+  PostgreSQL translates its messages when `lc_messages` names a locale with a
+  catalogue, and the wording is free to change between versions. A server
+  running in a translated locale answered `500` to every malformed identifier
+  instead of `404`, and nothing in the suite would have failed.
+
+  It reads SQLSTATE `22P02`, `invalid_text_representation`, which is
+  documented and stable.
+
+  This is the same coupling removed twice already from this project's own
+  errors. The lesson had been written down for those and the database's
+  messages were left, so the entry in `docs/milestones.md` gains a line
+  saying that the rule is about every string a decision rests on, and the
+  question to ask is who owns the string.
+
+  Three rules, and the first fails against the version being replaced: a
+  `22P02` carrying an Italian message is a bad identifier, another code from
+  the same server is not, and the English sentence with no code attached is
+  not either. No locale has to be installed to run them.
+
+  Driven against a live server: `not-a-uuid` answers `404` on read, cancel
+  and attempts, the same as a UUID that names no job.
+
 ### The readiness probe costs a round trip and not a table scan
 
 **Fixed**

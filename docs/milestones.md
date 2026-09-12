@@ -336,6 +336,17 @@ Two details are worth keeping:
 sentinel is for a caller, and the moment one is used as the other, rewording a
 sentence moves a status code with nothing anywhere failing.
 
+**Where else to look.** The messages this project writes were the first half.
+The PostgreSQL store also read the database's own message, for the words
+"invalid input syntax for type uuid", to tell a job identifier that is not a
+UUID from a fault underneath. PostgreSQL translates its messages when
+lc_messages names a locale with a catalogue, so a server running in one
+answered 500 to every malformed identifier. It reads SQLSTATE 22P02 now.
+
+So the rule is about every string a decision rests on, and not only about the
+ones written here. The question to ask of a string test is who owns the
+string.
+
 ### The list of migrations has a limit, and here it is
 
 Every file in `migrations/` is applied in name order, and each is written to
